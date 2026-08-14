@@ -1,0 +1,2077 @@
+<title>代码染色平台原型</title>
+<style>
+  /* ===================================================================
+     ElementPlus 设计令牌复刻
+     后续 Vue3 + ElementPlus 实现时，这些变量与官方 --el-* 一一对应
+     =================================================================== */
+  :root {
+    --el-color-primary: #409eff;
+    --el-color-primary-light-3: #79bbff;
+    --el-color-primary-light-5: #a0cfff;
+    --el-color-primary-light-7: #c6e2ff;
+    --el-color-primary-light-9: #ecf5ff;
+    --el-color-success: #67c23a;
+    --el-color-success-light-9: #f0f9eb;
+    --el-color-warning: #e6a23c;
+    --el-color-warning-light-9: #fdf6ec;
+    --el-color-danger: #f56c6c;
+    --el-color-danger-light-9: #fef0f0;
+    --el-color-info: #909399;
+    --el-color-info-light-9: #f4f4f5;
+
+    --el-text-color-primary: #303133;
+    --el-text-color-regular: #606266;
+    --el-text-color-secondary: #909399;
+    --el-text-color-placeholder: #a8abb2;
+
+    --el-border-color: #dcdfe6;
+    --el-border-color-light: #e4e7ed;
+    --el-border-color-lighter: #ebeef5;
+    --el-border-color-extra-light: #f2f6fc;
+
+    --el-bg-color: #ffffff;
+    --el-bg-color-page: #f2f3f5;
+    --el-bg-color-overlay: #ffffff;
+    --el-fill-color-light: #f5f7fa;
+    --el-fill-color-lighter: #fafafa;
+    --el-fill-color-blank: #ffffff;
+
+    --el-border-radius-base: 4px;
+    --el-border-radius-small: 2px;
+    --el-box-shadow-light: 0 0 12px rgba(0, 0, 0, .12);
+    --el-box-shadow-lighter: 0 0 6px rgba(0, 0, 0, .07);
+
+    --el-font-size-base: 14px;
+    --el-font-size-small: 13px;
+    --el-font-size-extra-small: 12px;
+
+    /* 侧边栏（ElementPlus 后台模板标准深色菜单） */
+    --menu-bg: #304156;
+    --menu-bg-active: #263445;
+    --menu-text: #bfcbd9;
+    --menu-text-active: #409eff;
+    --menu-sub-bg: #1f2d3d;
+
+    /* 染色语义色 —— 直接复用 EP 语义色，不另起体系 */
+    --cov-hit-bg: #f0f9eb;
+    --cov-hit-line: #67c23a;
+    --cov-miss-bg: #fef0f0;
+    --cov-miss-line: #f56c6c;
+    --cov-partial-bg: #fdf6ec;
+    --cov-partial-line: #e6a23c;
+
+    --el-font-family: "Helvetica Neue", Helvetica, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+    --el-font-family-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+  }
+
+  /* ElementPlus 官方暗色主题令牌 */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --el-color-primary-light-9: #18222c;
+      --el-color-success-light-9: #1c2518;
+      --el-color-warning-light-9: #292218;
+      --el-color-danger-light-9: #2b1d1d;
+      --el-color-info-light-9: #202121;
+
+      --el-text-color-primary: #e5eaf3;
+      --el-text-color-regular: #cfd3dc;
+      --el-text-color-secondary: #a3a6ad;
+      --el-text-color-placeholder: #8d9095;
+
+      --el-border-color: #4c4d4f;
+      --el-border-color-light: #414243;
+      --el-border-color-lighter: #363637;
+      --el-border-color-extra-light: #2b2b2c;
+
+      --el-bg-color: #141414;
+      --el-bg-color-page: #0a0a0a;
+      --el-bg-color-overlay: #1d1e1f;
+      --el-fill-color-light: #262727;
+      --el-fill-color-lighter: #1d1d1d;
+      --el-fill-color-blank: #141414;
+
+      --el-box-shadow-light: 0 0 12px rgba(0, 0, 0, .72);
+      --el-box-shadow-lighter: 0 0 6px rgba(0, 0, 0, .72);
+
+      --menu-bg: #1d1e1f;
+      --menu-bg-active: #141414;
+      --menu-text: #cfd3dc;
+      --menu-sub-bg: #141414;
+
+      --cov-hit-bg: #1c2518;
+      --cov-miss-bg: #2b1d1d;
+      --cov-partial-bg: #292218;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --el-color-primary-light-9: #18222c;
+    --el-color-success-light-9: #1c2518;
+    --el-color-warning-light-9: #292218;
+    --el-color-danger-light-9: #2b1d1d;
+    --el-color-info-light-9: #202121;
+
+    --el-text-color-primary: #e5eaf3;
+    --el-text-color-regular: #cfd3dc;
+    --el-text-color-secondary: #a3a6ad;
+    --el-text-color-placeholder: #8d9095;
+
+    --el-border-color: #4c4d4f;
+    --el-border-color-light: #414243;
+    --el-border-color-lighter: #363637;
+    --el-border-color-extra-light: #2b2b2c;
+
+    --el-bg-color: #141414;
+    --el-bg-color-page: #0a0a0a;
+    --el-bg-color-overlay: #1d1e1f;
+    --el-fill-color-light: #262727;
+    --el-fill-color-lighter: #1d1d1d;
+    --el-fill-color-blank: #141414;
+
+    --el-box-shadow-light: 0 0 12px rgba(0, 0, 0, .72);
+    --el-box-shadow-lighter: 0 0 6px rgba(0, 0, 0, .72);
+
+    --menu-bg: #1d1e1f;
+    --menu-bg-active: #141414;
+    --menu-text: #cfd3dc;
+    --menu-sub-bg: #141414;
+
+    --cov-hit-bg: #1c2518;
+    --cov-miss-bg: #2b1d1d;
+    --cov-partial-bg: #292218;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: var(--el-font-family);
+    font-size: var(--el-font-size-base);
+    line-height: 1.5;
+    color: var(--el-text-color-regular);
+    background: var(--el-bg-color-page);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===================== el-container 布局 ===================== */
+  .app { display: flex; min-height: 100vh; }
+
+  /* ---- el-aside ---- */
+  .aside {
+    width: 210px;
+    flex: none;
+    background: var(--menu-bg);
+    display: flex;
+    flex-direction: column;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+  .logo {
+    height: 60px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 18px;
+    border-bottom: 1px solid rgba(255, 255, 255, .08);
+    color: #fff;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: .3px;
+  }
+  .logo-mark {
+    width: 26px; height: 26px; flex: none;
+    border-radius: var(--el-border-radius-base);
+    background: linear-gradient(135deg, var(--el-color-success) 0%, var(--el-color-success) 48%, var(--el-color-danger) 52%, var(--el-color-danger) 100%);
+    display: grid; place-items: center;
+    font-size: 13px; font-weight: 700; color: #fff;
+  }
+
+  /* ---- el-menu (dark) ---- */
+  .menu { padding: 6px 0; display: flex; flex-direction: column; }
+  .menu-group {
+    padding: 14px 18px 6px;
+    font-size: var(--el-font-size-extra-small);
+    color: #8492a6;
+    letter-spacing: .5px;
+  }
+  .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 46px;
+    padding: 0 18px;
+    color: var(--menu-text);
+    font-size: var(--el-font-size-base);
+    cursor: pointer;
+    border: none;
+    background: none;
+    text-align: left;
+    width: 100%;
+    font-family: inherit;
+    transition: background-color .2s, color .2s;
+  }
+  .menu-item:hover { background: var(--menu-bg-active); color: #fff; }
+  .menu-item.active {
+    background: var(--menu-bg-active);
+    color: var(--menu-text-active);
+    box-shadow: inset 3px 0 0 var(--el-color-primary);
+  }
+  .menu-item svg { width: 16px; height: 16px; flex: none; }
+  .menu-item .badge {
+    margin-left: auto;
+    background: var(--el-color-danger);
+    color: #fff;
+    font-size: 11px;
+    line-height: 16px;
+    min-width: 16px;
+    padding: 0 5px;
+    border-radius: 8px;
+    text-align: center;
+  }
+
+  /* ---- el-header ---- */
+  .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .header {
+    height: 60px;
+    flex: none;
+    background: var(--el-bg-color);
+    border-bottom: 1px solid var(--el-border-color-lighter);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 20px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .crumb { display: flex; align-items: center; gap: 8px; font-size: var(--el-font-size-base); color: var(--el-text-color-secondary); }
+  .crumb b { color: var(--el-text-color-primary); font-weight: 400; }
+  .crumb .sep { color: var(--el-text-color-placeholder); }
+  .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+
+  .live-dot {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: var(--el-font-size-extra-small);
+    color: var(--el-color-success);
+    padding: 4px 10px;
+    background: var(--el-color-success-light-9);
+    border: 1px solid var(--el-color-success);
+    border-radius: 12px;
+  }
+  .live-dot i {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--el-color-success);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { .live-dot i { animation: none; } }
+
+  .avatar {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--el-color-primary);
+    color: #fff; display: grid; place-items: center;
+    font-size: var(--el-font-size-extra-small); font-weight: 600;
+  }
+
+  /* ---- el-main ---- */
+  .main { flex: 1; padding: 18px 20px 40px; min-width: 0; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* ===================== el-card ===================== */
+  .card {
+    background: var(--el-bg-color-overlay);
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: var(--el-border-radius-base);
+    box-shadow: var(--el-box-shadow-lighter);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .card-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .card-head h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--el-text-color-primary); }
+  .card-head .desc { font-size: var(--el-font-size-extra-small); color: var(--el-text-color-secondary); }
+  .card-head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .card-body { padding: 18px; }
+  .card-body.flush { padding: 0; }
+
+  /* ===================== el-row 统计卡 ===================== */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 16px; }
+  .stat {
+    background: var(--el-bg-color-overlay);
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: var(--el-border-radius-base);
+    box-shadow: var(--el-box-shadow-lighter);
+    padding: 18px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .stat-icon {
+    width: 44px; height: 44px; flex: none;
+    border-radius: var(--el-border-radius-base);
+    display: grid; place-items: center;
+  }
+  .stat-icon svg { width: 20px; height: 20px; }
+  .stat-icon.p { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
+  .stat-icon.s { background: var(--el-color-success-light-9); color: var(--el-color-success); }
+  .stat-icon.w { background: var(--el-color-warning-light-9); color: var(--el-color-warning); }
+  .stat-icon.d { background: var(--el-color-danger-light-9); color: var(--el-color-danger); }
+  .stat-meta { min-width: 0; }
+  .stat-label { font-size: var(--el-font-size-extra-small); color: var(--el-text-color-secondary); margin-bottom: 4px; }
+  .stat-value {
+    font-size: 24px; font-weight: 600; color: var(--el-text-color-primary);
+    line-height: 1.2; font-variant-numeric: tabular-nums;
+  }
+  .stat-value small { font-size: 13px; font-weight: 400; color: var(--el-text-color-secondary); margin-left: 3px; }
+  .stat-trend { font-size: var(--el-font-size-extra-small); margin-top: 3px; }
+  .stat-trend.up { color: var(--el-color-success); }
+  .stat-trend.down { color: var(--el-color-danger); }
+
+  /* ===================== el-button ===================== */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 32px; padding: 0 15px;
+    font-size: var(--el-font-size-base); font-family: inherit;
+    border-radius: var(--el-border-radius-base);
+    border: 1px solid var(--el-border-color);
+    background: var(--el-bg-color);
+    color: var(--el-text-color-regular);
+    cursor: pointer; white-space: nowrap;
+    transition: .1s;
+  }
+  .btn:hover { color: var(--el-color-primary); border-color: var(--el-color-primary-light-7); background: var(--el-color-primary-light-9); }
+  .btn:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 1px; }
+  .btn.primary { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; }
+  .btn.primary:hover { background: var(--el-color-primary-light-3); border-color: var(--el-color-primary-light-3); color: #fff; }
+  .btn.success { background: var(--el-color-success); border-color: var(--el-color-success); color: #fff; }
+  .btn.success:hover { opacity: .85; color: #fff; }
+  .btn.danger { background: var(--el-color-danger); border-color: var(--el-color-danger); color: #fff; }
+  .btn.danger:hover { opacity: .85; color: #fff; }
+  .btn.sm { height: 26px; padding: 0 11px; font-size: var(--el-font-size-extra-small); }
+  .btn.text { border-color: transparent; background: none; padding: 0 6px; color: var(--el-color-primary); }
+  .btn.text:hover { background: var(--el-color-primary-light-9); }
+  .btn.text.danger-text { color: var(--el-color-danger); background: none; border-color: transparent; }
+  .btn.text.danger-text:hover { background: var(--el-color-danger-light-9); }
+  .btn svg { width: 14px; height: 14px; }
+  .btn[disabled] { opacity: .5; cursor: not-allowed; }
+
+  /* ===================== el-tag ===================== */
+  .tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    height: 24px; padding: 0 9px;
+    font-size: var(--el-font-size-extra-small);
+    border-radius: var(--el-border-radius-base);
+    border: 1px solid;
+    white-space: nowrap;
+  }
+  .tag.sm { height: 20px; padding: 0 7px; font-size: 11px; }
+  .tag.primary { background: var(--el-color-primary-light-9); border-color: var(--el-color-primary-light-7); color: var(--el-color-primary); }
+  .tag.success { background: var(--el-color-success-light-9); border-color: var(--el-color-success); color: var(--el-color-success); }
+  .tag.warning { background: var(--el-color-warning-light-9); border-color: var(--el-color-warning); color: var(--el-color-warning); }
+  .tag.danger  { background: var(--el-color-danger-light-9);  border-color: var(--el-color-danger);  color: var(--el-color-danger); }
+  .tag.info    { background: var(--el-color-info-light-9);    border-color: var(--el-border-color);  color: var(--el-color-info); }
+
+  /* ===================== el-select / el-input ===================== */
+  .field { display: inline-flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: var(--el-font-size-extra-small); color: var(--el-text-color-secondary); }
+  .select, .input {
+    height: 32px; padding: 0 11px;
+    font-size: var(--el-font-size-base); font-family: inherit;
+    color: var(--el-text-color-regular);
+    background: var(--el-bg-color);
+    border: 1px solid var(--el-border-color);
+    border-radius: var(--el-border-radius-base);
+    min-width: 150px;
+  }
+  .select:hover, .input:hover { border-color: var(--el-text-color-placeholder); }
+  .select:focus, .input:focus { outline: none; border-color: var(--el-color-primary); }
+
+  /* ---- el-radio-group (button style) ---- */
+  .radio-group { display: inline-flex; }
+  .radio-group button {
+    height: 32px; padding: 0 15px;
+    font-size: var(--el-font-size-base); font-family: inherit;
+    background: var(--el-bg-color);
+    border: 1px solid var(--el-border-color);
+    border-left-width: 0;
+    color: var(--el-text-color-regular);
+    cursor: pointer;
+  }
+  .radio-group button:first-child { border-left-width: 1px; border-radius: var(--el-border-radius-base) 0 0 var(--el-border-radius-base); }
+  .radio-group button:last-child { border-radius: 0 var(--el-border-radius-base) var(--el-border-radius-base) 0; }
+  .radio-group button:hover { color: var(--el-color-primary); }
+  .radio-group button.on {
+    background: var(--el-color-primary);
+    border-color: var(--el-color-primary);
+    color: #fff;
+    box-shadow: -1px 0 0 0 var(--el-color-primary);
+  }
+
+  /* ---- el-switch ---- */
+  .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: var(--el-font-size-base); color: var(--el-text-color-regular); }
+  .switch .track {
+    width: 40px; height: 20px; border-radius: 10px;
+    background: var(--el-border-color); position: relative; transition: background-color .3s; flex: none;
+  }
+  .switch .track::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    transition: transform .3s;
+  }
+  .switch.on .track { background: var(--el-color-primary); }
+  .switch.on .track::after { transform: translateX(20px); }
+
+  /* ===================== el-table ===================== */
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: var(--el-font-size-base); min-width: 760px; }
+  thead th {
+    background: var(--el-fill-color-light);
+    color: var(--el-text-color-primary);
+    font-weight: 600;
+    text-align: left;
+    padding: 11px 12px;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+    white-space: nowrap;
+    font-size: var(--el-font-size-small);
+  }
+  tbody td {
+    padding: 11px 12px;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+    color: var(--el-text-color-regular);
+    vertical-align: middle;
+  }
+  tbody tr:hover td { background: var(--el-fill-color-light); }
+  tbody tr:last-child td { border-bottom: none; }
+  td.name { color: var(--el-text-color-primary); font-weight: 500; white-space: nowrap; }
+  td.mono, .mono { font-family: var(--el-font-family-mono); font-size: var(--el-font-size-small); font-variant-numeric: tabular-nums; }
+  .muted { color: var(--el-text-color-secondary); font-size: var(--el-font-size-extra-small); }
+  .ops { display: flex; gap: 2px; white-space: nowrap; }
+
+  /* ---- el-progress ---- */
+  .prog { display: flex; align-items: center; gap: 8px; min-width: 150px; }
+  .prog-bar { flex: 1; height: 6px; background: var(--el-border-color-lighter); border-radius: 3px; overflow: hidden; min-width: 60px; }
+  .prog-fill { height: 100%; border-radius: 3px; transition: width .6s ease; }
+  .prog-fill.s { background: var(--el-color-success); }
+  .prog-fill.w { background: var(--el-color-warning); }
+  .prog-fill.d { background: var(--el-color-danger); }
+  .prog-txt { font-family: var(--el-font-family-mono); font-size: var(--el-font-size-small); font-variant-numeric: tabular-nums; color: var(--el-text-color-primary); min-width: 46px; text-align: right; }
+
+  /* ===================== 代码染色视图（核心） ===================== */
+  .cov-layout { display: grid; grid-template-columns: 258px minmax(0, 1fr); gap: 16px; align-items: start; }
+
+  /* ---- el-tree 文件树 ---- */
+  .tree { padding: 6px 0; max-height: 640px; overflow-y: auto; }
+  .tree-node {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 12px; cursor: pointer;
+    font-size: var(--el-font-size-small);
+    color: var(--el-text-color-regular);
+    border: none; background: none; width: 100%; text-align: left; font-family: inherit;
+  }
+  .tree-node:hover { background: var(--el-fill-color-light); }
+  .tree-node.on { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
+  .tree-node svg { width: 13px; height: 13px; flex: none; color: var(--el-text-color-placeholder); }
+  .tree-node.on svg { color: var(--el-color-primary); }
+  .tree-node .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tree-node .pct {
+    margin-left: auto; font-family: var(--el-font-family-mono);
+    font-size: 11px; font-variant-numeric: tabular-nums; flex: none;
+  }
+  .tree-node .pct.s { color: var(--el-color-success); }
+  .tree-node .pct.w { color: var(--el-color-warning); }
+  .tree-node .pct.d { color: var(--el-color-danger); }
+  .tree-node.dir { color: var(--el-text-color-primary); font-weight: 500; }
+  .tree-indent-1 { padding-left: 26px; }
+  .tree-indent-2 { padding-left: 40px; }
+
+  /* ---- 源码染色 ---- */
+  .src-toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 14px;
+    background: var(--el-fill-color-light);
+    border-bottom: 1px solid var(--el-border-color-lighter);
+    font-size: var(--el-font-size-small);
+  }
+  .src-path { font-family: var(--el-font-family-mono); color: var(--el-text-color-primary); }
+  .legend { display: flex; gap: 12px; margin-left: auto; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; font-size: var(--el-font-size-extra-small); color: var(--el-text-color-secondary); }
+  .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
+
+  .src {
+    font-family: var(--el-font-family-mono);
+    font-size: 13px;
+    line-height: 22px;
+    overflow-x: auto;
+    padding: 8px 0;
+    background: var(--el-bg-color-overlay);
+    max-height: 620px;
+    overflow-y: auto;
+  }
+  .ln { display: flex; white-space: pre; border-left: 3px solid transparent; padding-right: 16px; }
+  .ln:hover { background: var(--el-fill-color-light); }
+  .ln.hit { background: var(--cov-hit-bg); border-left-color: var(--cov-hit-line); }
+  .ln.miss { background: var(--cov-miss-bg); border-left-color: var(--cov-miss-line); }
+  .ln.partial { background: var(--cov-partial-bg); border-left-color: var(--cov-partial-line); }
+  .ln.flash { animation: flash .9s ease-out; }
+  @keyframes flash {
+    0% { background: var(--el-color-success); }
+    100% { background: var(--cov-hit-bg); }
+  }
+  @media (prefers-reduced-motion: reduce) { .ln.flash { animation: none; } }
+  .ln .no {
+    width: 46px; flex: none; text-align: right; padding-right: 12px;
+    color: var(--el-text-color-placeholder); user-select: none; font-size: 12px;
+  }
+  .ln .ct {
+    width: 46px; flex: none; text-align: right; padding-right: 16px;
+    font-size: 11px; user-select: none; color: var(--el-text-color-placeholder);
+  }
+  .ln.hit .ct { color: var(--el-color-success); }
+  .ln.miss .ct { color: var(--el-color-danger); }
+  .ln.partial .ct { color: var(--el-color-warning); }
+  .ln .tx { color: var(--el-text-color-primary); }
+  .k { color: #c678dd; } .st { color: #98c379; } .cm { color: var(--el-text-color-placeholder); font-style: italic; } .fn { color: #61afef; } .nu { color: #d19a66; }
+
+  /* ---- 未覆盖跳转列表 ---- */
+  .miss-list { display: flex; flex-direction: column; }
+  .miss-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 14px; cursor: pointer;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+    font-size: var(--el-font-size-small);
+    background: none; border-left: none; border-right: none; border-top: none;
+    width: 100%; text-align: left; font-family: inherit; color: var(--el-text-color-regular);
+  }
+  .miss-row:hover { background: var(--el-color-danger-light-9); }
+  .miss-row .mono { color: var(--el-color-danger); flex: none; }
+  .miss-row .why { color: var(--el-text-color-secondary); font-size: var(--el-font-size-extra-small); margin-left: auto; flex: none; }
+
+  /* ===================== el-timeline 事件流 ===================== */
+  .timeline { padding: 4px 0; max-height: 320px; overflow-y: auto; }
+  .tl-item { display: flex; gap: 12px; padding: 0 18px; position: relative; }
+  .tl-item::before {
+    content: ""; position: absolute; left: 23px; top: 18px; bottom: -6px;
+    width: 1px; background: var(--el-border-color-lighter);
+  }
+  .tl-item:last-child::before { display: none; }
+  .tl-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; margin-top: 7px; z-index: 1; }
+  .tl-dot.s { background: var(--el-color-success); }
+  .tl-dot.p { background: var(--el-color-primary); }
+  .tl-dot.w { background: var(--el-color-warning); }
+  .tl-dot.d { background: var(--el-color-danger); }
+  .tl-body { padding-bottom: 14px; min-width: 0; }
+  .tl-title { font-size: var(--el-font-size-small); color: var(--el-text-color-primary); }
+  .tl-time { font-size: var(--el-font-size-extra-small); color: var(--el-text-color-secondary); margin-top: 2px; font-family: var(--el-font-family-mono); }
+
+  /* ===================== el-tabs ===================== */
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--el-border-color-light); padding: 0 18px; }
+  .tab {
+    padding: 0 18px; height: 40px; line-height: 40px;
+    font-size: var(--el-font-size-base); color: var(--el-text-color-regular);
+    cursor: pointer; border: none; background: none; font-family: inherit;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab:hover { color: var(--el-color-primary); }
+  .tab.on { color: var(--el-color-primary); border-bottom-color: var(--el-color-primary); font-weight: 500; }
+
+  /* ===================== el-alert ===================== */
+  .alert {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 10px 16px; border-radius: var(--el-border-radius-base);
+    margin-bottom: 16px; font-size: var(--el-font-size-base);
+  }
+  .alert svg { width: 16px; height: 16px; flex: none; margin-top: 3px; }
+  .alert.warning { background: var(--el-color-warning-light-9); color: var(--el-color-warning); }
+  .alert.info { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
+  .alert.error { background: var(--el-color-danger-light-9); color: var(--el-color-danger); }
+  .alert-title { font-weight: 600; margin-bottom: 2px; }
+  .alert-desc { color: var(--el-text-color-regular); font-size: var(--el-font-size-small); }
+
+  /* ===================== el-descriptions ===================== */
+  .desc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1px; background: var(--el-border-color-lighter); border: 1px solid var(--el-border-color-lighter); border-radius: var(--el-border-radius-base); overflow: hidden; }
+  .desc-cell { background: var(--el-bg-color-overlay); padding: 12px 14px; }
+  .desc-label { font-size: var(--el-font-size-extra-small); color: var(--el-text-color-secondary); margin-bottom: 4px; }
+  .desc-val { font-size: var(--el-font-size-base); color: var(--el-text-color-primary); word-break: break-all; }
+
+  /* ===================== el-steps ===================== */
+  .steps { display: flex; gap: 0; margin-bottom: 24px; flex-wrap: wrap; }
+  .step { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 180px; }
+  .step-num {
+    width: 26px; height: 26px; border-radius: 50%; flex: none;
+    display: grid; place-items: center; font-size: var(--el-font-size-extra-small);
+    border: 2px solid var(--el-border-color); color: var(--el-text-color-placeholder);
+    background: var(--el-bg-color-overlay);
+  }
+  .step.done .step-num { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; }
+  .step.on .step-num { border-color: var(--el-color-primary); color: var(--el-color-primary); }
+  .step-txt { font-size: var(--el-font-size-small); color: var(--el-text-color-secondary); }
+  .step.done .step-txt, .step.on .step-txt { color: var(--el-text-color-primary); }
+  .step-line { flex: 1; height: 2px; background: var(--el-border-color-lighter); margin: 0 10px; min-width: 20px; }
+  .step.done .step-line { background: var(--el-color-primary); }
+
+  /* ===================== 代码块 ===================== */
+  pre.snippet {
+    background: var(--el-fill-color-light);
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: var(--el-border-radius-base);
+    padding: 14px 16px; margin: 0;
+    font-family: var(--el-font-family-mono); font-size: var(--el-font-size-small);
+    line-height: 1.7; overflow-x: auto; color: var(--el-text-color-primary);
+  }
+  pre.snippet .cm { color: var(--el-text-color-secondary); }
+
+  /* ===================== diff 视图 ===================== */
+  .diff-file { border: 1px solid var(--el-border-color-lighter); border-radius: var(--el-border-radius-base); margin-bottom: 12px; overflow: hidden; }
+  .diff-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 14px; background: var(--el-fill-color-light);
+    border-bottom: 1px solid var(--el-border-color-lighter);
+    font-family: var(--el-font-family-mono); font-size: var(--el-font-size-small);
+    color: var(--el-text-color-primary);
+  }
+  .diff-head .stat-mini { margin-left: auto; display: flex; gap: 10px; font-size: var(--el-font-size-extra-small); }
+  .add { color: var(--el-color-success); } .del { color: var(--el-color-danger); }
+  .diff-body { font-family: var(--el-font-family-mono); font-size: 13px; line-height: 21px; overflow-x: auto; background: var(--el-bg-color-overlay); }
+  .dl { display: flex; white-space: pre; border-left: 3px solid transparent; }
+  .dl .no { width: 44px; flex: none; text-align: right; padding-right: 10px; color: var(--el-text-color-placeholder); font-size: 12px; user-select: none; }
+  .dl .mk { width: 16px; flex: none; user-select: none; }
+  .dl.added { background: var(--el-color-success-light-9); }
+  .dl.added.uncov { background: var(--el-color-danger-light-9); border-left-color: var(--el-color-danger); }
+  .dl.added.cov { border-left-color: var(--el-color-success); }
+  .dl.ctx { color: var(--el-text-color-secondary); }
+
+  /* ===================== 空/占位 ===================== */
+  .empty { padding: 48px 20px; text-align: center; color: var(--el-text-color-secondary); font-size: var(--el-font-size-base); }
+  .empty svg { width: 42px; height: 42px; color: var(--el-border-color); margin-bottom: 10px; }
+
+  .note-strip {
+    background: var(--el-color-warning-light-9);
+    border-left: 3px solid var(--el-color-warning);
+    padding: 10px 14px; border-radius: var(--el-border-radius-base);
+    font-size: var(--el-font-size-small); color: var(--el-text-color-regular);
+    margin-bottom: 16px;
+  }
+  .note-strip b { color: var(--el-color-warning); }
+
+  .split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+
+  @media (max-width: 1100px) {
+    .cov-layout, .split { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 820px) {
+    .aside { position: fixed; left: -210px; z-index: 100; transition: left .3s; }
+    .aside.open { left: 0; }
+    .main { padding: 14px; }
+    .header { padding: 0 14px; }
+    .menu-toggle { display: inline-flex !important; }
+  }
+  .menu-toggle { display: none; }
+
+  /* ===================================================================
+     图表色板 —— 分类色独立于 EP 状态色
+     绿/红在本平台已被「已覆盖/未覆盖」占用，系列色必须避开，
+     否则趋势线会被误读为覆盖状态。以下取值已通过 CVD 六项校验。
+     =================================================================== */
+  .viz-root {
+    --series-1: #2a78d6;  /* blue   order-service   */
+    --series-2: #eb6834;  /* orange payment-service */
+    --series-3: #1baf7a;  /* aqua   inventory-svc   */
+    --series-4: #eda100;  /* yellow match-engine    */
+    --viz-grid: #e1e0d9;
+    --viz-axis: #c3c2b7;
+    --viz-muted: #898781;
+    --viz-surface: var(--el-bg-color-overlay);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+      --series-4: #c98500;
+      --viz-grid: #2c2c2a;
+      --viz-axis: #383835;
+      --viz-muted: #898781;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --viz-grid: #2c2c2a;
+    --viz-axis: #383835;
+    --viz-muted: #898781;
+  }
+
+  .chart-wrap { position: relative; }
+  .chart-wrap svg { display: block; width: 100%; height: auto; }
+  .grid-line { stroke: var(--viz-grid); stroke-width: 1; }
+  .axis-line { stroke: var(--viz-axis); stroke-width: 1; }
+  .axis-txt { fill: var(--viz-muted); font-size: 11px; font-family: var(--el-font-family); }
+  .axis-txt.tab { font-variant-numeric: tabular-nums; }
+  .series-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .end-label { font-size: 11px; font-family: var(--el-font-family); font-weight: 600; }
+  .end-label.tab { font-variant-numeric: tabular-nums; }
+  .hover-line { stroke: var(--viz-axis); stroke-width: 1; stroke-dasharray: 3 3; }
+  .hover-dot { stroke: var(--viz-surface); stroke-width: 2; }
+
+  .viz-legend { display: flex; gap: 16px; flex-wrap: wrap; padding: 0 0 12px; }
+  .viz-legend span { display: inline-flex; align-items: center; gap: 6px; font-size: var(--el-font-size-small); color: var(--el-text-color-regular); }
+  .viz-legend i { width: 10px; height: 3px; border-radius: 2px; flex: none; }
+
+  .viz-tip {
+    position: absolute; pointer-events: none; z-index: 5;
+    background: var(--el-bg-color-overlay);
+    border: 1px solid var(--el-border-color-light);
+    border-radius: var(--el-border-radius-base);
+    box-shadow: var(--el-box-shadow-light);
+    padding: 8px 10px; min-width: 168px;
+    font-size: var(--el-font-size-extra-small);
+    opacity: 0; transition: opacity .12s;
+  }
+  .viz-tip.on { opacity: 1; }
+  .viz-tip .tip-time { color: var(--el-text-color-secondary); margin-bottom: 6px; font-family: var(--el-font-family-mono); }
+  .viz-tip .tip-row { display: flex; align-items: center; gap: 6px; line-height: 20px; }
+  .viz-tip .tip-row i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .viz-tip .tip-row b { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--el-text-color-primary); font-weight: 600; }
+  .viz-tip .tip-row span { color: var(--el-text-color-regular); }
+
+  /* 条形图（多实例对比） */
+  .bars { display: flex; flex-direction: column; gap: 10px; }
+  .bar-row { display: grid; grid-template-columns: 132px minmax(0, 1fr) 108px; gap: 12px; align-items: center; }
+  .bar-row .bl { font-size: var(--el-font-size-small); color: var(--el-text-color-primary); font-family: var(--el-font-family-mono); }
+  .bar-row .bl small { display: block; color: var(--el-text-color-secondary); font-family: var(--el-font-family); font-size: 11px; }
+  .bar-track { height: 22px; background: var(--el-fill-color-light); border-radius: 3px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3px; transition: width .5s ease; }
+  .bar-row .bv { font-family: var(--el-font-family-mono); font-variant-numeric: tabular-nums; font-size: var(--el-font-size-small); color: var(--el-text-color-primary); text-align: right; }
+  .bar-row .bv em { font-style: normal; color: var(--el-text-color-secondary); font-size: 11px; display: block; }
+  .bar-row.merged .bl { font-weight: 600; }
+  .bar-row.merged .bar-track { background: var(--el-color-primary-light-9); }
+  /* 排行页的包名比实例名长，需要更宽的标签列 */
+  #rankBars .bar-row { grid-template-columns: 148px minmax(0, 1fr) 96px; }
+
+  .viz-note {
+    font-size: var(--el-font-size-extra-small); color: var(--el-text-color-secondary);
+    padding-top: 12px; margin-top: 12px; border-top: 1px dashed var(--el-border-color-lighter);
+  }
+</style>
+
+<div class="app">
+  <!-- ==================== 侧边栏 ==================== -->
+  <aside class="aside" id="aside">
+    <div class="logo">
+      <span class="logo-mark">C</span>
+      <span>代码染色平台</span>
+    </div>
+    <nav class="menu">
+      <div class="menu-group">实时染色</div>
+      <button class="menu-item active" data-page="dash">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+        <span>总览看板</span>
+      </button>
+      <button class="menu-item" data-page="color">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        <span>代码染色</span>
+      </button>
+      <div class="menu-group">覆盖率分析</div>
+      <button class="menu-item" data-page="trend">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="21 12 21 7 16 7"/></svg>
+        <span>覆盖率趋势</span>
+      </button>
+      <button class="menu-item" data-page="instances">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="17" y2="12"/><line x1="8" y1="18" x2="13" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        <span>多实例对比</span>
+      </button>
+      <button class="menu-item" data-page="incr">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span>增量覆盖率</span>
+      </button>
+      <button class="menu-item" data-page="rank">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="20" x2="4" y2="12"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="20" y1="20" x2="20" y2="16"/><line x1="2" y1="20" x2="22" y2="20"/></svg>
+        <span>覆盖率排行</span>
+      </button>
+      <div class="menu-group">质量治理</div>
+      <button class="menu-item" data-page="gate">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <span>覆盖率门禁</span>
+      </button>
+      <div class="menu-group">接入管理</div>
+      <button class="menu-item" data-page="onboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="2" y1="9" x2="22" y2="9"/></svg>
+        <span>服务接入</span>
+      </button>
+    </nav>
+  </aside>
+
+  <div class="main-col">
+    <!-- ==================== 顶栏 ==================== -->
+    <header class="header">
+      <button class="btn sm menu-toggle" id="menuToggle" aria-label="切换菜单">☰</button>
+      <div class="crumb">
+        <span>代码染色平台</span><span class="sep">/</span><b id="crumbNow">总览看板</b>
+      </div>
+      <div class="header-right">
+        <span class="live-dot"><i></i>实时采集中 · 3s</span>
+        <select class="select" style="min-width:130px" aria-label="环境">
+          <option>测试环境 test-1</option>
+          <option>测试环境 test-2</option>
+          <option>预发环境 staging</option>
+        </select>
+        <button class="btn sm" id="themeBtn">切换主题</button>
+        <div class="avatar">测</div>
+      </div>
+    </header>
+
+    <main class="main">
+
+      <!-- ============================================================
+           页面 1：总览看板
+           ============================================================ -->
+      <section class="page active" id="page-dash">
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-icon p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg></div>
+            <div class="stat-meta">
+              <div class="stat-label">接入服务</div>
+              <div class="stat-value">4<small>个</small></div>
+              <div class="stat-trend up">Java 2 · Go 1 · C++ 1</div>
+            </div>
+          </div>
+          <div class="stat">
+            <div class="stat-icon s"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
+            <div class="stat-meta">
+              <div class="stat-label">在线实例</div>
+              <div class="stat-value" id="statInst">9<small>/10</small></div>
+              <div class="stat-trend down">1 个实例探针未就绪</div>
+            </div>
+          </div>
+          <div class="stat">
+            <div class="stat-icon w"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg></div>
+            <div class="stat-meta">
+              <div class="stat-label">最低覆盖服务</div>
+              <div class="stat-value">43.1<small>%</small></div>
+              <div class="stat-trend">match-engine · 24h 仅 +2.9%</div>
+            </div>
+          </div>
+          <div class="stat">
+            <div class="stat-icon d"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
+            <div class="stat-meta">
+              <div class="stat-label">全量行覆盖率</div>
+              <div class="stat-value" id="statCov">68.4<small>%</small></div>
+              <div class="stat-trend up">较上次构建 +2.1%</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="split">
+          <div class="card">
+            <div class="card-head">
+              <h3>被测服务</h3>
+              <span class="desc">覆盖率数据每 3 秒自动拉取一次</span>
+              <div class="right">
+                <div class="radio-group" data-radio="dashMode">
+                  <button class="on">全量</button>
+                  <button>增量</button>
+                </div>
+                <button class="btn sm">刷新</button>
+              </div>
+            </div>
+            <div class="card-body flush">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>服务</th><th>语言</th><th>实例</th><th>探针状态</th>
+                      <th style="min-width:170px">行覆盖率</th><th>未覆盖行</th><th>最后更新</th><th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="svcRows">
+                    <tr>
+                      <td class="name">order-service<div class="muted">订单中心</div></td>
+                      <td><span class="tag sm primary">Java 17</span></td>
+                      <td class="mono">3</td>
+                      <td><span class="tag sm success">已连接</span></td>
+                      <td><div class="prog"><div class="prog-bar"><div class="prog-fill s" style="width:76.2%"></div></div><span class="prog-txt">76.2%</span></div></td>
+                      <td class="mono">412</td>
+                      <td class="muted mono">2 秒前</td>
+                      <td><div class="ops"><button class="btn text sm" data-goto="color">查看染色</button></div></td>
+                    </tr>
+                    <tr>
+                      <td class="name">payment-service<div class="muted">支付网关</div></td>
+                      <td><span class="tag sm primary">Java 17</span></td>
+                      <td class="mono">3</td>
+                      <td><span class="tag sm success">已连接</span></td>
+                      <td><div class="prog"><div class="prog-bar"><div class="prog-fill w" style="width:61.8%"></div></div><span class="prog-txt">61.8%</span></div></td>
+                      <td class="mono">687</td>
+                      <td class="muted mono">3 秒前</td>
+                      <td><div class="ops"><button class="btn text sm" data-goto="color">查看染色</button></div></td>
+                    </tr>
+                    <tr>
+                      <td class="name">inventory-svc<div class="muted">库存服务</div></td>
+                      <td><span class="tag sm info">Go 1.22</span></td>
+                      <td class="mono">2</td>
+                      <td><span class="tag sm success">已连接</span></td>
+                      <td><div class="prog"><div class="prog-bar"><div class="prog-fill s" style="width:71.5%"></div></div><span class="prog-txt">71.5%</span></div></td>
+                      <td class="mono">238</td>
+                      <td class="muted mono">4 秒前</td>
+                      <td><div class="ops"><button class="btn text sm" data-goto="color">查看染色</button></div></td>
+                    </tr>
+                    <tr>
+                      <td class="name">match-engine<div class="muted">撮合引擎</div></td>
+                      <td><span class="tag sm info">C++ 17</span></td>
+                      <td class="mono">2</td>
+                      <td><span class="tag sm warning">1 个未就绪</span></td>
+                      <td><div class="prog"><div class="prog-bar"><div class="prog-fill d" style="width:43.1%"></div></div><span class="prog-txt">43.1%</span></div></td>
+                      <td class="mono">1,204</td>
+                      <td class="muted mono">28 秒前</td>
+                      <td><div class="ops"><button class="btn text sm" data-goto="color">查看染色</button></div></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>实时事件</h3><span class="desc">采集与探针动作</span></div>
+            <div class="card-body flush">
+              <div class="timeline" id="timeline">
+                <div class="tl-item"><div class="tl-dot s"></div><div class="tl-body">
+                  <div class="tl-title">order-service 覆盖率 +0.4%，新增 18 行命中</div>
+                  <div class="tl-time">14:32:08</div></div></div>
+                <div class="tl-item"><div class="tl-dot p"></div><div class="tl-body">
+                  <div class="tl-title">order-service 收到计数器清零请求（来自接口自动化流水线 #4412）</div>
+                  <div class="tl-time">14:31:55</div></div></div>
+                <div class="tl-item"><div class="tl-dot w"></div><div class="tl-body">
+                  <div class="tl-title">match-engine-2 探针未响应，已重试 2 次</div>
+                  <div class="tl-time">14:31:12</div></div></div>
+                <div class="tl-item"><div class="tl-dot s"></div><div class="tl-body">
+                  <div class="tl-title">payment-service 实例 3 注册成功</div>
+                  <div class="tl-time">14:30:44</div></div></div>
+                <div class="tl-item"><div class="tl-dot d"></div><div class="tl-body">
+                  <div class="tl-title">inventory-svc 产物 commit 与基线不一致，已拒绝出报告</div>
+                  <div class="tl-time">14:28:31</div></div></div>
+                <div class="tl-item"><div class="tl-dot p"></div><div class="tl-body">
+                  <div class="tl-title">order-service 触发全量快照，落库 5,412 行覆盖数据</div>
+                  <div class="tl-time">14:26:03</div></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           页面 2：代码染色（核心）
+           ============================================================ -->
+      <section class="page" id="page-color">
+        <div class="card">
+          <div class="card-body" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+            <div class="field">
+              <label>被测服务</label>
+              <select class="select"><option>order-service</option><option>payment-service</option><option>inventory-svc</option><option>match-engine</option></select>
+            </div>
+            <div class="field">
+              <label>覆盖率口径</label>
+              <div class="radio-group" data-radio="covMode">
+                <button class="on">全量</button><button>增量</button>
+              </div>
+            </div>
+            <div class="field">
+              <label>时间范围</label>
+              <select class="select" style="min-width:186px">
+                <option>累计（自服务启动）</option>
+                <option>最近 5 分钟</option>
+                <option>最近 30 分钟</option>
+                <option>最近 1 小时</option>
+                <option>自定义区间…</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>刷新频率</label>
+              <select class="select" style="min-width:110px"><option>3 秒</option><option>1 秒</option><option>10 秒</option><option>手动</option></select>
+            </div>
+            <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+              <div class="switch on" id="liveSwitch"><span class="track"></span><span>实时染色</span></div>
+              <button class="btn">导出 LCOV</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="cov-layout">
+          <div class="card" style="margin:0">
+            <div class="card-head"><h3>源码目录</h3></div>
+            <div class="card-body flush">
+              <div class="tree">
+                <button class="tree-node dir"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="nm">com.shop.order</span><span class="pct s">76.2%</span></button>
+                <button class="tree-node dir tree-indent-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="nm">service</span><span class="pct s">81.4%</span></button>
+                <button class="tree-node tree-indent-2 on" data-file="OrderService.java"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span class="nm">OrderService.java</span><span class="pct w">64.7%</span></button>
+                <button class="tree-node tree-indent-2" data-file="OrderQueryService.java"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span class="nm">OrderQueryService.java</span><span class="pct s">92.3%</span></button>
+                <button class="tree-node tree-indent-2" data-file="RefundService.java"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span class="nm">RefundService.java</span><span class="pct d">21.0%</span></button>
+                <button class="tree-node dir tree-indent-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="nm">controller</span><span class="pct s">88.9%</span></button>
+                <button class="tree-node tree-indent-2" data-file="OrderController.java"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span class="nm">OrderController.java</span><span class="pct s">88.9%</span></button>
+                <button class="tree-node dir tree-indent-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="nm">repository</span><span class="pct w">57.1%</span></button>
+                <button class="tree-node tree-indent-2" data-file="OrderRepository.java"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span class="nm">OrderRepository.java</span><span class="pct w">57.1%</span></button>
+              </div>
+            </div>
+          </div>
+
+          <div style="min-width:0">
+            <div class="card" style="margin-bottom:16px">
+              <div class="src-toolbar">
+                <span class="src-path" id="srcPath">com/shop/order/service/OrderService.java</span>
+                <span class="tag sm warning">行覆盖 64.7%</span>
+                <span class="tag sm info">分支 48.0%</span>
+                <div class="legend">
+                  <span><i style="background:var(--cov-hit-line)"></i>已覆盖</span>
+                  <span><i style="background:var(--cov-partial-line)"></i>部分分支</span>
+                  <span><i style="background:var(--cov-miss-line)"></i>未覆盖</span>
+                  <span><i style="background:var(--el-border-color)"></i>非可执行</span>
+                </div>
+              </div>
+              <div class="src" id="srcView">
+                <div class="ln"><span class="no">38</span><span class="ct"></span><span class="tx"><span class="cm">/** 支付回调入口，网关侧幂等已保证单次投递 */</span></span></div>
+                <div class="ln"><span class="no">39</span><span class="ct"></span><span class="tx"><span class="k">@Transactional</span></span></div>
+                <div class="ln hit"><span class="no">40</span><span class="ct">142×</span><span class="tx"><span class="k">public void</span> <span class="fn">handleCallback</span>(PayCallback cb) {</span></div>
+                <div class="ln hit"><span class="no">41</span><span class="ct">142×</span><span class="tx">    Order order = repo.<span class="fn">findByBizNo</span>(cb.<span class="fn">bizNo</span>());</span></div>
+                <div class="ln partial"><span class="no">42</span><span class="ct">142×</span><span class="tx">    <span class="k">if</span> (order == <span class="k">null</span>) {</span></div>
+                <div class="ln miss"><span class="no">43</span><span class="ct">0</span><span class="tx">        <span class="k">throw new</span> <span class="fn">OrderNotFoundException</span>(cb.<span class="fn">bizNo</span>());</span></div>
+                <div class="ln"><span class="no">44</span><span class="ct"></span><span class="tx">    }</span></div>
+                <div class="ln hit"><span class="no">45</span><span class="ct">142×</span><span class="tx">    <span class="k">if</span> (order.<span class="fn">isFinalState</span>()) {</span></div>
+                <div class="ln hit"><span class="no">46</span><span class="ct">7×</span><span class="tx">        log.<span class="fn">info</span>(<span class="st">"重复回调，直接返回 bizNo={}"</span>, cb.<span class="fn">bizNo</span>());</span></div>
+                <div class="ln hit"><span class="no">47</span><span class="ct">7×</span><span class="tx">        <span class="k">return</span>;</span></div>
+                <div class="ln"><span class="no">48</span><span class="ct"></span><span class="tx">    }</span></div>
+                <div class="ln"><span class="no">49</span><span class="ct"></span><span class="tx"></span></div>
+                <div class="ln hit"><span class="no">50</span><span class="ct">135×</span><span class="tx">    <span class="k">switch</span> (cb.<span class="fn">status</span>()) {</span></div>
+                <div class="ln hit"><span class="no">51</span><span class="ct">128×</span><span class="tx">        <span class="k">case</span> SUCCESS -> {</span></div>
+                <div class="ln hit"><span class="no">52</span><span class="ct">128×</span><span class="tx">            order.<span class="fn">markPaid</span>(cb.<span class="fn">paidAt</span>(), cb.<span class="fn">channelTxId</span>());</span></div>
+                <div class="ln hit"><span class="no">53</span><span class="ct">128×</span><span class="tx">            eventBus.<span class="fn">publish</span>(<span class="k">new</span> <span class="fn">OrderPaidEvent</span>(order.<span class="fn">id</span>()));</span></div>
+                <div class="ln"><span class="no">54</span><span class="ct"></span><span class="tx">        }</span></div>
+                <div class="ln hit"><span class="no">55</span><span class="ct">7×</span><span class="tx">        <span class="k">case</span> TIMEOUT -> {</span></div>
+                <div class="ln hit"><span class="no">56</span><span class="ct">7×</span><span class="tx">            order.<span class="fn">markExpired</span>();</span></div>
+                <div class="ln hit"><span class="no">57</span><span class="ct">7×</span><span class="tx">            inventoryClient.<span class="fn">release</span>(order.<span class="fn">skuLocks</span>());</span></div>
+                <div class="ln"><span class="no">58</span><span class="ct"></span><span class="tx">        }</span></div>
+                <div class="ln miss" id="targetLine"><span class="no">59</span><span class="ct">0</span><span class="tx">        <span class="k">case</span> FAILED -> {</span></div>
+                <div class="ln miss"><span class="no">60</span><span class="ct">0</span><span class="tx">            order.<span class="fn">markFailed</span>(cb.<span class="fn">failReason</span>());</span></div>
+                <div class="ln miss"><span class="no">61</span><span class="ct">0</span><span class="tx">            alertService.<span class="fn">notifyRisk</span>(order, cb);</span></div>
+                <div class="ln"><span class="no">62</span><span class="ct"></span><span class="tx">        }</span></div>
+                <div class="ln miss"><span class="no">63</span><span class="ct">0</span><span class="tx">        <span class="k">default</span> -> <span class="k">throw new</span> <span class="fn">IllegalStateException</span>(<span class="st">"未知回调状态"</span>);</span></div>
+                <div class="ln"><span class="no">64</span><span class="ct"></span><span class="tx">    }</span></div>
+                <div class="ln"><span class="no">65</span><span class="ct"></span><span class="tx"></span></div>
+                <div class="ln hit"><span class="no">66</span><span class="ct">135×</span><span class="tx">    repo.<span class="fn">save</span>(order);</span></div>
+                <div class="ln hit"><span class="no">67</span><span class="ct">135×</span><span class="tx">    metrics.<span class="fn">record</span>(<span class="st">"pay.callback"</span>, cb.<span class="fn">status</span>());</span></div>
+                <div class="ln"><span class="no">68</span><span class="ct"></span><span class="tx">}</span></div>
+              </div>
+            </div>
+
+            <div class="card" style="margin:0">
+              <div class="card-head">
+                <h3>未覆盖代码</h3>
+                <span class="desc">本文件 12 处未覆盖，点击定位</span>
+                <div class="right"><button class="btn sm">生成补测建议</button></div>
+              </div>
+              <div class="card-body flush">
+                <div class="miss-list">
+                  <button class="miss-row"><span class="mono">L43</span><span>订单不存在分支 —— OrderNotFoundException</span><span class="why">无场景触达</span></button>
+                  <button class="miss-row"><span class="mono">L59-61</span><span>支付失败分支 —— markFailed + 风控告警</span><span class="why">无场景触达</span></button>
+                  <button class="miss-row"><span class="mono">L63</span><span>未知回调状态兜底</span><span class="why">防御性代码</span></button>
+                  <button class="miss-row"><span class="mono">L88-94</span><span>compensateRefund() 补偿退款</span><span class="why">无场景触达</span></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           页面 3：覆盖率趋势
+           ============================================================ -->
+      <section class="page" id="page-trend">
+        <div class="card">
+          <div class="card-body" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+            <div class="field"><label>时间范围</label>
+              <div class="radio-group" data-radio="trendRange">
+                <button>近 6 小时</button><button class="on">近 24 小时</button><button>近 7 天</button><button>近 30 天</button>
+              </div>
+            </div>
+            <div class="field"><label>指标</label>
+              <select class="select"><option>行覆盖率</option><option>分支覆盖率</option><option>方法覆盖率</option></select>
+            </div>
+            <div class="field"><label>口径</label>
+              <div class="radio-group" data-radio="trendMode"><button class="on">全量</button><button>增量</button></div>
+            </div>
+            <div style="margin-left:auto"><button class="btn" id="trendTableBtn">切换表格视图</button></div>
+          </div>
+        </div>
+
+        <div class="card viz-root">
+          <div class="card-head">
+            <h3>各服务覆盖率趋势</h3>
+            <span class="desc">近 24 小时，每 2 小时一个采样点</span>
+          </div>
+          <div class="card-body" id="trendChartBox">
+            <div class="viz-legend" id="trendLegend"></div>
+            <div class="chart-wrap" id="trendChart"></div>
+            <div class="viz-note">
+              覆盖率只在测试流量到达时上升。曲线走平说明该时段没有新的代码路径被触达，而不是采集中断——采集状态见总览看板的探针心跳。
+            </div>
+          </div>
+          <div class="card-body" id="trendTableBox" style="display:none">
+            <div class="table-wrap">
+              <table id="trendTable"></table>
+            </div>
+          </div>
+        </div>
+
+        <div class="split">
+          <div class="card">
+            <div class="card-head"><h3>24 小时变化</h3><span class="desc">按增幅排序</span></div>
+            <div class="card-body flush">
+              <div class="table-wrap">
+                <table style="min-width:560px">
+                  <thead><tr><th>服务</th><th>起始</th><th>当前</th><th>变化</th><th>新增命中行</th></tr></thead>
+                  <tbody>
+                    <tr><td class="name">order-service</td><td class="mono">58.1%</td><td class="mono">76.2%</td><td class="mono" style="color:var(--el-color-success)">+18.1</td><td class="mono">1,842</td></tr>
+                    <tr><td class="name">inventory-svc</td><td class="mono">60.4%</td><td class="mono">71.5%</td><td class="mono" style="color:var(--el-color-success)">+11.1</td><td class="mono">476</td></tr>
+                    <tr><td class="name">payment-service</td><td class="mono">52.3%</td><td class="mono">61.8%</td><td class="mono" style="color:var(--el-color-success)">+9.5</td><td class="mono">1,103</td></tr>
+                    <tr><td class="name">match-engine</td><td class="mono">40.2%</td><td class="mono">43.1%</td><td class="mono" style="color:var(--el-color-warning)">+2.9</td><td class="mono">88</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>需要关注</h3></div>
+            <div class="card-body">
+              <div class="alert warning" style="margin-bottom:12px">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                <div>
+                  <div class="alert-title">match-engine 24 小时仅增长 2.9%</div>
+                  <div class="alert-desc">当前 43.1%，为四个服务中最低。撮合核心的 order_book 撤单与自成交防护路径始终未被触达，建议补充对应的接口自动化场景。</div>
+                </div>
+              </div>
+              <div class="alert info" style="margin:0">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                <div>
+                  <div class="alert-title">order-service 在 14:00 后出现陡增</div>
+                  <div class="alert-desc">2 小时内 +12.4%，与支付回调链路的自动化回归执行时间吻合。</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           页面 4：多实例对比
+           ============================================================ -->
+      <section class="page" id="page-instances">
+        <div class="card">
+          <div class="card-body" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+            <div class="field"><label>服务</label>
+              <select class="select"><option>order-service（3 实例）</option><option>payment-service（3 实例）</option><option>inventory-svc（2 实例）</option></select>
+            </div>
+            <div class="field"><label>时间范围</label>
+              <select class="select" style="min-width:170px"><option>累计（自服务启动）</option><option>近 1 小时</option><option>自定义区间…</option></select>
+            </div>
+            <button class="btn" style="margin-left:auto">导出对比报告</button>
+          </div>
+        </div>
+
+        <div class="alert info">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          <div>
+            <div class="alert-title">合并覆盖率高于任一单实例，这是负载均衡的必然结果</div>
+            <div class="alert-desc">流量被分散到多个实例，每个实例只看到部分请求。评估测试充分性应以合并后的 82.6% 为准，而不是任一单实例的数字。</div>
+          </div>
+        </div>
+
+        <div class="card viz-root">
+          <div class="card-head">
+            <h3>order-service 实例覆盖率对比</h3>
+            <span class="desc">同一构建 a3f91c2，按行覆盖率</span>
+          </div>
+          <div class="card-body">
+            <div class="bars">
+              <div class="bar-row merged">
+                <div class="bl">合并<small>3 实例并集</small></div>
+                <div class="bar-track"><div class="bar-fill" style="width:82.6%;background:var(--series-1)"></div></div>
+                <div class="bv">82.6%<em>5,412 / 6,552 行</em></div>
+              </div>
+              <div class="bar-row">
+                <div class="bl">order-svc-1<small>10.20.3.14</small></div>
+                <div class="bar-track"><div class="bar-fill" style="width:76.2%;background:var(--series-1);opacity:.62"></div></div>
+                <div class="bv">76.2%<em>4,993 行</em></div>
+              </div>
+              <div class="bar-row">
+                <div class="bl">order-svc-2<small>10.20.3.15</small></div>
+                <div class="bar-track"><div class="bar-fill" style="width:71.8%;background:var(--series-1);opacity:.62"></div></div>
+                <div class="bv">71.8%<em>4,704 行</em></div>
+              </div>
+              <div class="bar-row">
+                <div class="bl">order-svc-3<small>10.20.3.16</small></div>
+                <div class="bar-track"><div class="bar-fill" style="width:44.3%;background:var(--series-1);opacity:.62"></div></div>
+                <div class="bv">44.3%<em>2,903 行</em></div>
+              </div>
+            </div>
+            <div class="viz-note">
+              order-svc-3 明显偏低。常见原因：该实例晚于其他实例启动、权重配置较低，或健康检查未通过导致未进入流量池。点击下方「仅该实例未覆盖」可确认是流量分布问题还是真实的测试盲区。
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>实例差异明细</h3>
+            <span class="desc">用于区分「流量没打到」与「场景没覆盖」</span>
+            <div class="right">
+              <div class="radio-group" data-radio="instFilter">
+                <button class="on">全部文件</button><button>仅存在差异</button><button>所有实例均未覆盖</button>
+              </div>
+            </div>
+          </div>
+          <div class="card-body flush">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>文件</th><th>svc-1</th><th>svc-2</th><th>svc-3</th><th>合并</th><th>差异</th><th>操作</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="mono">OrderService.java</td>
+                    <td class="mono">64.7%</td><td class="mono">61.2%</td><td class="mono">38.9%</td>
+                    <td class="mono" style="color:var(--el-color-success)">71.4%</td>
+                    <td><span class="tag sm warning">实例间不一致</span></td>
+                    <td><button class="btn text sm" data-goto="color">看染色</button></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">OrderController.java</td>
+                    <td class="mono">88.9%</td><td class="mono">88.9%</td><td class="mono">85.2%</td>
+                    <td class="mono" style="color:var(--el-color-success)">92.6%</td>
+                    <td><span class="tag sm info">基本一致</span></td>
+                    <td><button class="btn text sm" data-goto="color">看染色</button></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">RefundService.java</td>
+                    <td class="mono">21.0%</td><td class="mono">19.4%</td><td class="mono">18.1%</td>
+                    <td class="mono" style="color:var(--el-color-danger)">24.2%</td>
+                    <td><span class="tag sm danger">全部偏低</span></td>
+                    <td><button class="btn text sm" data-goto="color">看染色</button></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">OrderRepository.java</td>
+                    <td class="mono">57.1%</td><td class="mono">57.1%</td><td class="mono">31.0%</td>
+                    <td class="mono" style="color:var(--el-color-success)">61.9%</td>
+                    <td><span class="tag sm warning">实例间不一致</span></td>
+                    <td><button class="btn text sm" data-goto="color">看染色</button></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">CompensateJob.java</td>
+                    <td class="mono">0.0%</td><td class="mono">0.0%</td><td class="mono">0.0%</td>
+                    <td class="mono" style="color:var(--el-color-danger)">0.0%</td>
+                    <td><span class="tag sm danger">全员未覆盖</span></td>
+                    <td><button class="btn text sm" data-goto="color">看染色</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           页面 5：增量覆盖率
+           ============================================================ -->
+      <section class="page" id="page-incr">
+        <div class="card">
+          <div class="card-body" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+            <div class="field"><label>服务</label><select class="select"><option>order-service</option><option>payment-service</option></select></div>
+            <div class="field"><label>基线</label><select class="select" style="min-width:190px"><option>origin/main（8e21df0）</option><option>tag v1.7.3</option></select></div>
+            <div class="field"><label>目标</label><select class="select" style="min-width:190px"><option>feature/pay-retry（a3f91c2）</option></select></div>
+            <div class="field"><label>时间范围</label><select class="select" style="min-width:170px"><option>累计（自服务启动）</option><option>最近 1 小时</option><option>自定义区间…</option></select></div>
+            <button class="btn primary" style="margin-left:auto">重新计算</button>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat"><div class="stat-icon p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
+            <div class="stat-meta"><div class="stat-label">变更文件</div><div class="stat-value">6<small>个</small></div></div></div>
+          <div class="stat"><div class="stat-icon s"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></div>
+            <div class="stat-meta"><div class="stat-label">变更行已覆盖</div><div class="stat-value">98<small>行</small></div></div></div>
+          <div class="stat"><div class="stat-icon d"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div>
+            <div class="stat-meta"><div class="stat-label">变更行未覆盖</div><div class="stat-value">39<small>行</small></div></div></div>
+          <div class="stat"><div class="stat-icon w"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
+            <div class="stat-meta"><div class="stat-label">增量覆盖率</div><div class="stat-value">71.5<small>%</small></div><div class="stat-trend">门禁线 80%</div></div></div>
+        </div>
+
+        <div class="alert warning">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <div>
+            <div class="alert-title">增量覆盖率 71.5% 未达门禁线 80%</div>
+            <div class="alert-desc">未覆盖集中在 PayRetryService.java 的重试退避与熔断分支，建议优先补充该链路的异常场景。</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>变更文件覆盖详情</h3><span class="desc">仅统计本次 diff 的新增与修改行</span>
+            <div class="right"><div class="radio-group" data-radio="diffFilter"><button class="on">全部</button><button>仅未覆盖</button></div></div>
+          </div>
+          <div class="card-body">
+            <div class="diff-file">
+              <div class="diff-head">
+                <span>src/main/java/com/shop/pay/PayRetryService.java</span>
+                <span class="stat-mini"><span class="add">+42</span><span class="del">-6</span><span class="tag sm danger">变更行覆盖 38.1%</span></span>
+              </div>
+              <div class="diff-body">
+                <div class="dl ctx"><span class="no">27</span><span class="mk"> </span><span>    private static final int MAX_RETRY = 3;</span></div>
+                <div class="dl added cov"><span class="no">28</span><span class="mk add">+</span><span>    private final CircuitBreaker breaker;</span></div>
+                <div class="dl added cov"><span class="no">29</span><span class="mk add">+</span><span></span></div>
+                <div class="dl added cov"><span class="no">30</span><span class="mk add">+</span><span>    public PayResult retryWithBackoff(PayRequest req) {</span></div>
+                <div class="dl added cov"><span class="no">31</span><span class="mk add">+</span><span>        for (int i = 0; i &lt; MAX_RETRY; i++) {</span></div>
+                <div class="dl added uncov"><span class="no">32</span><span class="mk add">+</span><span>            if (breaker.isOpen()) {</span></div>
+                <div class="dl added uncov"><span class="no">33</span><span class="mk add">+</span><span>                return PayResult.circuitOpen();</span></div>
+                <div class="dl added uncov"><span class="no">34</span><span class="mk add">+</span><span>            }</span></div>
+                <div class="dl added cov"><span class="no">35</span><span class="mk add">+</span><span>            try {</span></div>
+                <div class="dl added cov"><span class="no">36</span><span class="mk add">+</span><span>                return channel.submit(req);</span></div>
+                <div class="dl added uncov"><span class="no">37</span><span class="mk add">+</span><span>            } catch (ChannelTimeoutException e) {</span></div>
+                <div class="dl added uncov"><span class="no">38</span><span class="mk add">+</span><span>                sleepBackoff(i);</span></div>
+                <div class="dl added uncov"><span class="no">39</span><span class="mk add">+</span><span>                breaker.recordFailure();</span></div>
+                <div class="dl added uncov"><span class="no">40</span><span class="mk add">+</span><span>            }</span></div>
+                <div class="dl ctx"><span class="no">41</span><span class="mk"> </span><span>        }</span></div>
+              </div>
+            </div>
+
+            <div class="diff-file">
+              <div class="diff-head">
+                <span>src/main/java/com/shop/order/service/OrderService.java</span>
+                <span class="stat-mini"><span class="add">+18</span><span class="del">-3</span><span class="tag sm success">变更行覆盖 88.9%</span></span>
+              </div>
+              <div class="diff-body">
+                <div class="dl ctx"><span class="no">50</span><span class="mk"> </span><span>    switch (cb.status()) {</span></div>
+                <div class="dl added cov"><span class="no">51</span><span class="mk add">+</span><span>        case SUCCESS -> {</span></div>
+                <div class="dl added cov"><span class="no">52</span><span class="mk add">+</span><span>            order.markPaid(cb.paidAt(), cb.channelTxId());</span></div>
+                <div class="dl added cov"><span class="no">53</span><span class="mk add">+</span><span>            eventBus.publish(new OrderPaidEvent(order.id()));</span></div>
+                <div class="dl added uncov"><span class="no">59</span><span class="mk add">+</span><span>        case FAILED -> {</span></div>
+                <div class="dl added uncov"><span class="no">60</span><span class="mk add">+</span><span>            order.markFailed(cb.failReason());</span></div>
+              </div>
+            </div>
+
+            <div class="diff-file">
+              <div class="diff-head">
+                <span>src/main/java/com/shop/order/repository/OrderRepository.java</span>
+                <span class="stat-mini"><span class="add">+9</span><span class="del">-0</span><span class="tag sm success">变更行覆盖 100%</span></span>
+              </div>
+              <div class="diff-body">
+                <div class="dl added cov"><span class="no">52</span><span class="mk add">+</span><span>    Optional&lt;Order&gt; findByBizNoForUpdate(String bizNo);</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           页面 6：覆盖率排行
+           ============================================================ -->
+      <section class="page" id="page-rank">
+        <div class="card">
+          <div class="card-body" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+            <div class="field"><label>服务</label>
+              <select class="select"><option>order-service</option><option>payment-service</option><option>inventory-svc</option><option>match-engine</option></select>
+            </div>
+            <div class="field"><label>粒度</label>
+              <div class="radio-group" data-radio="rankGran"><button class="on">包</button><button>文件</button></div>
+            </div>
+            <div class="field"><label>排序依据</label>
+              <select class="select" style="min-width:180px" id="rankSort">
+                <option value="score">补测优先级</option>
+                <option value="miss">未覆盖行数</option>
+                <option value="cov">覆盖率（升序）</option>
+                <option value="churn">近 30 天变更次数</option>
+              </select>
+            </div>
+            <button class="btn" style="margin-left:auto">导出补测清单</button>
+          </div>
+        </div>
+
+        <div class="alert info">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          <div>
+            <div class="alert-title">优先级不等于覆盖率倒序</div>
+            <div class="alert-desc">补测优先级 = 未覆盖行数 × 近期变更频率 × 是否核心链路。config 包覆盖率仅 33.3% 但体量小且几乎不改动，排在末位；settlement 包 1,204 行未覆盖且属结算核心，排在首位。</div>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-icon d"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+            <div class="stat-meta"><div class="stat-label">高优先级模块</div><div class="stat-value">4<small>个</small></div><div class="stat-trend down">占未覆盖行的 85%</div></div>
+          </div>
+          <div class="stat">
+            <div class="stat-icon w"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
+            <div class="stat-meta"><div class="stat-label">未覆盖总行数</div><div class="stat-value">3,476<small>行</small></div><div class="stat-trend">共 7,720 行可执行代码</div></div>
+          </div>
+          <div class="stat">
+            <div class="stat-icon p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></div>
+            <div class="stat-meta"><div class="stat-label">补齐 Top 2 可提升</div><div class="stat-value">+25.8<small>%</small></div><div class="stat-trend up">settlement + service 两个包</div></div>
+          </div>
+          <div class="stat">
+            <div class="stat-icon s"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
+            <div class="stat-meta"><div class="stat-label">零覆盖模块</div><div class="stat-value">1<small>个</small></div><div class="stat-trend down">compensate 包 560 行全未触达</div></div>
+          </div>
+        </div>
+
+        <div class="card viz-root">
+          <div class="card-head">
+            <h3>未覆盖行数分布</h3>
+            <span class="desc">按包统计，长度即补测工作量</span>
+          </div>
+          <div class="card-body">
+            <div class="bars" id="rankBars"></div>
+            <div class="viz-note">
+              条形长度是未覆盖的绝对行数，不是覆盖率。两个覆盖率同为 30% 的包，工作量可能相差十倍——按这个视图排期比按覆盖率排期更接近真实成本。
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>补测优先级排行</h3>
+            <span class="desc">order-service · 8 个包</span>
+            <div class="right"><span class="tag sm info">点击展开可查看包内文件</span></div>
+          </div>
+          <div class="card-body flush">
+            <div class="table-wrap">
+              <table style="min-width:900px">
+                <thead>
+                  <tr><th>#</th><th>包</th><th>可执行行</th><th>未覆盖行</th><th style="min-width:150px">覆盖率</th><th>近 30 天变更</th><th>补测优先级</th><th>操作</th></tr>
+                </thead>
+                <tbody id="rankRows"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           页面 7：覆盖率门禁
+           ============================================================ -->
+      <section class="page" id="page-gate">
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-icon p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+            <div class="stat-meta"><div class="stat-label">启用中规则</div><div class="stat-value">4<small>条</small></div><div class="stat-trend">1 条已禁用</div></div>
+          </div>
+          <div class="stat">
+            <div class="stat-icon s"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
+            <div class="stat-meta"><div class="stat-label">近 7 天通过率</div><div class="stat-value">86.4<small>%</small></div><div class="stat-trend up">51 / 59 次判定</div></div>
+          </div>
+          <div class="stat">
+            <div class="stat-icon d"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></div>
+            <div class="stat-meta"><div class="stat-label">近 7 天阻断</div><div class="stat-value">6<small>次</small></div><div class="stat-trend down">全部为增量覆盖不达标</div></div>
+          </div>
+          <div class="stat">
+            <div class="stat-icon w"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+            <div class="stat-meta"><div class="stat-label">仅告警未阻断</div><div class="stat-value">2<small>次</small></div><div class="stat-trend">match-engine 处于宽限期</div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>门禁规则</h3>
+            <span class="desc">规则自上而下匹配，服务级规则覆盖全局规则</span>
+            <div class="right"><button class="btn primary">新建规则</button></div>
+          </div>
+          <div class="card-body flush">
+            <div class="table-wrap">
+              <table style="min-width:940px">
+                <thead>
+                  <tr><th>优先级</th><th>作用范围</th><th>指标</th><th>阈值</th><th>未达标动作</th><th>状态</th><th>操作</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="mono">1</td>
+                    <td class="name">payment-service<div class="muted">核心资金链路</div></td>
+                    <td>增量行覆盖率</td>
+                    <td class="mono">≥ 90%</td>
+                    <td><span class="tag sm danger">阻断合并</span></td>
+                    <td><div class="switch on"><span class="track"></span></div></td>
+                    <td><div class="ops"><button class="btn text sm">编辑</button><button class="btn text sm danger-text">删除</button></div></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">2</td>
+                    <td class="name">match-engine<div class="muted">历史包袱，宽限至 09-30</div></td>
+                    <td>增量行覆盖率</td>
+                    <td class="mono">≥ 60%</td>
+                    <td><span class="tag sm warning">仅告警</span></td>
+                    <td><div class="switch on"><span class="track"></span></div></td>
+                    <td><div class="ops"><button class="btn text sm">编辑</button><button class="btn text sm danger-text">删除</button></div></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">3</td>
+                    <td class="name">全局默认<div class="muted">未匹配到服务级规则时生效</div></td>
+                    <td>增量行覆盖率</td>
+                    <td class="mono">≥ 80%</td>
+                    <td><span class="tag sm danger">阻断合并</span></td>
+                    <td><div class="switch on"><span class="track"></span></div></td>
+                    <td><div class="ops"><button class="btn text sm">编辑</button><button class="btn text sm" disabled>删除</button></div></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">4</td>
+                    <td class="name">全局默认<div class="muted">防止存量覆盖率倒退</div></td>
+                    <td>全量行覆盖率</td>
+                    <td class="mono">不低于基线 -0.5%</td>
+                    <td><span class="tag sm warning">仅告警</span></td>
+                    <td><div class="switch on"><span class="track"></span></div></td>
+                    <td><div class="ops"><button class="btn text sm">编辑</button><button class="btn text sm danger-text">删除</button></div></td>
+                  </tr>
+                  <tr style="opacity:.6">
+                    <td class="mono">5</td>
+                    <td class="name">全局默认<div class="muted">单文件维度</div></td>
+                    <td>新增文件覆盖率</td>
+                    <td class="mono">≥ 30%</td>
+                    <td><span class="tag sm warning">仅告警</span></td>
+                    <td><div class="switch"><span class="track"></span></div></td>
+                    <td><div class="ops"><button class="btn text sm">编辑</button><button class="btn text sm danger-text">删除</button></div></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="split">
+          <div class="card">
+            <div class="card-head"><h3>最近判定记录</h3><span class="desc">由 CI 在合并请求阶段调用平台接口触发</span></div>
+            <div class="card-body flush">
+              <div class="table-wrap">
+                <table style="min-width:640px">
+                  <thead><tr><th>合并请求</th><th>服务</th><th>增量覆盖率</th><th>命中规则</th><th>结论</th><th>时间</th></tr></thead>
+                  <tbody>
+                    <tr>
+                      <td class="mono">MR#4412</td><td>order-service</td>
+                      <td class="mono" style="color:var(--el-color-danger)">71.5%</td>
+                      <td class="muted">全局默认 ≥ 80%</td>
+                      <td><span class="tag sm danger">阻断</span></td>
+                      <td class="muted mono">14:32</td>
+                    </tr>
+                    <tr>
+                      <td class="mono">MR#4408</td><td>inventory-svc</td>
+                      <td class="mono" style="color:var(--el-color-success)">86.2%</td>
+                      <td class="muted">全局默认 ≥ 80%</td>
+                      <td><span class="tag sm success">通过</span></td>
+                      <td class="muted mono">13:47</td>
+                    </tr>
+                    <tr>
+                      <td class="mono">MR#4405</td><td>payment-service</td>
+                      <td class="mono" style="color:var(--el-color-success)">91.3%</td>
+                      <td class="muted">payment-service ≥ 90%</td>
+                      <td><span class="tag sm success">通过</span></td>
+                      <td class="muted mono">11:20</td>
+                    </tr>
+                    <tr>
+                      <td class="mono">MR#4399</td><td>match-engine</td>
+                      <td class="mono" style="color:var(--el-color-warning)">58.1%</td>
+                      <td class="muted">match-engine ≥ 60%</td>
+                      <td><span class="tag sm warning">告警放行</span></td>
+                      <td class="muted mono">10:05</td>
+                    </tr>
+                    <tr>
+                      <td class="mono">MR#4396</td><td>order-service</td>
+                      <td class="mono" style="color:var(--el-color-success)">83.4%</td>
+                      <td class="muted">全局默认 ≥ 80%</td>
+                      <td><span class="tag sm success">通过</span></td>
+                      <td class="muted mono">09:32</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>编辑规则</h3><span class="tag sm primary">全局默认 · 增量</span></div>
+            <div class="card-body">
+              <div style="display:flex;flex-direction:column;gap:14px">
+                <div class="field" style="width:100%"><label>作用范围</label>
+                  <select class="select" style="width:100%"><option>全局默认</option><option>order-service</option><option>payment-service</option><option>match-engine</option></select>
+                </div>
+                <div class="field" style="width:100%"><label>指标</label>
+                  <select class="select" style="width:100%"><option>增量行覆盖率</option><option>全量行覆盖率</option><option>增量分支覆盖率</option><option>新增文件覆盖率</option></select>
+                </div>
+                <div class="field" style="width:100%"><label>阈值</label>
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <select class="select" style="min-width:96px"><option>≥</option><option>不低于基线</option></select>
+                    <input class="input" value="80" style="width:80px" />
+                    <span class="muted">%</span>
+                  </div>
+                </div>
+                <div class="field" style="width:100%"><label>未达标动作</label>
+                  <div class="radio-group" data-radio="gateAction" style="width:100%">
+                    <button class="on" style="flex:1">阻断合并</button><button style="flex:1">仅告警</button>
+                  </div>
+                </div>
+                <div class="field" style="width:100%"><label>排除路径（不计入分母）</label>
+                  <textarea class="input" rows="4" style="width:100%;height:auto;padding:8px 11px;font-family:var(--el-font-family-mono);font-size:12px;resize:vertical">**/dto/**
+**/generated/**
+**/proto/**
+**/*Config.java</textarea>
+                </div>
+                <div class="alert warning" style="margin:0">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  <div>
+                    <div class="alert-title">调高阈值会影响进行中的合并请求</div>
+                    <div class="alert-desc">当前有 3 个开启中的合并请求增量覆盖率位于 80%–85% 区间，调至 85% 将使其立即转为阻断状态。</div>
+                  </div>
+                </div>
+                <div style="display:flex;gap:8px">
+                  <button class="btn primary" style="flex:1">保存规则</button>
+                  <button class="btn" style="flex:1">取消</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           页面 8：服务接入
+           ============================================================ -->
+      <section class="page" id="page-onboard">
+        <div class="card">
+          <div class="card-head"><h3>接入向导</h3><span class="desc">源码零改动，仅调整启动参数或构建参数</span></div>
+          <div class="card-body">
+            <div class="steps">
+              <div class="step done"><span class="step-num">1</span><span class="step-txt">选择语言</span><span class="step-line"></span></div>
+              <div class="step on"><span class="step-num">2</span><span class="step-txt">生成接入配置</span><span class="step-line"></span></div>
+              <div class="step"><span class="step-num">3</span><span class="step-txt">重启服务</span><span class="step-line"></span></div>
+              <div class="step"><span class="step-num">4</span><span class="step-txt">确认探针注册</span></div>
+            </div>
+
+            <div class="tabs" style="margin:0 -18px 18px;padding:0 18px" id="langTabs">
+              <button class="tab on" data-lang="java">Java</button>
+              <button class="tab" data-lang="go">Go</button>
+              <button class="tab" data-lang="cpp">C++</button>
+              <button class="tab" data-lang="rust">Rust</button>
+            </div>
+
+            <div class="lang-pane" data-pane="java">
+              <div class="alert info">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                <div>
+                  <div class="alert-title">无需重新编译，也无需改动任何源码</div>
+                  <div class="alert-desc">JaCoCo 在类加载时做字节码插桩。注意：探针必须随 JVM 启动加载，不支持对已运行的进程动态挂载。</div>
+                </div>
+              </div>
+              <div class="field" style="width:100%;margin-bottom:12px"><label>在启动命令中加入以下参数</label></div>
+              <pre class="snippet">java -javaagent:/opt/probe/jacocoagent.jar=\
+       includes=com.shop.*,\
+       output=tcpserver,address=*,port=6300 \
+     -jar order-service.jar</pre>
+              <div class="alert warning" style="margin-top:16px">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
+                <div>
+                  <div class="alert-title">探针端口无鉴权机制</div>
+                  <div class="alert-desc">6300 端口不提供任何认证。请仅绑定内网地址，并通过 NetworkPolicy 限制来源。当前平台仅支持测试环境接入。</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="lang-pane" data-pane="go" style="display:none">
+              <div class="alert warning">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
+                <div>
+                  <div class="alert-title">需要重新编译一次带插桩的产物</div>
+                  <div class="alert-desc">Go 编译为原生机器码，运行期没有可供改写的中间表示。覆盖代码通过 build tag 隔离，生产构建不受影响。</div>
+                </div>
+              </div>
+              <pre class="snippet"><span class="cm"># 1. main.go 中加入一行 blank import</span>
+import _ "github.com/Trendyol/goverage"
+
+<span class="cm"># 2. 用插桩参数构建（-covermode=atomic 是场景清零的前提）</span>
+go build -cover -covermode=atomic -tags=goverage \
+  -coverpkg=./... -o inventory-svc .
+
+<span class="cm"># 3. 启动时指定数据目录</span>
+GOCOVERDIR=/var/cover COVERAGE_HTTP_PORT=7777 ./inventory-svc</pre>
+            </div>
+
+            <div class="lang-pane" data-pane="cpp" style="display:none">
+              <div class="alert warning">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
+                <div>
+                  <div class="alert-title">需要重新编译；dump 触发器方案待验证</div>
+                  <div class="alert-desc">LD_PRELOAD 注入信号处理器的方案尚在 POC 中，当前请先在 main 中注册 SIGUSR1 处理器。</div>
+                </div>
+              </div>
+              <pre class="snippet"><span class="cm"># 编译期加入覆盖率插桩</span>
+g++ --coverage -O0 -g -o match-engine main.cpp
+
+<span class="cm"># 平台通过信号触发 dump，无需停止进程</span>
+kill -SIGUSR1 $(pidof match-engine)</pre>
+            </div>
+
+            <div class="lang-pane" data-pane="rust" style="display:none">
+              <div class="alert warning">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
+                <div>
+                  <div class="alert-title">插桩零改动，但运行中导出仍在验证</div>
+                  <div class="alert-desc">连续同步模式在 Linux 上官方标注为「基本完成，待测试」。若验证不通过，将退回 minicov 方案（需引入依赖）。</div>
+                </div>
+              </div>
+              <pre class="snippet"><span class="cm"># 源码一行不改，仅加编译参数</span>
+RUSTFLAGS="-C instrument-coverage" cargo build --release
+
+<span class="cm"># 连续同步模式：计数器持续写盘，进程被 kill 也不丢数据</span>
+LLVM_PROFILE_FILE="/var/cover/svc-%p-%c.profraw" ./target/release/svc</pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>实例注册状态</h3><span class="desc">探针向注册中心上报心跳，60 秒无心跳判定为离线</span></div>
+          <div class="card-body flush">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>实例</th><th>服务</th><th>语言</th><th>探针通道</th><th>构建 Commit</th><th>状态</th><th>心跳</th><th>操作</th></tr></thead>
+                <tbody>
+                  <tr>
+                    <td class="name mono">order-svc-1</td><td>order-service</td><td><span class="tag sm primary">Java</span></td>
+                    <td class="mono">10.20.3.14:6300</td><td class="mono">a3f91c2</td>
+                    <td><span class="tag sm success">在线</span></td><td class="muted mono">2 秒前</td>
+                    <td><div class="ops"><button class="btn text sm">立即采集</button></div></td>
+                  </tr>
+                  <tr>
+                    <td class="name mono">order-svc-2</td><td>order-service</td><td><span class="tag sm primary">Java</span></td>
+                    <td class="mono">10.20.3.15:6300</td><td class="mono">a3f91c2</td>
+                    <td><span class="tag sm success">在线</span></td><td class="muted mono">3 秒前</td>
+                    <td><div class="ops"><button class="btn text sm">立即采集</button></div></td>
+                  </tr>
+                  <tr>
+                    <td class="name mono">inv-svc-1</td><td>inventory-svc</td><td><span class="tag sm info">Go</span></td>
+                    <td class="mono">10.20.3.21:7777</td><td class="mono">7c04e11</td>
+                    <td><span class="tag sm success">在线</span></td><td class="muted mono">4 秒前</td>
+                    <td><div class="ops"><button class="btn text sm">立即采集</button></div></td>
+                  </tr>
+                  <tr>
+                    <td class="name mono">match-eng-2</td><td>match-engine</td><td><span class="tag sm info">C++</span></td>
+                    <td class="mono">10.20.3.42:sig</td><td class="mono">2b8ff90</td>
+                    <td><span class="tag sm danger">离线</span></td><td class="muted mono">4 分钟前</td>
+                    <td><div class="ops"><button class="btn text sm">重连</button><button class="btn text sm danger-text">摘除</button></div></td>
+                  </tr>
+                  <tr>
+                    <td class="name mono">pay-svc-3</td><td>payment-service</td><td><span class="tag sm primary">Java</span></td>
+                    <td class="mono">10.20.3.31:6300</td><td class="mono">8e21df0</td>
+                    <td><span class="tag sm warning">版本不一致</span></td><td class="muted mono">5 秒前</td>
+                    <td><div class="ops"><button class="btn text sm">查看详情</button></div></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<script>
+  // ---------- 页面路由（对应 vue-router） ----------
+  var titles = { dash: '总览看板', color: '代码染色', trend: '覆盖率趋势', instances: '多实例对比', incr: '增量覆盖率', rank: '覆盖率排行', gate: '覆盖率门禁', onboard: '服务接入' };
+  function go(page) {
+    document.querySelectorAll('.page').forEach(function (p) { p.classList.remove('active'); });
+    document.getElementById('page-' + page).classList.add('active');
+    document.querySelectorAll('.menu-item').forEach(function (m) {
+      m.classList.toggle('active', m.dataset.page === page);
+    });
+    document.getElementById('crumbNow').textContent = titles[page];
+    document.getElementById('aside').classList.remove('open');
+    window.scrollTo(0, 0);
+  }
+  document.querySelectorAll('.menu-item').forEach(function (m) {
+    m.addEventListener('click', function () { go(m.dataset.page); });
+  });
+  document.querySelectorAll('[data-goto]').forEach(function (b) {
+    b.addEventListener('click', function () { go(b.dataset.goto); });
+  });
+
+  // ---------- 单选按钮组 ----------
+  document.querySelectorAll('[data-radio]').forEach(function (grp) {
+    grp.querySelectorAll('button').forEach(function (b) {
+      b.addEventListener('click', function () {
+        grp.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
+        b.classList.add('on');
+      });
+    });
+  });
+
+  // ---------- 开关 ----------
+  var liveSwitch = document.getElementById('liveSwitch');
+  liveSwitch.addEventListener('click', function () { liveSwitch.classList.toggle('on'); });
+
+  // ---------- 接入向导语言页签 ----------
+  document.querySelectorAll('#langTabs .tab').forEach(function (t) {
+    t.addEventListener('click', function () {
+      document.querySelectorAll('#langTabs .tab').forEach(function (x) { x.classList.remove('on'); });
+      t.classList.add('on');
+      document.querySelectorAll('.lang-pane').forEach(function (p) {
+        p.style.display = p.dataset.pane === t.dataset.lang ? '' : 'none';
+      });
+    });
+  });
+
+  // ---------- 文件树选中 ----------
+  document.querySelectorAll('.tree-node[data-file]').forEach(function (n) {
+    n.addEventListener('click', function () {
+      document.querySelectorAll('.tree-node').forEach(function (x) { x.classList.remove('on'); });
+      n.classList.add('on');
+      document.getElementById('srcPath').textContent = 'com/shop/order/service/' + n.dataset.file;
+    });
+  });
+
+  // ---------- 主题切换 ----------
+  document.getElementById('themeBtn').addEventListener('click', function () {
+    var cur = document.documentElement.getAttribute('data-theme');
+    var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    if (!cur) cur = prefersDark ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  });
+
+  // ---------- 移动端菜单 ----------
+  document.getElementById('menuToggle').addEventListener('click', function () {
+    document.getElementById('aside').classList.toggle('open');
+  });
+
+  // ---------- 模拟实时染色：未覆盖行逐步变绿 ----------
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reduced) {
+    var target = document.getElementById('targetLine');
+    var cov = 68.4;
+
+    setInterval(function () {
+      cov = Math.min(99, cov + Math.random() * 0.15);
+      document.getElementById('statCov').innerHTML = cov.toFixed(1) + '<small>%</small>';
+    }, 3000);
+
+    // 一次性演示：FAILED 分支在一轮自动化回归后被触达
+    setTimeout(function () {
+      if (!target) return;
+      var rows = [target, target.nextElementSibling, target.nextElementSibling.nextElementSibling];
+      rows.forEach(function (r, i) {
+        setTimeout(function () {
+          r.classList.remove('miss');
+          r.classList.add('hit', 'flash');
+          r.querySelector('.ct').textContent = '1×';
+        }, i * 700);
+      });
+    }, 6000);
+  }
+
+  // ================= 覆盖率排行 =================
+  // 优先级 = 未覆盖行数 × 变更热度 × 核心链路权重。
+  // 只按覆盖率倒序会把「小而稳定」的包排到前面，与真实补测收益不符。
+  var PKGS = [
+    { name: 'com.shop.order.settlement',  lines: 1640, miss: 1204, churn: 18, core: true  },
+    { name: 'com.shop.order.service',     lines: 2180, miss: 786,  churn: 42, core: true  },
+    { name: 'com.shop.order.compensate',  lines: 560,  miss: 560,  churn: 8,  core: true  },
+    { name: 'com.shop.order.repository',  lines: 980,  miss: 421,  churn: 12, core: false },
+    { name: 'com.shop.order.util',        lines: 340,  miss: 210,  churn: 3,  core: false },
+    { name: 'com.shop.order.config',      lines: 180,  miss: 120,  churn: 2,  core: false },
+    { name: 'com.shop.order.dto',         lines: 1120, miss: 95,   churn: 30, core: false },
+    { name: 'com.shop.order.controller',  lines: 720,  miss: 80,   churn: 25, core: false }
+  ];
+  PKGS.forEach(function (p) {
+    p.cov = (p.lines - p.miss) / p.lines * 100;
+    p.score = p.miss * (1 + p.churn / 30) * (p.core ? 1.5 : 1);
+  });
+
+  (function renderRank() {
+    var barBox = document.getElementById('rankBars');
+    if (!barBox) return;
+
+    function level(s) {
+      if (s > 2000) return { t: '极高', c: 'danger' };
+      if (s > 500)  return { t: '高',   c: 'warning' };
+      if (s > 200)  return { t: '中',   c: 'info' };
+      return { t: '低', c: 'info' };
+    }
+    function covClass(c) { return c >= 70 ? 's' : c >= 45 ? 'w' : 'd'; }
+
+    // 条形图固定按未覆盖行数排序 —— 它表达的是工作量，与表格排序维度无关
+    var byMiss = PKGS.slice().sort(function (a, b) { return b.miss - a.miss; });
+    var max = byMiss[0].miss;
+    barBox.innerHTML = byMiss.map(function (p) {
+      var short = p.name.replace('com.shop.order.', '');
+      return '<div class="bar-row">' +
+        '<div class="bl">' + short + '<small>' + p.lines.toLocaleString() + ' 行</small></div>' +
+        '<div class="bar-track"><div class="bar-fill" style="width:' + (p.miss / max * 100).toFixed(1) + '%;background:var(--series-1)"></div></div>' +
+        '<div class="bv">' + p.miss.toLocaleString() + '<em>未覆盖</em></div>' +
+        '</div>';
+    }).join('');
+
+    var tbody = document.getElementById('rankRows');
+    function paint(mode) {
+      var rows = PKGS.slice();
+      if (mode === 'miss') rows.sort(function (a, b) { return b.miss - a.miss; });
+      else if (mode === 'cov') rows.sort(function (a, b) { return a.cov - b.cov; });
+      else if (mode === 'churn') rows.sort(function (a, b) { return b.churn - a.churn; });
+      else rows.sort(function (a, b) { return b.score - a.score; });
+
+      tbody.innerHTML = rows.map(function (p, i) {
+        var lv = level(p.score);
+        return '<tr>' +
+          '<td class="mono">' + (i + 1) + '</td>' +
+          '<td class="name">' + p.name + (p.core ? ' <span class="tag sm danger">核心链路</span>' : '') + '</td>' +
+          '<td class="mono">' + p.lines.toLocaleString() + '</td>' +
+          '<td class="mono">' + p.miss.toLocaleString() + '</td>' +
+          '<td><div class="prog"><div class="prog-bar"><div class="prog-fill ' + covClass(p.cov) + '" style="width:' + p.cov.toFixed(1) + '%"></div></div><span class="prog-txt">' + p.cov.toFixed(1) + '%</span></div></td>' +
+          '<td class="mono">' + p.churn + ' 次</td>' +
+          '<td><span class="tag sm ' + lv.c + '">' + lv.t + '</span></td>' +
+          '<td><button class="btn text sm" data-goto="color">看染色</button></td>' +
+          '</tr>';
+      }).join('');
+      tbody.querySelectorAll('[data-goto]').forEach(function (b) {
+        b.addEventListener('click', function () { go(b.dataset.goto); });
+      });
+    }
+    paint('score');
+    document.getElementById('rankSort').addEventListener('change', function () { paint(this.value); });
+  })();
+
+  // ================= 覆盖率趋势折线图 =================
+  var TREND = {
+    times: ['00:00','02:00','04:00','06:00','08:00','10:00','12:00','14:00','16:00','18:00','20:00','22:00','24:00'],
+    series: [
+      { name: 'order-service',   slot: 1, data: [58.1,58.3,58.3,59.0,60.4,62.1,63.5,63.8,76.2,76.2,76.2,76.2,76.2] },
+      { name: 'payment-service', slot: 2, data: [52.3,52.5,53.1,54.0,55.2,56.8,57.9,58.4,59.1,60.2,61.0,61.5,61.8] },
+      { name: 'inventory-svc',   slot: 3, data: [60.4,60.4,61.2,62.8,64.1,65.0,66.3,67.1,68.4,69.2,70.1,70.9,71.5] },
+      { name: 'match-engine',    slot: 4, data: [40.2,40.2,40.5,40.5,41.0,41.2,41.5,41.8,42.0,42.3,42.6,42.9,43.1] }
+    ]
+  };
+
+  (function renderTrend() {
+    var box = document.getElementById('trendChart');
+    if (!box) return;
+
+    var W = 880, H = 300, PL = 44, PR = 148, PT = 14, PB = 30;
+    var Y0 = 30, Y1 = 90;                       // 单一 y 轴：覆盖率 %
+    var n = TREND.times.length;
+    var iw = W - PL - PR, ih = H - PT - PB;
+    var X = function (i) { return PL + i * iw / (n - 1); };
+    var Y = function (v) { return PT + (Y1 - v) / (Y1 - Y0) * ih; };
+    var NS = 'http://www.w3.org/2000/svg';
+    function el(t, a) {
+      var e = document.createElementNS(NS, t);
+      for (var k in a) e.setAttribute(k, a[k]);
+      return e;
+    }
+
+    var svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': '各服务行覆盖率近 24 小时趋势' });
+
+    // 网格 + y 轴刻度（recessive）
+    for (var v = Y0; v <= Y1; v += 10) {
+      svg.appendChild(el('line', { class: 'grid-line', x1: PL, y1: Y(v), x2: PL + iw, y2: Y(v) }));
+      var yt = el('text', { class: 'axis-txt tab', x: PL - 10, y: Y(v) + 4, 'text-anchor': 'end' });
+      yt.textContent = v + '%';
+      svg.appendChild(yt);
+    }
+    // x 轴
+    svg.appendChild(el('line', { class: 'axis-line', x1: PL, y1: Y(Y0), x2: PL + iw, y2: Y(Y0) }));
+    for (var i = 0; i < n; i += 2) {
+      var xt = el('text', { class: 'axis-txt tab', x: X(i), y: H - 10, 'text-anchor': 'middle' });
+      xt.textContent = TREND.times[i];
+      svg.appendChild(xt);
+    }
+
+    // 系列线 + 末端直接标注（light 模式下 aqua/yellow 对比度不足，标签是必需的补偿）
+    TREND.series.forEach(function (s) {
+      var d = s.data.map(function (v, i) { return (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1); }).join(' ');
+      svg.appendChild(el('path', { class: 'series-line', d: d, stroke: 'var(--series-' + s.slot + ')' }));
+
+      // 名称与数值同一行：分两行会让相邻系列的标签贴到 6px 以内
+      var ly = Y(s.data[n - 1]);
+      var lab = el('text', { class: 'end-label', x: PL + iw + 10, y: ly + 4 });
+      var nm = el('tspan', { fill: 'var(--series-' + s.slot + ')' });
+      nm.textContent = s.name;
+      var vl = el('tspan', { class: 'tab', dx: 6, fill: 'var(--el-text-color-secondary)' });
+      vl.textContent = s.data[n - 1].toFixed(1) + '%';
+      lab.appendChild(nm); lab.appendChild(vl);
+      svg.appendChild(lab);
+    });
+
+    // hover 层
+    var hLine = el('line', { class: 'hover-line', y1: PT, y2: PT + ih, style: 'display:none' });
+    svg.appendChild(hLine);
+    var hDots = TREND.series.map(function (s) {
+      var c = el('circle', { class: 'hover-dot', r: 4.5, fill: 'var(--series-' + s.slot + ')', style: 'display:none' });
+      svg.appendChild(c);
+      return c;
+    });
+    var hit = el('rect', { x: PL, y: PT, width: iw, height: ih, fill: 'transparent', style: 'cursor:crosshair' });
+    svg.appendChild(hit);
+    box.appendChild(svg);
+
+    var tip = document.createElement('div');
+    tip.className = 'viz-tip';
+    box.appendChild(tip);
+
+    function show(e) {
+      var r = svg.getBoundingClientRect();
+      if (!r.width) return;                      // 容器尚未布局时不要算出 NaN 下标
+      var px = (e.clientX - r.left) / r.width * W;
+      var idx = Math.round((px - PL) / iw * (n - 1));
+      if (!isFinite(idx)) return;
+      idx = Math.max(0, Math.min(n - 1, idx));
+
+      hLine.setAttribute('x1', X(idx)); hLine.setAttribute('x2', X(idx));
+      hLine.style.display = '';
+      var rows = '';
+      TREND.series.forEach(function (s, k) {
+        hDots[k].setAttribute('cx', X(idx));
+        hDots[k].setAttribute('cy', Y(s.data[idx]));
+        hDots[k].style.display = '';
+        rows += '<div class="tip-row"><i style="background:var(--series-' + s.slot + ')"></i>' +
+                '<span>' + s.name + '</span><b>' + s.data[idx].toFixed(1) + '%</b></div>';
+      });
+      tip.innerHTML = '<div class="tip-time">' + TREND.times[idx] + '</div>' + rows;
+      tip.classList.add('on');
+      var left = X(idx) / W * r.width + 14;
+      if (left + 190 > r.width) left = X(idx) / W * r.width - 190;
+      tip.style.left = Math.max(0, left) + 'px';
+      tip.style.top = '12px';
+    }
+    function hide() {
+      hLine.style.display = 'none';
+      hDots.forEach(function (d) { d.style.display = 'none'; });
+      tip.classList.remove('on');
+    }
+    hit.addEventListener('mousemove', show);
+    hit.addEventListener('mouseleave', hide);
+
+    // 表格视图（对比度 WARN 的第二重补偿，也是无障碍要求）
+    var tbl = document.getElementById('trendTable');
+    var head = '<thead><tr><th>时间</th>' + TREND.series.map(function (s) { return '<th>' + s.name + '</th>'; }).join('') + '</tr></thead>';
+    var body = '<tbody>' + TREND.times.map(function (t, i) {
+      return '<tr><td class="mono">' + t + '</td>' +
+        TREND.series.map(function (s) { return '<td class="mono">' + s.data[i].toFixed(1) + '%</td>'; }).join('') + '</tr>';
+    }).join('') + '</tbody>';
+    tbl.innerHTML = head + body;
+
+    document.getElementById('trendLegend').innerHTML = TREND.series.map(function (s) {
+      return '<span><i style="background:var(--series-' + s.slot + ')"></i>' + s.name + '</span>';
+    }).join('');
+
+    var showingTable = false;
+    document.getElementById('trendTableBtn').addEventListener('click', function () {
+      showingTable = !showingTable;
+      document.getElementById('trendChartBox').style.display = showingTable ? 'none' : '';
+      document.getElementById('trendTableBox').style.display = showingTable ? '' : 'none';
+      this.textContent = showingTable ? '切换图表视图' : '切换表格视图';
+    });
+  })();
+</script>

@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>代码实时染色平台</title>
+<style>
+  :root {
+    --el-color-primary: #409eff;
+    --el-color-primary-light-9: #ecf5ff;
+    --el-color-success: #67c23a;
+    --el-color-success-light-9: #f0f9eb;
+    --el-color-warning: #e6a23c;
+    --el-color-warning-light-9: #fdf6ec;
+    --el-color-danger: #f56c6c;
+    --el-color-danger-light-9: #fef0f0;
+    --el-color-info: #909399;
+    --el-text-color-primary: #303133;
+    --el-text-color-regular: #606266;
+    --el-text-color-secondary: #909399;
+    --el-border-color: #dcdfe6;
+    --el-border-color-lighter: #ebeef5;
+    --el-bg-color: #fff;
+    --el-bg-color-page: #f2f3f5;
+    --el-fill-color-light: #f5f7fa;
+    --radius: 4px;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    --sans: "Helvetica Neue", Helvetica, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --el-color-primary-light-9: #18222c;
+      --el-color-success-light-9: #1c2518;
+      --el-color-warning-light-9: #292218;
+      --el-color-danger-light-9: #2b1d1d;
+      --el-text-color-primary: #e5eaf3;
+      --el-text-color-regular: #cfd3dc;
+      --el-text-color-secondary: #a3a6ad;
+      --el-border-color: #4c4d4f;
+      --el-border-color-lighter: #363637;
+      --el-bg-color: #141414;
+      --el-bg-color-page: #0a0a0a;
+      --el-fill-color-light: #262727;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: var(--sans); font-size: 14px; color: var(--el-text-color-regular); background: var(--el-bg-color-page); }
+
+  header {
+    height: 56px; background: var(--el-bg-color); border-bottom: 1px solid var(--el-border-color-lighter);
+    display: flex; align-items: center; gap: 14px; padding: 0 18px; position: sticky; top: 0; z-index: 10;
+  }
+  h1 { font-size: 16px; margin: 0; color: var(--el-text-color-primary); font-weight: 600; }
+  .spacer { margin-left: auto; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
+    border-radius: 12px; font-size: 12px; border: 1px solid;
+  }
+  .pill.ok { background: var(--el-color-success-light-9); border-color: var(--el-color-success); color: var(--el-color-success); }
+  .pill.err { background: var(--el-color-danger-light-9); border-color: var(--el-color-danger); color: var(--el-color-danger); }
+  .pill i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .pill.ok i { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+  @media (prefers-reduced-motion: reduce) { .pill.ok i { animation: none } }
+
+  button {
+    height: 30px; padding: 0 14px; font-family: inherit; font-size: 13px;
+    border: 1px solid var(--el-border-color); background: var(--el-bg-color);
+    color: var(--el-text-color-regular); border-radius: var(--radius); cursor: pointer;
+  }
+  button:hover { color: var(--el-color-primary); border-color: var(--el-color-primary); }
+  button.primary { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; }
+
+  main { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; padding: 14px; align-items: start; }
+  .card { background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius); overflow: hidden; }
+  .card-head { padding: 11px 14px; border-bottom: 1px solid var(--el-border-color-lighter); display: flex; align-items: center; gap: 8px; }
+  .card-head h2 { font-size: 14px; margin: 0; color: var(--el-text-color-primary); font-weight: 600; }
+  .card-head .sub { font-size: 12px; color: var(--el-text-color-secondary); margin-left: auto; font-family: var(--mono); }
+
+  .file { display: flex; align-items: center; gap: 8px; padding: 8px 14px; cursor: pointer; border: none; background: none; width: 100%; text-align: left; font-family: inherit; font-size: 13px; color: var(--el-text-color-regular); }
+  .file:hover { background: var(--el-fill-color-light); }
+  .file.on { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
+  .file .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file .pc { margin-left: auto; font-family: var(--mono); font-size: 12px; flex: none; }
+  .pc.s { color: var(--el-color-success); } .pc.w { color: var(--el-color-warning); } .pc.d { color: var(--el-color-danger); }
+
+  .legend { display: flex; gap: 12px; padding: 9px 14px; background: var(--el-fill-color-light); border-bottom: 1px solid var(--el-border-color-lighter); font-size: 12px; color: var(--el-text-color-secondary); flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 10px; height: 10px; border-radius: 2px; }
+
+  .src { font-family: var(--mono); font-size: 13px; line-height: 21px; overflow-x: auto; max-height: calc(100vh - 210px); overflow-y: auto; }
+  .ln { display: flex; white-space: pre; border-left: 3px solid transparent; }
+  .ln.COVERED { background: var(--el-color-success-light-9); border-left-color: var(--el-color-success); }
+  .ln.MISSED { background: var(--el-color-danger-light-9); border-left-color: var(--el-color-danger); }
+  .ln.PARTIAL { background: var(--el-color-warning-light-9); border-left-color: var(--el-color-warning); }
+  .ln.flash { animation: flash 1s ease-out; }
+  @keyframes flash { from { background: var(--el-color-success); } to { } }
+  @media (prefers-reduced-motion: reduce) { .ln.flash { animation: none } }
+  .ln .no { width: 52px; flex: none; text-align: right; padding-right: 14px; color: var(--el-text-color-secondary); opacity: .7; user-select: none; font-size: 12px; }
+  .ln .tx { color: var(--el-text-color-primary); padding-right: 16px; }
+
+  .empty { padding: 40px 20px; text-align: center; color: var(--el-text-color-secondary); }
+  .err { margin: 14px; padding: 10px 14px; background: var(--el-color-danger-light-9); color: var(--el-color-danger); border-radius: var(--radius); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>代码实时染色平台</h1>
+  <span id="probe" class="pill err"><i></i>探针未连接</span>
+  <span id="overall" style="font-family:var(--mono);color:var(--el-text-color-primary)">—</span>
+  <div class="spacer"></div>
+  <button id="btnCollect">立即采集</button>
+  <button id="btnReset" class="primary">清零计数器</button>
+</header>
+
+<div id="banner"></div>
+
+<main>
+  <div class="card">
+    <div class="card-head"><h2>源文件</h2><span class="sub" id="fileCount">0</span></div>
+    <div id="files"><div class="empty">等待采集…</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2 id="curPath">未选择文件</h2>
+      <span class="sub" id="curRatio"></span>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--el-color-success)"></i>已覆盖</span>
+      <span><i style="background:var(--el-color-warning)"></i>部分分支</span>
+      <span><i style="background:var(--el-color-danger)"></i>未覆盖</span>
+      <span><i style="background:var(--el-border-color)"></i>非可执行行</span>
+      <span style="margin-left:auto">JaCoCo 探针为布尔型，只记录是否执行，不记录执行次数</span>
+    </div>
+    <div class="src" id="src"><div class="empty">在左侧选择一个文件</div></div>
+  </div>
+</main>
+
+<script>
+  let current = null;
+  let prevStatus = {};
+
+  const cls = r => r >= 70 ? 's' : r >= 45 ? 'w' : 'd';
+
+  async function loadSummary() {
+    const r = await fetch('/api/coverage/summary');
+    const d = await r.json();
+    render(d);
+    return d;
+  }
+
+  function render(d) {
+    const probe = document.getElementById('probe');
+    const connected = d.probeStatus === 'CONNECTED';
+    // 探针不可达与平台配置错误是两回事，排查方向完全不同，界面上必须分开说
+    const label = {
+      CONNECTED: '探针已连接 · 3s 轮询',
+      DISCONNECTED: '探针未连接',
+      ANALYZE_ERROR: '探针正常，分析失败'
+    }[d.probeStatus] || '状态未知';
+    probe.className = 'pill ' + (connected ? 'ok' : 'err');
+    probe.innerHTML = '<i></i>' + label;
+
+    document.getElementById('overall').textContent =
+      connected ? ('整体行覆盖率 ' + d.overallRatio + '%') : '—';
+
+    let banner = '';
+    if (d.probeStatus === 'DISCONNECTED' && d.lastError) {
+      banner = '<div class="err">探针不可达：' + d.lastError + '<br>请确认被测服务已带 -javaagent 参数启动，且 tcpserver 端口可达。</div>';
+    } else if (d.probeStatus === 'ANALYZE_ERROR' && d.lastError) {
+      banner = '<div class="err">覆盖数据分析失败：' + d.lastError + '<br>探针连接正常，问题在平台侧 —— 请检查 coverage.classes-dir 配置是否指向被测服务的编译产物。</div>';
+    }
+    document.getElementById('banner').innerHTML = banner;
+
+    document.getElementById('fileCount').textContent = d.files.length + ' 个';
+    const box = document.getElementById('files');
+    if (!d.files.length) {
+      box.innerHTML = '<div class="empty">尚无数据</div>';
+      return;
+    }
+    box.innerHTML = d.files.map(f =>
+      '<button class="file' + (f.path === current ? ' on' : '') + '" data-path="' + f.path + '">' +
+        '<span class="nm">' + f.sourceFileName + '</span>' +
+        '<span class="pc ' + cls(f.ratio) + '">' + f.ratio + '%</span>' +
+      '</button>').join('');
+    box.querySelectorAll('.file').forEach(b =>
+      b.addEventListener('click', () => openFile(b.dataset.path)));
+  }
+
+  async function openFile(path) {
+    // 换文件就丢弃上一份行状态，否则会拿 A 文件第 N 行的状态去比 B 文件第 N 行，
+    // 把一条从未变化的行误报成「刚刚被覆盖」
+    if (path !== current) prevStatus = {};
+    current = path;
+    document.querySelectorAll('.file').forEach(b =>
+      b.classList.toggle('on', b.dataset.path === path));
+
+    const r = await fetch('/api/coverage/file?path=' + encodeURIComponent(path));
+    const d = await r.json();
+    document.getElementById('curPath').textContent = path;
+
+    if (!d.found) {
+      document.getElementById('src').innerHTML = '<div class="err">' + (d.error || '未找到该文件') + '</div>';
+      return;
+    }
+    document.getElementById('curRatio').textContent =
+      d.ratio + '% · 已覆盖 ' + d.coveredLines + ' 行 / 未覆盖 ' + d.missedLines + ' 行';
+
+    const next = {};
+    document.getElementById('src').innerHTML = d.rows.map(r => {
+      next[r.line] = r.status;
+      // 上一次是未覆盖、这次变成已覆盖 → 高亮闪一下，让「变绿」这件事可见
+      const justCovered = prevStatus[r.line] === 'MISSED' && r.status === 'COVERED';
+      return '<div class="ln ' + r.status + (justCovered ? ' flash' : '') + '">' +
+             '<span class="no">' + r.line + '</span>' +
+             '<span class="tx">' + esc(r.text) + '</span></div>';
+    }).join('');
+    prevStatus = next;
+  }
+
+  function esc(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  document.getElementById('btnCollect').addEventListener('click', async () => {
+    render(await (await fetch('/api/coverage/collect', { method: 'POST' })).json());
+    if (current) openFile(current);
+  });
+  document.getElementById('btnReset').addEventListener('click', async () => {
+    await fetch('/api/coverage/reset', { method: 'POST' });
+    prevStatus = {};
+    await loadSummary();
+    if (current) openFile(current);
+  });
+
+  // 覆盖率变化时由服务端主动推送，避免前端空轮询
+  function connectWs() {
+    const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/coverage');
+    ws.onmessage = ev => {
+      render(JSON.parse(ev.data));
+      if (current) openFile(current);
+    };
+    ws.onclose = () => setTimeout(connectWs, 3000);
+  }
+
+  loadSummary().then(d => {
+    if (d.files.length) openFile(d.files[0].path);
+  });
+  connectWs();
+</script>
+</body>
+</html>

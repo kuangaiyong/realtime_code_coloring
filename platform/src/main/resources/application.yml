@@ -1,0 +1,20 @@
+server:
+  port: 18090
+
+spring:
+  application:
+    name: coverage-platform
+
+coverage:
+  # 被测服务的 JaCoCo 探针地址（tcpserver 模式）
+  host: localhost
+  port: 6300
+  # 产物与源码目录：必须与探针所在进程的构建版本一致，否则 class id 对不上
+  classes-dir: ../demo-service/target/classes
+  source-dir: ../demo-service/src/main/java
+  interval-ms: 3000
+  timeout-ms: 3000
+
+logging:
+  level:
+    com.coverage.platform: INFO
