@@ -6,18 +6,23 @@ spring:
     name: coverage-platform
 
 coverage:
-  # 被测服务的 JaCoCo 探针地址（tcpserver 模式），可配多个实例。
+  # 被测实例的探针地址，形如 [语言://]host:port，不写语言默认 java。
   # 同一服务的多个实例各自持有计数器，聚合起来才是这个服务的真实覆盖
   instances:
-    - localhost:6300
-    - localhost:6301
-  # 产物与源码目录：必须与探针所在进程的构建版本一致，否则 class id 对不上
-  classes-dir: ../demo-service/target/classes
-  source-dir: ../demo-service/src/main/java
+    - java://localhost:6300
+    - java://localhost:6301
+    - go://localhost:6400
   # 增量口径：去哪个仓库算 diff、默认与哪个基线比。
-  # 默认与上一次提交比（本地开发场景）；接入 CI 时改为集成分支，如 main
+  # IR 里的文件路径一律以 repo-dir 为基准，多语言才能共存于同一套口径
   repo-dir: ..
   baseline: HEAD~1
+  # Java：产物目录必须与探针所在进程的构建版本一致，否则 class id 对不上
+  classes-dir: ../demo-service/target/classes
+  java-source-root: demo-service/src/main/java
+  # Go：归一化要调 `go tool covdata`，二进制格式没有稳定契约可自行解析
+  go-source-root: demo-service-go
+  go-module-path: github.com/kuangaiyong/realtime_code_coloring/demo-service-go
+  go-tool: C:/Users/Administrator/devtools/go/bin/go.exe
   interval-ms: 3000
   timeout-ms: 3000
 

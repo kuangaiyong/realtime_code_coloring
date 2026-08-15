@@ -5,6 +5,8 @@ import com.coverage.platform.collector.GitService;
 import com.coverage.platform.collector.ProbeClient;
 import com.coverage.platform.collector.ProbeDump;
 import com.coverage.platform.collector.ProbeEndpoint;
+import com.coverage.platform.collector.GoCoverageAnalyzer;
+import com.coverage.platform.collector.GoProbeClient;
 import com.coverage.platform.config.CoverageProperties;
 import com.coverage.platform.model.BuildVersion;
 import com.coverage.platform.model.FileCoverage;
@@ -36,6 +38,8 @@ public class CoverageService {
 
     private final ProbeClient probeClient;
     private final CoverageAnalyzer analyzer;
+    private final GoProbeClient goProbe;
+    private final GoCoverageAnalyzer goAnalyzer;
     private final GitService git;
     private final CoverageProperties props;
     private final CoveragePublisher publisher;
@@ -88,10 +92,13 @@ public class CoverageService {
      */
     private final Object collectLock = new Object();
 
-    public CoverageService(ProbeClient probeClient, CoverageAnalyzer analyzer, GitService git,
+    public CoverageService(ProbeClient probeClient, CoverageAnalyzer analyzer,
+                           GoProbeClient goProbe, GoCoverageAnalyzer goAnalyzer, GitService git,
                            CoverageProperties props, CoveragePublisher publisher) {
         this.probeClient = probeClient;
         this.analyzer = analyzer;
+        this.goProbe = goProbe;
+        this.goAnalyzer = goAnalyzer;
         this.git = git;
         this.props = props;
         this.publisher = publisher;
@@ -118,19 +125,32 @@ public class CoverageService {
             lastError = e.getMessage();
             return;
         }
-        // 各实例的执行数据并进同一个 store：JaCoCo 按 class id 归并、逐探针取或，
-        // 结果正是「这些实例合起来跑到了哪些行」。同一行只要有一台跑过就算覆盖
-        ExecutionDataStore merged = new ExecutionDataStore();
+        // 同语言的实例先在各自的原生数据层面合并：Java 走 exec 的探针取或，
+        // Go 交给 covdata 按块求和。若提前退化成行状态再合并，两台各覆盖一半分支时
+        // 结果会从 COVERED 掉成 PARTIAL，精度平白损失。
+        // 跨语言才在 IR 层合并 —— 各语言的文件路径互不相交，直接并起来即可
+        ExecutionDataStore javaMerged = new ExecutionDataStore();
+        boolean anyJava = false;
+        List<byte[][]> goDumps = new ArrayList<>();
         List<InstanceStatus> statuses = new ArrayList<>();
         List<BuildVersion> reported = new ArrayList<>();
 
         for (ProbeEndpoint ep : endpoints) {
             try {
-                ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
-                for (ExecutionData d : dump.exec().getContents()) {
-                    merged.visitClassExecution(d);
+                BuildVersion v;
+                if (ProbeEndpoint.GO.equals(ep.language())) {
+                    // meta 与 counters 要一并取：counters 单独存在没有意义，
+                    // 块的位置信息全在 meta 里
+                    goDumps.add(new byte[][]{goProbe.meta(ep), goProbe.counters(ep)});
+                    v = BuildVersion.parseId(goProbe.buildId(ep));
+                } else {
+                    ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
+                    for (ExecutionData d : dump.exec().getContents()) {
+                        javaMerged.visitClassExecution(d);
+                    }
+                    anyJava = true;
+                    v = BuildVersion.parse(dump.sessions());
                 }
-                BuildVersion v = BuildVersion.parse(dump.sessions());
                 reported.add(v);
                 statuses.add(new InstanceStatus(ep.toString(), "CONNECTED", v, null));
             } catch (Exception e) {
@@ -153,12 +173,18 @@ public class CoverageService {
         }
 
         try {
-            File classesDir = new File(props.getClassesDir());
-            if (!classesDir.isDirectory()) {
-                // 探针是好的，问题出在平台侧配置。混同为「探针未连接」会让人去查被测服务，方向完全错
-                throw new IllegalStateException("classes-dir 不是有效目录：" + classesDir.getAbsolutePath());
+            Map<String, FileCoverage> fresh = new LinkedHashMap<>();
+            if (anyJava) {
+                File classesDir = new File(props.getClassesDir());
+                if (!classesDir.isDirectory()) {
+                    // 探针是好的，问题出在平台侧配置。混同为「探针未连接」会让人去查被测服务，方向完全错
+                    throw new IllegalStateException("classes-dir 不是有效目录：" + classesDir.getAbsolutePath());
+                }
+                fresh.putAll(analyzer.analyze(javaMerged, classesDir, props.getJavaSourceRoot()));
             }
-            Map<String, FileCoverage> fresh = analyzer.analyze(merged, classesDir);
+            if (!goDumps.isEmpty()) {
+                fresh.putAll(goAnalyzer.analyze(goDumps));
+            }
 
             Map<String, FileCoverage> previous = state.get().files();
             state.set(new Snapshot(fresh, unifiedVersion(reported), versionConflict(statuses)));
@@ -329,7 +355,8 @@ public class CoverageService {
         cov.lines().forEach(l -> statusByLine.put(l.line(), l.status()));
 
         List<Map<String, Object>> rows = new ArrayList<>();
-        Path src = Path.of(props.getSourceDir(), path);
+        // IR 里的路径以仓库根为基准，多语言各自的源码根都在其下
+        Path src = Path.of(props.getRepoDir(), path);
         try {
             List<String> srcLines = Files.readAllLines(src, StandardCharsets.UTF_8);
             for (int i = 0; i < srcLines.size(); i++) {
@@ -377,7 +404,11 @@ public class CoverageService {
             // 场景归因就会把别人早先跑过的代码算成这个场景跑的。
             // 任一台失败就抛出：宁可让调用方重试，也不能留下半清零的集群
             for (ProbeEndpoint ep : endpoints()) {
-                probeClient.dump(ep.host(), ep.port(), true, props.getTimeoutMs());
+                if (ProbeEndpoint.GO.equals(ep.language())) {
+                    goProbe.clear(ep);
+                } else {
+                    probeClient.dump(ep.host(), ep.port(), true, props.getTimeoutMs());
+                }
             }
             // 清空覆盖数据但保留版本：被测实例没重启，产物版本没变，
             // 丢掉它会让并发的增量请求误报「未上报 buildCommit」

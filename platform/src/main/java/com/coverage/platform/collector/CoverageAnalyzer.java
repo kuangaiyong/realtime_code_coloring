@@ -22,16 +22,23 @@ import java.util.Map;
 @Component
 public class CoverageAnalyzer {
 
-    public Map<String, FileCoverage> analyze(ExecutionDataStore execStore, File classesDir) throws IOException {
+    /**
+     * @param sourceRoot 源码根目录相对仓库根的位置，如 demo-service/src/main/java。
+     *                   产出的 path 一律以仓库根为基准 —— 多语言共存时各有各的源码根，
+     *                   IR 里再用「源码根相对路径」就无法唯一定位文件，也对不上 git diff 的输出
+     */
+    public Map<String, FileCoverage> analyze(ExecutionDataStore execStore, File classesDir, String sourceRoot)
+            throws IOException {
         CoverageBuilder builder = new CoverageBuilder();
         new Analyzer(execStore, builder).analyzeAll(classesDir);
 
+        String prefix = sourceRoot == null || sourceRoot.isBlank() ? "" : sourceRoot.replace('\\', '/') + "/";
         Map<String, FileCoverage> result = new LinkedHashMap<>();
         // 用 getSourceFiles() 而不是 getClasses()：JaCoCo 已按源文件把外部类、内部类、
         // 匿名类的覆盖数据聚合好了。若改为遍历 getClasses() 自行合并，
         // 同一行同时属于两个类时（例如写在一行里的匿名内部类）会被重复计入分母。
         for (ISourceFileCoverage sf : builder.getSourceFiles()) {
-            String path = sf.getPackageName() + "/" + sf.getName();
+            String path = prefix + sf.getPackageName() + "/" + sf.getName();
 
             List<FileCoverage.LineCoverage> lines = new ArrayList<>();
             int covered = 0, missed = 0;

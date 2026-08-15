@@ -2,6 +2,8 @@ package com.coverage.platform.service;
 
 import com.coverage.platform.collector.CoverageAnalyzer;
 import com.coverage.platform.collector.GitService;
+import com.coverage.platform.collector.GoCoverageAnalyzer;
+import com.coverage.platform.collector.GoProbeClient;
 import com.coverage.platform.collector.ProbeClient;
 import com.coverage.platform.config.CoverageProperties;
 import org.junit.jupiter.api.BeforeEach;
@@ -34,6 +36,7 @@ class CoverageServiceTest {
         props.setInstances(List.of("localhost:" + dead));
         props.setTimeoutMs(300);
         service = new CoverageService(new ProbeClient(), new CoverageAnalyzer(),
+                new GoProbeClient(props), new GoCoverageAnalyzer(props),
                 new GitService(props), props, new CoveragePublisher());
     }
 

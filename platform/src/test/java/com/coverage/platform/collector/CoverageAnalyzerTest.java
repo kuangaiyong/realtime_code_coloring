@@ -27,7 +27,7 @@ class CoverageAnalyzerTest {
     @Test
     void 无执行数据时全部可执行行标记为未覆盖() throws Exception {
         // 空的 ExecutionDataStore 表示「探针一次都没命中」
-        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), classesDir());
+        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), classesDir(), null);
 
         assertFalse(result.isEmpty(), "应至少分析出一个源文件");
 
@@ -41,7 +41,7 @@ class CoverageAnalyzerTest {
 
     @Test
     void 不可执行行不出现在结果中() throws Exception {
-        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), classesDir());
+        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), classesDir(), null);
 
         // 只保留 MISSED/PARTIAL/COVERED；空行、注释、import 等不该占据分母
         result.values().forEach(f ->
@@ -52,7 +52,7 @@ class CoverageAnalyzerTest {
 
     @Test
     void 行号按升序排列以便前端直接渲染() throws Exception {
-        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), classesDir());
+        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), classesDir(), null);
 
         result.values().forEach(f -> {
             int prev = 0;
@@ -73,7 +73,7 @@ class CoverageAnalyzerTest {
         File testClasses = new File("target/test-classes");
         assertTrue(testClasses.isDirectory());
 
-        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), testClasses);
+        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), testClasses, null);
 
         FileCoverage f = result.get("com/coverage/platform/collector/SingleLineAnonymousFixture.java");
         assertNotNull(f, "未分析到验证夹具");
@@ -87,7 +87,7 @@ class CoverageAnalyzerTest {
 
     @Test
     void 覆盖率等于已覆盖行占可执行行的比例() throws Exception {
-        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), classesDir());
+        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), classesDir(), null);
 
         result.values().forEach(f -> {
             int total = f.coveredLines() + f.missedLines();
