@@ -45,11 +45,13 @@
 | 5 | 实时推送与染色渲染 | `scripts/e2e_verify.py`、`scripts/ws_verify.js` | 端到端延迟 **≤ 5s** |
 | 6 | 场景边界归因 + 并发场景拒绝 | `scripts/e2e_scenario.py` | 两场景覆盖行集合互不越界；并发 start、进行中清零均返回 409 |
 | 7 | 产物与源码版本一致性校验 | `scripts/e2e_incremental.py` | 源码漂移时返回 409 而非 200 |
+| 8 | 多实例聚合 + 实例间版本校验 | `scripts/e2e_multi_instance.py` | 各实例覆盖取并集；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
 
 新增/修改上述任一功能，必须同步新增或调整对应 E2E 用例，并在 commit 描述里
 贴出可观察证据。
 
-**尚未覆盖**：多实例聚合（P1 剩余项）——接入时需补第 8 条及其 E2E。
+至此 P1 的核心功能已全部有 E2E 覆盖。下一阶段（P2 Go 接入）的关键验收是
+**不修改 Analyzer / Web 任何代码**，只新增采集器与归一化适配器。
 
 ---
 
@@ -61,8 +63,11 @@
 bash scripts/run_local.sh verify
 ```
 
-它会依次重启被测服务复位业务状态 → 跑 4 套 E2E。全部为真实服务、真实探针、
-真实 git、真实 HTTP，**不允许用 mock / 桩 / 假数据通过验证**。
+它会依次重启**两个**被测实例复位业务状态 → 跑 5 套 E2E。全部为真实服务、
+真实探针、真实 git、真实 HTTP，**不允许用 mock / 桩 / 假数据通过验证**。
+
+多实例用例需要摆布 2 号实例，起停 JVM 由 `run_local.sh` 的
+`demo2-stop|demo2-start|demo2-mismatch|demo2-dirty` 子命令负责。
 
 单测：`mvn -B test`（真实 socket、真实 git 仓库，同样无 mock）。
 
@@ -87,3 +92,7 @@ bash scripts/run_local.sh verify
 
 `sessionid` 是平台唯一能拿到的「实例自报构建版本」，增量口径靠它校验行号能否对齐。
 不配它则增量功能不可用（平台会明确报错，而不是给出错位的结果）。
+
+多实例时每台用不同的探针端口，逐个填进平台的 `coverage.instances`。
+**各实例的 sessionid 必须完全一致（含 `-dirty` 后缀）**：commit 相同但一台脏一台净，
+加载的是两份不同的字节码，平台会判为版本冲突并拒绝出增量报告。
