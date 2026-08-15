@@ -4,9 +4,12 @@ import com.coverage.platform.collector.CoverageAnalyzer;
 import com.coverage.platform.collector.GitService;
 import com.coverage.platform.collector.ProbeClient;
 import com.coverage.platform.collector.ProbeDump;
+import com.coverage.platform.collector.ProbeEndpoint;
 import com.coverage.platform.config.CoverageProperties;
 import com.coverage.platform.model.BuildVersion;
 import com.coverage.platform.model.FileCoverage;
+import org.jacoco.core.data.ExecutionData;
+import org.jacoco.core.data.ExecutionDataStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -21,6 +24,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 @Service
 public class CoverageService {
@@ -40,14 +44,29 @@ public class CoverageService {
      * 覆盖数据与它所属的构建版本必须整体替换。
      * 拆成两个字段各自更新的话，被测服务重启换版本的那一刻，请求可能读到
      * 「新数据 + 旧版本」的组合，据此算出的增量报告行号错位却仍是 200。
+     *
+     * versionError 记录「多实例之间版本对不上」这种拿不出统一版本的原因，
+     * 与 version==null（压根没上报）要分开讲，否则错误提示会把人引向错误的排查方向。
      */
-    private record Snapshot(Map<String, FileCoverage> files, BuildVersion version) {}
+    private record Snapshot(Map<String, FileCoverage> files, BuildVersion version, String versionError) {}
+
+    /**
+     * 单个被测实例的采集状态，用于回答「少的那部分覆盖是哪台机器上的」。
+     * version 保留 dirty 标记：同一提交的干净产物与脏产物是两份不同的字节码，
+     * 只比 commit 会把它们当成同一个版本。
+     */
+    private record InstanceStatus(String endpoint, String status, BuildVersion version, String error) {
+        String label() {
+            return version == null ? null : version.shortCommit() + (version.dirty() ? "-dirty" : "");
+        }
+    }
 
     private final AtomicReference<Snapshot> state =
-            new AtomicReference<>(new Snapshot(Collections.emptyMap(), null));
+            new AtomicReference<>(new Snapshot(Collections.emptyMap(), null, null));
     private volatile String probeStatus = "UNKNOWN";
     private volatile String lastError;
     private volatile Instant lastCollectedAt;
+    private volatile List<InstanceStatus> instances = List.of();
 
     /**
      * 一个测试场景独占的覆盖：start 时清零计数器，stop 时抓取快照，
@@ -86,16 +105,50 @@ public class CoverageService {
     }
 
     private void doCollect() {
-        ProbeDump dump;
+        List<ProbeEndpoint> endpoints;
         try {
-            dump = probeClient.dump(props.getHost(), props.getPort(), false, props.getTimeoutMs());
-        } catch (Exception e) {
-            // 只有这一段的失败才真正说明探针不可达
+            endpoints = endpoints();
+        } catch (RuntimeException e) {
+            // 地址配错了要说出来。让异常从 @Scheduled 里抛出去，只会进服务端日志，
+            // 界面上永远停在「状态未知」且没有任何提示，看不出问题在平台自己的配置里
+            if (!"CONFIG_ERROR".equals(probeStatus)) {
+                log.error("被测实例地址配置有误（coverage.instances）：{}", e.getMessage());
+            }
+            probeStatus = "CONFIG_ERROR";
+            lastError = e.getMessage();
+            return;
+        }
+        // 各实例的执行数据并进同一个 store：JaCoCo 按 class id 归并、逐探针取或，
+        // 结果正是「这些实例合起来跑到了哪些行」。同一行只要有一台跑过就算覆盖
+        ExecutionDataStore merged = new ExecutionDataStore();
+        List<InstanceStatus> statuses = new ArrayList<>();
+        List<BuildVersion> reported = new ArrayList<>();
+
+        for (ProbeEndpoint ep : endpoints) {
+            try {
+                ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
+                for (ExecutionData d : dump.exec().getContents()) {
+                    merged.visitClassExecution(d);
+                }
+                BuildVersion v = BuildVersion.parse(dump.sessions());
+                reported.add(v);
+                statuses.add(new InstanceStatus(ep.toString(), "CONNECTED", v, null));
+            } catch (Exception e) {
+                // 单个实例不可达不该让整批采集失败：其余实例的数据仍然是真实的，
+                // 只是这一份聚合结果少了它那部分，必须在状态里说清楚是哪一台
+                statuses.add(new InstanceStatus(ep.toString(), "DISCONNECTED", null, e.getMessage()));
+            }
+        }
+        instances = List.copyOf(statuses);
+
+        long connected = statuses.stream().filter(s -> "CONNECTED".equals(s.status())).count();
+        if (connected == 0) {
             if (!"DISCONNECTED".equals(probeStatus)) {
-                log.warn("采集失败（被测服务未启动或探针未就绪）：{}", e.getMessage());
+                log.warn("采集失败，{} 个实例全部不可达（被测服务未启动或探针未就绪）", endpoints.size());
             }
             probeStatus = "DISCONNECTED";
-            lastError = e.getMessage();
+            lastError = statuses.isEmpty() ? "未配置任何被测实例（coverage.instances）"
+                    : statuses.get(0).error();
             return;
         }
 
@@ -105,12 +158,17 @@ public class CoverageService {
                 // 探针是好的，问题出在平台侧配置。混同为「探针未连接」会让人去查被测服务，方向完全错
                 throw new IllegalStateException("classes-dir 不是有效目录：" + classesDir.getAbsolutePath());
             }
-            Map<String, FileCoverage> fresh = analyzer.analyze(dump.exec(), classesDir);
+            Map<String, FileCoverage> fresh = analyzer.analyze(merged, classesDir);
 
             Map<String, FileCoverage> previous = state.get().files();
-            state.set(new Snapshot(fresh, BuildVersion.parse(dump.sessions())));
-            probeStatus = "CONNECTED";
-            lastError = null;
+            state.set(new Snapshot(fresh, unifiedVersion(reported), versionConflict(statuses)));
+            // 少一台实例，聚合结果就少一部分覆盖：那些行会显示成红色，但其实别的机器跑到了。
+            // 这不是「数据不可用」而是「数据不完整」，所以照常出报告，但状态必须与全连上区分开
+            probeStatus = connected == endpoints.size() ? "CONNECTED" : "PARTIAL";
+            lastError = connected == endpoints.size() ? null
+                    : statuses.stream().filter(s -> !"CONNECTED".equals(s.status()))
+                            .map(s -> s.endpoint() + "（" + s.error() + "）")
+                            .collect(Collectors.joining("、", "以下实例不可达，聚合结果缺少它们的覆盖：", ""));
             lastCollectedAt = Instant.now();
 
             if (changed(previous, fresh)) {
@@ -125,6 +183,49 @@ public class CoverageService {
             probeStatus = "ANALYZE_ERROR";
             lastError = e.getMessage();
         }
+    }
+
+    private List<ProbeEndpoint> endpoints() {
+        return props.getInstances().stream().map(ProbeEndpoint::parse).toList();
+    }
+
+    /**
+     * 全部连上的实例都报同一个版本，才算这批数据有统一版本。
+     * 只要有一台没报或报得不一样，就拿不出可信的版本，增量口径必须停下。
+     */
+    private BuildVersion unifiedVersion(List<BuildVersion> reported) {
+        if (reported.isEmpty() || reported.contains(null)) {
+            return null;
+        }
+        BuildVersion first = reported.get(0);
+        return reported.stream().allMatch(v -> v.commit().equals(first.commit()) && v.dirty() == first.dirty())
+                ? first : null;
+    }
+
+    /**
+     * 实例之间版本不一致时，说清楚是哪台报了哪个版本。
+     *
+     * 这种情况下聚合结果是错的且看不出来：JaCoCo 按 class id 匹配字节码，
+     * 版本对不上的那台实例的执行数据会被静默丢弃 —— 它跑过的行照样显示成红的。
+     */
+    private String versionConflict(List<InstanceStatus> statuses) {
+        // 按「commit + dirty」分组。只按 commit 分的话，同一提交的干净产物与脏产物会被
+        // 当成同一个版本：冲突不上报，版本又统一不了，最后落到「未上报 sessionid」那句
+        // 完全无关的提示上，排查直接走进死胡同
+        Map<String, List<String>> byVersion = new LinkedHashMap<>();
+        for (InstanceStatus s : statuses) {
+            if ("CONNECTED".equals(s.status()) && s.version() != null) {
+                byVersion.computeIfAbsent(s.label(), k -> new ArrayList<>()).add(s.endpoint());
+            }
+        }
+        if (byVersion.size() <= 1) {
+            return null;
+        }
+        String detail = byVersion.entrySet().stream()
+                .map(e -> e.getKey() + " ← " + String.join("、", e.getValue()))
+                .collect(Collectors.joining("；"));
+        return "各被测实例的产物版本不一致（" + detail + "）。它们加载的字节码不同，"
+                + "聚合覆盖会静默丢弃对不上的那部分，请统一版本后重启被测服务";
     }
 
     private boolean changed(Map<String, FileCoverage> before, Map<String, FileCoverage> after) {
@@ -147,17 +248,37 @@ public class CoverageService {
     public Map<String, Object> summary(String mode, String baseline, String scenarioId) {
         Snapshot s = sourceOf(scenarioId);
         Map<String, Object> res = new LinkedHashMap<>();
-        res.put("probeStatus", probeStatus);
-        res.put("lastError", lastError);
         res.put("lastCollectedAt", lastCollectedAt == null ? null : lastCollectedAt.toString());
         res.put("mode", mode);
         res.put("scenarioId", blankToNull(scenarioId));
         res.put("buildCommit", s.version() == null ? null : s.version().commit());
+        res.put("versionError", s.versionError());
+        if (blankToNull(scenarioId) == null) {
+            res.put("probeStatus", probeStatus);
+            res.put("lastError", lastError);
+            // 逐实例列出来，少的那部分覆盖是哪台机器上的一眼可见
+            res.put("instances", instances.stream().map(i -> {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("endpoint", i.endpoint());
+                m.put("status", i.status());
+                m.put("buildCommit", i.version() == null ? null : i.version().commit());
+                m.put("dirty", i.version() != null && i.version().dirty());
+                m.put("error", i.error());
+                return m;
+            }).toList());
+        } else {
+            // 场景数据在 stop 那一刻就定格了，探针此刻是否健康与它无关。
+            // 照搬实时状态的话，事后挂掉一台实例，会给一份本就完整的归档数据扣上
+            // 「覆盖数据不完整」的警告，把人从可信的结论上劝走
+            res.put("probeStatus", "ARCHIVED");
+            res.put("lastError", null);
+            res.put("instances", List.of());
+        }
 
         Map<String, FileCoverage> snap = s.files();
         if (MODE_INCREMENTAL.equals(mode)) {
             String ref = baseline == null || baseline.isBlank() ? props.getBaseline() : baseline;
-            Scope scope = incrementalScope(s.version(), ref);
+            Scope scope = incrementalScope(s, ref);
             res.put("baseline", ref);
             res.put("baselineCommit", scope.baselineCommit());
             res.put("changedFiles", scope.lines().size());
@@ -198,7 +319,7 @@ public class CoverageService {
         Set<Integer> inDiff = null;
         if (MODE_INCREMENTAL.equals(mode)) {
             String ref = baseline == null || baseline.isBlank() ? props.getBaseline() : baseline;
-            Scope scope = incrementalScope(s.version(), ref);
+            Scope scope = incrementalScope(s, ref);
             res.put("baseline", ref);
             inDiff = scope.lines().getOrDefault(path, Set.of());
             cov = restrictOne(cov, inDiff);
@@ -252,10 +373,16 @@ public class CoverageService {
         // 整段与轮询采集互斥：否则一次先开始的轮询可能在清零之后才写回它清零前抓到的数据，
         // 计数器已归零，界面上却还挂着清零前的覆盖率
         synchronized (collectLock) {
-            probeClient.dump(props.getHost(), props.getPort(), true, props.getTimeoutMs());
+            // 每个实例都要清零。漏掉一台，它上面的历史覆盖会在下次采集时并进来，
+            // 场景归因就会把别人早先跑过的代码算成这个场景跑的。
+            // 任一台失败就抛出：宁可让调用方重试，也不能留下半清零的集群
+            for (ProbeEndpoint ep : endpoints()) {
+                probeClient.dump(ep.host(), ep.port(), true, props.getTimeoutMs());
+            }
             // 清空覆盖数据但保留版本：被测实例没重启，产物版本没变，
             // 丢掉它会让并发的增量请求误报「未上报 buildCommit」
-            state.set(new Snapshot(Collections.emptyMap(), state.get().version()));
+            Snapshot prev = state.get();
+            state.set(new Snapshot(Collections.emptyMap(), prev.version(), prev.versionError()));
             doCollect();
         }
     }
@@ -370,7 +497,13 @@ public class CoverageService {
      * 算出「基线之后变动的行」这一分母。
      * 任何一步对不上都直接抛错：增量结果一旦行号错位，看上去依然是一份正常报告。
      */
-    private Scope incrementalScope(BuildVersion bv, String baseline) {
+    private Scope incrementalScope(Snapshot snapshot, String baseline) {
+        if (snapshot.versionError() != null) {
+            // 版本不一致要单独报。落到下面那句「请加 sessionid」会把人引去改启动参数，
+            // 而真正该做的是把各实例的产物统一
+            throw new IncrementalUnavailableException(snapshot.versionError());
+        }
+        BuildVersion bv = snapshot.version();
         if (bv == null) {
             throw new IncrementalUnavailableException(
                     "被测实例未上报 buildCommit。请在 JaCoCo agent 启动参数中加上 sessionid=$(git rev-parse HEAD)");
