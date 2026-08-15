@@ -1,3 +1,8 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>代码染色平台原型</title>
 <style>
   /* ===================================================================
@@ -760,6 +765,8 @@
     padding-top: 12px; margin-top: 12px; border-top: 1px dashed var(--el-border-color-lighter);
   }
 </style>
+</head>
+<body>
 
 <div class="app">
   <!-- ==================== 侧边栏 ==================== -->
@@ -1032,38 +1039,39 @@
                   <span><i style="background:var(--cov-miss-line)"></i>未覆盖</span>
                   <span><i style="background:var(--el-border-color)"></i>非可执行</span>
                 </div>
+                <span class="desc" style="flex-basis:100%;font-size:var(--el-font-size-extra-small)">行号右侧为分支覆盖数（已覆盖/总数），无分支的行留空。JaCoCo 探针为布尔型，只记录是否执行，不记录执行次数。</span>
               </div>
               <div class="src" id="srcView">
                 <div class="ln"><span class="no">38</span><span class="ct"></span><span class="tx"><span class="cm">/** 支付回调入口，网关侧幂等已保证单次投递 */</span></span></div>
                 <div class="ln"><span class="no">39</span><span class="ct"></span><span class="tx"><span class="k">@Transactional</span></span></div>
-                <div class="ln hit"><span class="no">40</span><span class="ct">142×</span><span class="tx"><span class="k">public void</span> <span class="fn">handleCallback</span>(PayCallback cb) {</span></div>
-                <div class="ln hit"><span class="no">41</span><span class="ct">142×</span><span class="tx">    Order order = repo.<span class="fn">findByBizNo</span>(cb.<span class="fn">bizNo</span>());</span></div>
-                <div class="ln partial"><span class="no">42</span><span class="ct">142×</span><span class="tx">    <span class="k">if</span> (order == <span class="k">null</span>) {</span></div>
-                <div class="ln miss"><span class="no">43</span><span class="ct">0</span><span class="tx">        <span class="k">throw new</span> <span class="fn">OrderNotFoundException</span>(cb.<span class="fn">bizNo</span>());</span></div>
+                <div class="ln"><span class="no">40</span><span class="ct"></span><span class="tx"><span class="k">public void</span> <span class="fn">handleCallback</span>(PayCallback cb) {</span></div>
+                <div class="ln hit"><span class="no">41</span><span class="ct"></span><span class="tx">    Order order = repo.<span class="fn">findByBizNo</span>(cb.<span class="fn">bizNo</span>());</span></div>
+                <div class="ln partial"><span class="no">42</span><span class="ct">1/2</span><span class="tx">    <span class="k">if</span> (order == <span class="k">null</span>) {</span></div>
+                <div class="ln miss"><span class="no">43</span><span class="ct"></span><span class="tx">        <span class="k">throw new</span> <span class="fn">OrderNotFoundException</span>(cb.<span class="fn">bizNo</span>());</span></div>
                 <div class="ln"><span class="no">44</span><span class="ct"></span><span class="tx">    }</span></div>
-                <div class="ln hit"><span class="no">45</span><span class="ct">142×</span><span class="tx">    <span class="k">if</span> (order.<span class="fn">isFinalState</span>()) {</span></div>
-                <div class="ln hit"><span class="no">46</span><span class="ct">7×</span><span class="tx">        log.<span class="fn">info</span>(<span class="st">"重复回调，直接返回 bizNo={}"</span>, cb.<span class="fn">bizNo</span>());</span></div>
-                <div class="ln hit"><span class="no">47</span><span class="ct">7×</span><span class="tx">        <span class="k">return</span>;</span></div>
+                <div class="ln hit"><span class="no">45</span><span class="ct">2/2</span><span class="tx">    <span class="k">if</span> (order.<span class="fn">isFinalState</span>()) {</span></div>
+                <div class="ln hit"><span class="no">46</span><span class="ct"></span><span class="tx">        log.<span class="fn">info</span>(<span class="st">"重复回调，直接返回 bizNo={}"</span>, cb.<span class="fn">bizNo</span>());</span></div>
+                <div class="ln hit"><span class="no">47</span><span class="ct"></span><span class="tx">        <span class="k">return</span>;</span></div>
                 <div class="ln"><span class="no">48</span><span class="ct"></span><span class="tx">    }</span></div>
                 <div class="ln"><span class="no">49</span><span class="ct"></span><span class="tx"></span></div>
-                <div class="ln hit"><span class="no">50</span><span class="ct">135×</span><span class="tx">    <span class="k">switch</span> (cb.<span class="fn">status</span>()) {</span></div>
-                <div class="ln hit"><span class="no">51</span><span class="ct">128×</span><span class="tx">        <span class="k">case</span> SUCCESS -> {</span></div>
-                <div class="ln hit"><span class="no">52</span><span class="ct">128×</span><span class="tx">            order.<span class="fn">markPaid</span>(cb.<span class="fn">paidAt</span>(), cb.<span class="fn">channelTxId</span>());</span></div>
-                <div class="ln hit"><span class="no">53</span><span class="ct">128×</span><span class="tx">            eventBus.<span class="fn">publish</span>(<span class="k">new</span> <span class="fn">OrderPaidEvent</span>(order.<span class="fn">id</span>()));</span></div>
+                <div class="ln partial" id="switchLine"><span class="no">50</span><span class="ct">2/4</span><span class="tx">    <span class="k">switch</span> (cb.<span class="fn">status</span>()) {</span></div>
+                <div class="ln"><span class="no">51</span><span class="ct"></span><span class="tx">        <span class="k">case</span> SUCCESS -> {</span></div>
+                <div class="ln hit"><span class="no">52</span><span class="ct"></span><span class="tx">            order.<span class="fn">markPaid</span>(cb.<span class="fn">paidAt</span>(), cb.<span class="fn">channelTxId</span>());</span></div>
+                <div class="ln hit"><span class="no">53</span><span class="ct"></span><span class="tx">            eventBus.<span class="fn">publish</span>(<span class="k">new</span> <span class="fn">OrderPaidEvent</span>(order.<span class="fn">id</span>()));</span></div>
                 <div class="ln"><span class="no">54</span><span class="ct"></span><span class="tx">        }</span></div>
-                <div class="ln hit"><span class="no">55</span><span class="ct">7×</span><span class="tx">        <span class="k">case</span> TIMEOUT -> {</span></div>
-                <div class="ln hit"><span class="no">56</span><span class="ct">7×</span><span class="tx">            order.<span class="fn">markExpired</span>();</span></div>
-                <div class="ln hit"><span class="no">57</span><span class="ct">7×</span><span class="tx">            inventoryClient.<span class="fn">release</span>(order.<span class="fn">skuLocks</span>());</span></div>
+                <div class="ln"><span class="no">55</span><span class="ct"></span><span class="tx">        <span class="k">case</span> TIMEOUT -> {</span></div>
+                <div class="ln hit"><span class="no">56</span><span class="ct"></span><span class="tx">            order.<span class="fn">markExpired</span>();</span></div>
+                <div class="ln hit"><span class="no">57</span><span class="ct"></span><span class="tx">            inventoryClient.<span class="fn">release</span>(order.<span class="fn">skuLocks</span>());</span></div>
                 <div class="ln"><span class="no">58</span><span class="ct"></span><span class="tx">        }</span></div>
-                <div class="ln miss" id="targetLine"><span class="no">59</span><span class="ct">0</span><span class="tx">        <span class="k">case</span> FAILED -> {</span></div>
-                <div class="ln miss"><span class="no">60</span><span class="ct">0</span><span class="tx">            order.<span class="fn">markFailed</span>(cb.<span class="fn">failReason</span>());</span></div>
-                <div class="ln miss"><span class="no">61</span><span class="ct">0</span><span class="tx">            alertService.<span class="fn">notifyRisk</span>(order, cb);</span></div>
+                <div class="ln"><span class="no">59</span><span class="ct"></span><span class="tx">        <span class="k">case</span> FAILED -> {</span></div>
+                <div class="ln miss" id="targetLine"><span class="no">60</span><span class="ct"></span><span class="tx">            order.<span class="fn">markFailed</span>(cb.<span class="fn">failReason</span>());</span></div>
+                <div class="ln miss"><span class="no">61</span><span class="ct"></span><span class="tx">            alertService.<span class="fn">notifyRisk</span>(order, cb);</span></div>
                 <div class="ln"><span class="no">62</span><span class="ct"></span><span class="tx">        }</span></div>
-                <div class="ln miss"><span class="no">63</span><span class="ct">0</span><span class="tx">        <span class="k">default</span> -> <span class="k">throw new</span> <span class="fn">IllegalStateException</span>(<span class="st">"未知回调状态"</span>);</span></div>
+                <div class="ln miss"><span class="no">63</span><span class="ct"></span><span class="tx">        <span class="k">default</span> -> <span class="k">throw new</span> <span class="fn">IllegalStateException</span>(<span class="st">"未知回调状态"</span>);</span></div>
                 <div class="ln"><span class="no">64</span><span class="ct"></span><span class="tx">    }</span></div>
                 <div class="ln"><span class="no">65</span><span class="ct"></span><span class="tx"></span></div>
-                <div class="ln hit"><span class="no">66</span><span class="ct">135×</span><span class="tx">    repo.<span class="fn">save</span>(order);</span></div>
-                <div class="ln hit"><span class="no">67</span><span class="ct">135×</span><span class="tx">    metrics.<span class="fn">record</span>(<span class="st">"pay.callback"</span>, cb.<span class="fn">status</span>());</span></div>
+                <div class="ln hit"><span class="no">66</span><span class="ct"></span><span class="tx">    repo.<span class="fn">save</span>(order);</span></div>
+                <div class="ln hit"><span class="no">67</span><span class="ct"></span><span class="tx">    metrics.<span class="fn">record</span>(<span class="st">"pay.callback"</span>, cb.<span class="fn">status</span>());</span></div>
                 <div class="ln"><span class="no">68</span><span class="ct"></span><span class="tx">}</span></div>
               </div>
             </div>
@@ -1077,7 +1085,7 @@
               <div class="card-body flush">
                 <div class="miss-list">
                   <button class="miss-row"><span class="mono">L43</span><span>订单不存在分支 —— OrderNotFoundException</span><span class="why">无场景触达</span></button>
-                  <button class="miss-row"><span class="mono">L59-61</span><span>支付失败分支 —— markFailed + 风控告警</span><span class="why">无场景触达</span></button>
+                  <button class="miss-row"><span class="mono">L60-61</span><span>支付失败分支 —— markFailed + 风控告警</span><span class="why">无场景触达</span></button>
                   <button class="miss-row"><span class="mono">L63</span><span>未知回调状态兜底</span><span class="why">防御性代码</span></button>
                   <button class="miss-row"><span class="mono">L88-94</span><span>compensateRefund() 补偿退款</span><span class="why">无场景触达</span></button>
                 </div>
@@ -1861,14 +1869,18 @@ LLVM_PROFILE_FILE="/var/cover/svc-%p-%c.profraw" ./target/release/svc</pre>
     // 一次性演示：FAILED 分支在一轮自动化回归后被触达
     setTimeout(function () {
       if (!target) return;
-      var rows = [target, target.nextElementSibling, target.nextElementSibling.nextElementSibling];
+      var rows = [target, target.nextElementSibling];
       rows.forEach(function (r, i) {
         setTimeout(function () {
           r.classList.remove('miss');
           r.classList.add('hit', 'flash');
-          r.querySelector('.ct').textContent = '1×';
         }, i * 700);
       });
+      // switch 行仍是部分覆盖：default 分支依然没走到
+      setTimeout(function () {
+        var sw = document.getElementById('switchLine');
+        if (sw) sw.querySelector('.ct').textContent = '3/4';
+      }, rows.length * 700);
     }, 6000);
   }
 
@@ -2075,3 +2087,5 @@ LLVM_PROFILE_FILE="/var/cover/svc-%p-%c.profraw" ./target/release/svc</pre>
     });
   })();
 </script>
+</body>
+</html>
