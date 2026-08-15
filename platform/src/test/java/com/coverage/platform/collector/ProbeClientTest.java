@@ -1,7 +1,7 @@
 package com.coverage.platform.collector;
 
 import org.jacoco.core.data.ExecutionData;
-import org.jacoco.core.data.ExecutionDataStore;
+import org.jacoco.core.data.SessionInfo;
 import org.jacoco.core.runtime.IRemoteCommandVisitor;
 import org.jacoco.core.runtime.RemoteControlReader;
 import org.jacoco.core.runtime.RemoteControlWriter;
@@ -31,6 +31,8 @@ class ProbeClientTest {
 
     private static final long CLASS_ID = 0x1234abcdL;
     private static final String CLASS_NAME = "com/example/Sample";
+    /** 真实 agent 由 sessionid 启动参数决定这个值，此处模拟被测方按约定填了构建 commit */
+    private static final String SESSION_ID = "0123456789abcdef0123456789abcdef01234567";
 
     private ServerSocket serverSocket;
     private Thread serverThread;
@@ -51,6 +53,8 @@ class ProbeClientTest {
                     public void visitDumpCommand(boolean dump, boolean reset) throws IOException {
                         resetRequested.set(reset);
                         if (dump) {
+                            long now = System.currentTimeMillis();
+                            writer.visitSessionInfo(new SessionInfo(SESSION_ID, now - 1000, now));
                             boolean[] probes = new boolean[]{true, false, true};
                             writer.visitClassExecution(new ExecutionData(CLASS_ID, CLASS_NAME, probes));
                         }
@@ -78,14 +82,26 @@ class ProbeClientTest {
     void 能从探针取回执行数据() throws Exception {
         ProbeClient client = new ProbeClient();
 
-        ExecutionDataStore store = client.dump("localhost", serverSocket.getLocalPort(), false, 5000);
+        ProbeDump result = client.dump("localhost", serverSocket.getLocalPort(), false, 5000);
 
         assertTrue(commandReceived.await(5, TimeUnit.SECONDS), "探针未收到 dump 命令");
-        ExecutionData data = store.get(CLASS_ID);
+        ExecutionData data = result.exec().get(CLASS_ID);
         assertNotNull(data, "未取回类的执行数据");
         assertEquals(CLASS_NAME, data.getName());
         assertArrayEquals(new boolean[]{true, false, true}, data.getProbes());
         assertFalse(resetRequested.get(), "未要求清零时不应发送 reset");
+    }
+
+    /** 会话信息是平台唯一的 buildCommit 来源，丢了它增量口径就无从校验 */
+    @Test
+    void 会话信息随执行数据一并取回() throws Exception {
+        ProbeClient client = new ProbeClient();
+
+        ProbeDump result = client.dump("localhost", serverSocket.getLocalPort(), false, 5000);
+
+        assertTrue(commandReceived.await(5, TimeUnit.SECONDS));
+        assertEquals(1, result.sessions().size(), "未取回会话信息");
+        assertEquals(SESSION_ID, result.sessions().get(0).getId());
     }
 
     @Test

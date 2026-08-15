@@ -13,6 +13,11 @@ public class CoverageProperties {
     private String classesDir;
     private String sourceDir;
 
+    /** 源码所在的 git 仓库根目录，增量口径由它计算 */
+    private String repoDir = "..";
+    /** 增量覆盖率的默认对比基线 */
+    private String baseline = "HEAD~1";
+
     private long intervalMs = 3000;
     private int timeoutMs = 3000;
 
@@ -27,6 +32,12 @@ public class CoverageProperties {
 
     public String getSourceDir() { return sourceDir; }
     public void setSourceDir(String sourceDir) { this.sourceDir = sourceDir; }
+
+    public String getRepoDir() { return repoDir; }
+    public void setRepoDir(String repoDir) { this.repoDir = repoDir; }
+
+    public String getBaseline() { return baseline; }
+    public void setBaseline(String baseline) { this.baseline = baseline; }
 
     public long getIntervalMs() { return intervalMs; }
     public void setIntervalMs(long intervalMs) { this.intervalMs = intervalMs; }

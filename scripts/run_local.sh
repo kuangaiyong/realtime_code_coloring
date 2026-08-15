@@ -33,17 +33,37 @@ wait_ready() {
   done
 }
 
+# 按监听端口找到真实进程并终止。注意 $! 记录的是 Git Bash 的 job PID，
+# kill 它并不能终止 Windows 上的 java.exe。
+kill_port() {
+  local pid
+  pid=$(netstat -ano 2>/dev/null | grep -E "LISTENING" | grep -E ":$1\b" | awk '{print $NF}' | head -1 || true)
+  if [ -n "${pid:-}" ]; then
+    taskkill //F //PID "$pid" >/dev/null 2>&1 || true
+  fi
+}
+
+start_demo() {
+  # sessionid 让被测实例把自己的构建版本带出来，平台据此校验增量口径能否对齐。
+  # 工作树脏时打上 -dirty 标记：此时产物对不上任何一个提交，增量必须拒绝出报告。
+  local commit dirty=""
+  commit=$(git rev-parse HEAD)
+  if [ -n "$(git status --porcelain -- demo-service/src)" ]; then dirty="-dirty"; fi
+
+  # 注意：java.exe 是 Windows 程序，认不得 Git Bash 的 /c/... 路径，
+  # 传给它的路径必须是相对路径或 Windows 路径。
+  java -javaagent:platform/target/agent/jacocoagent.jar=includes=com.shop.*,output=tcpserver,address=localhost,port=6300,sessionid=$commit$dirty \
+       -jar demo-service/target/demo-service-0.1.0.jar > "$LOG_DIR/demo.log" 2>&1 &
+  echo $! > "$LOG_DIR/demo.pid"
+  wait_ready "$LOG_DIR/demo.log" "Started DemoServiceApplication" "demo-service"
+}
+
 start() {
   echo "==> 构建"
   mvn -q -B clean package
 
-  # 注意：java.exe 是 Windows 程序，认不得 Git Bash 的 /c/... 路径，
-  # 传给它的路径必须是相对路径或 Windows 路径。
   echo "==> 启动被测服务（源码零改动，仅挂载 JaCoCo 探针）"
-  java -javaagent:platform/target/agent/jacocoagent.jar=includes=com.shop.*,output=tcpserver,address=localhost,port=6300 \
-       -jar demo-service/target/demo-service-0.1.0.jar > "$LOG_DIR/demo.log" 2>&1 &
-  echo $! > "$LOG_DIR/demo.pid"
-  wait_ready "$LOG_DIR/demo.log" "Started DemoServiceApplication" "demo-service"
+  start_demo
   echo "    demo-service  http://localhost:18080   探针 tcp://localhost:6300"
 
   echo "==> 启动染色平台"
@@ -54,14 +74,9 @@ start() {
 }
 
 stop() {
-  # 注意：$! 记录的是 Git Bash 的 job PID，kill 它并不能终止 Windows 上的 java.exe。
-  # 这里按监听端口找到真实进程再终止，最后复核端口确实已释放，避免谎报成功。
-  for port in 18080 18090; do
-    pid=$(netstat -ano 2>/dev/null | grep -E "LISTENING" | grep -E ":$port\b" | awk '{print $NF}' | head -1 || true)
-    if [ -n "${pid:-}" ]; then
-      taskkill //F //PID "$pid" >/dev/null 2>&1 || true
-    fi
-  done
+  # 最后复核端口确实已释放，避免谎报成功
+  kill_port 18080
+  kill_port 18090
   rm -f "$LOG_DIR"/*.pid
 
   sleep 2
@@ -79,9 +94,18 @@ stop() {
 }
 
 verify() {
+  # 订单一旦进入终态就回不到 CREATED，业务状态只能靠重启被测实例复位。
+  # 少了这一步，P0 用例第二次跑就会走进「重复回调」分支而失败。
+  echo "==> 重启被测服务，复位业务状态"
+  kill_port 18080
+  start_demo
+  echo
+
   python scripts/e2e_verify.py
   echo
   node scripts/ws_verify.js
+  echo
+  python scripts/e2e_incremental.py
 }
 
 case "${1:-start}" in
