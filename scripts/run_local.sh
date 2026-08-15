@@ -106,6 +106,9 @@ verify() {
   node scripts/ws_verify.js
   echo
   python scripts/e2e_incremental.py
+  echo
+  # 放最后：场景 start 会清零计数器，跑在其他用例之前会把它们的覆盖数据洗掉
+  python scripts/e2e_scenario.py
 }
 
 case "${1:-start}" in

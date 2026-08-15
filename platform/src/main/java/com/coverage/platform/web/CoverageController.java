@@ -1,8 +1,7 @@
 package com.coverage.platform.web;
 
 import com.coverage.platform.service.CoverageService;
-import com.coverage.platform.service.IncrementalUnavailableException;
-import org.springframework.http.HttpStatus;
+import com.coverage.platform.service.ScenarioConflictException;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
@@ -18,32 +17,24 @@ public class CoverageController {
         this.service = service;
     }
 
-    /** 覆盖率总览：探针状态 + 各文件覆盖摘要。mode=incremental 时只统计基线之后变动的行 */
+    /**
+     * 覆盖率总览：探针状态 + 各文件覆盖摘要。
+     * mode=incremental 只统计基线之后变动的行；scenarioId 指定时看该场景的独占覆盖。
+     */
     @GetMapping("/summary")
     public Map<String, Object> summary(@RequestParam(defaultValue = CoverageService.MODE_FULL) String mode,
-                                       @RequestParam(required = false) String baseline) {
-        return service.summary(mode, baseline);
+                                       @RequestParam(required = false) String baseline,
+                                       @RequestParam(required = false) String scenarioId) {
+        return service.summary(mode, baseline, scenarioId);
     }
 
     /** 单文件源码与逐行染色状态 */
     @GetMapping("/file")
     public Map<String, Object> file(@RequestParam String path,
                                     @RequestParam(defaultValue = CoverageService.MODE_FULL) String mode,
-                                    @RequestParam(required = false) String baseline) {
-        return service.fileDetail(path, mode, baseline);
-    }
-
-    /**
-     * 增量口径算不出可信结果时返回 409 而不是 200+空数据：
-     * 前者会让调用方停下来看错误，后者会被当成「这次改动一行都没覆盖」。
-     */
-    @ExceptionHandler(IncrementalUnavailableException.class)
-    @ResponseStatus(HttpStatus.CONFLICT)
-    public Map<String, Object> onIncrementalUnavailable(IncrementalUnavailableException e) {
-        Map<String, Object> res = new LinkedHashMap<>();
-        res.put("ok", false);
-        res.put("error", e.getMessage());
-        return res;
+                                    @RequestParam(required = false) String baseline,
+                                    @RequestParam(required = false) String scenarioId) {
+        return service.fileDetail(path, mode, baseline, scenarioId);
     }
 
     /** 立即采集一次，不等待轮询周期 */
@@ -60,6 +51,10 @@ public class CoverageController {
         try {
             service.reset();
             res.put("ok", true);
+        } catch (ScenarioConflictException e) {
+            // 场景进行中被清零，归因数据就废了。这种错误必须走 409 让调用方停下来，
+            // 塞进 200 的响应体里，脚本里一句 http(...) 不看 body 就漏过去了
+            throw e;
         } catch (Exception e) {
             res.put("ok", false);
             res.put("error", e.getMessage());

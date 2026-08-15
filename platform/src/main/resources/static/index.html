@@ -76,11 +76,25 @@
   .seg button:first-child { border-radius: var(--radius) 0 0 var(--radius); margin-left: 0; }
   .seg button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
   .seg button.on { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; z-index: 1; }
-  input {
+  input, select {
     height: 30px; padding: 0 10px; width: 130px; font-family: var(--mono); font-size: 13px;
     border: 1px solid var(--el-border-color); border-radius: var(--radius);
     background: var(--el-bg-color); color: var(--el-text-color-regular);
   }
+  select { width: auto; min-width: 150px; }
+
+  /* 场景录制条：与实时视图分开，避免「正在录场景」这件事被淹没在工具栏里 */
+  .bar {
+    display: flex; align-items: center; gap: 10px; padding: 9px 18px; font-size: 13px;
+    background: var(--el-bg-color); border-bottom: 1px solid var(--el-border-color-lighter);
+    flex-wrap: wrap;
+  }
+  .bar label { color: var(--el-text-color-secondary); }
+  .bar .rec { color: var(--el-color-danger); display: inline-flex; align-items: center; gap: 6px; }
+  .bar .rec i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .bar .rec i { animation: none } }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button:disabled:hover { color: var(--el-text-color-regular); border-color: var(--el-border-color); }
 
   main { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; padding: 14px; align-items: start; }
   .card { background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius); overflow: hidden; }
@@ -131,6 +145,15 @@
   <button id="btnReset" class="primary">清零计数器</button>
 </header>
 
+<div class="bar">
+  <label for="scenarioView">数据源</label>
+  <select id="scenarioView"><option value="">实时（累计覆盖）</option></select>
+  <span class="spacer"></span>
+  <span id="recording" class="rec" style="display:none"><i></i>场景进行中</span>
+  <input id="scenarioId" placeholder="场景 ID" title="给这一轮测试起个名字，例如 支付成功回归" />
+  <button id="btnScenario">开始场景</button>
+</div>
+
 <div id="banner"></div>
 
 <main>
@@ -159,19 +182,22 @@
   let current = null;
   let prevStatus = {};
   let mode = 'full';
+  // 看哪一份数据：空串是实时累计覆盖，否则是某个已归档场景的独占覆盖
+  let viewScenario = '';
 
   const cls = r => r >= 70 ? 's' : r >= 45 ? 'w' : 'd';
 
   function params() {
-    return mode === 'incremental'
+    const p = mode === 'incremental'
       ? 'mode=incremental&baseline=' + encodeURIComponent(document.getElementById('baseline').value.trim())
       : 'mode=full';
+    return viewScenario ? p + '&scenarioId=' + encodeURIComponent(viewScenario) : p;
   }
 
-  // 增量口径算不出可信结果时服务端返回 409。此时必须清空视图：
-  // 留着上一次的染色结果，用户会以为那就是本次增量的答案
+  // 服务端算不出可信结果时返回 4xx。此时必须清空视图：
+  // 留着上一次的染色结果，用户会以为那就是本次的答案
   function unavailable(msg) {
-    document.getElementById('banner').innerHTML = '<div class="err">增量口径不可用：' + esc(msg) + '</div>';
+    document.getElementById('banner').innerHTML = '<div class="err">当前视图不可用：' + esc(msg) + '</div>';
     document.getElementById('overall').textContent = '—';
     document.getElementById('fileCount').textContent = '0 个';
     document.getElementById('files').innerHTML = '<div class="empty">—</div>';
@@ -181,7 +207,7 @@
   async function loadSummary() {
     const r = await fetch('/api/coverage/summary?' + params());
     const d = await r.json();
-    if (r.status === 409) {
+    if (!r.ok) {
       unavailable(d.error);
       return null;
     }
@@ -207,11 +233,13 @@
     probe.className = 'pill ' + (connected ? 'ok' : 'err');
     probe.innerHTML = '<i></i>' + label;
 
+    // 场景视图看的是已定格的归档数据，必须标出来，否则会被当成实时累计覆盖
+    const scope = d.scenarioId ? '场景 ' + d.scenarioId + ' · ' : '';
     document.getElementById('overall').textContent = !connected ? '—'
       : d.mode === 'incremental'
-        ? '增量行覆盖率 ' + d.overallRatio + '% · 基线 ' + d.baselineCommit.substring(0, 8)
+        ? scope + '增量行覆盖率 ' + d.overallRatio + '% · 基线 ' + d.baselineCommit.substring(0, 8)
           + ' → 产物 ' + d.buildCommit.substring(0, 8)
-        : '整体行覆盖率 ' + d.overallRatio + '%';
+        : scope + '整体行覆盖率 ' + d.overallRatio + '%';
 
     let banner = '';
     if (d.probeStatus === 'DISCONNECTED' && d.lastError) {
@@ -224,6 +252,8 @@
     document.getElementById('fileCount').textContent = d.files.length + ' 个';
     const box = document.getElementById('files');
     if (!d.files.length) {
+      // 文件列表来自字节码分析，跑没跑过都在里面，所以空列表只可能是增量口径把范围筛空了，
+      // 与看的是实时还是某个场景无关
       box.innerHTML = '<div class="empty">' +
         (d.mode === 'incremental' ? '基线之后没有变更的可执行代码' : '尚无数据') + '</div>';
       return;
@@ -247,7 +277,7 @@
 
     const r = await fetch('/api/coverage/file?path=' + encodeURIComponent(path) + '&' + params());
     const d = await r.json();
-    if (r.status === 409) {
+    if (!r.ok) {
       unavailable(d.error);
       return;
     }
@@ -277,18 +307,18 @@
     prevStatus = next;
   }
 
+  // 引号也必须转义：场景 ID 由用户自取，会被拼进 value="..." 属性，
+  // 少转一个引号就能从属性里逃出来挂上事件处理器
   function esc(s) {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  // 切换口径后文件范围会变，原先选中的文件可能已不在范围内
-  async function switchTo(next) {
-    mode = next;
-    document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
-    document.getElementById('baseline').style.display = mode === 'incremental' ? '' : 'none';
+  // 换口径或换数据源后文件范围会变，原先选中的文件可能已不在范围内
+  async function reload() {
     prevStatus = {};
     const d = await loadSummary();
-    // 增量不可用时保留 current，口径恢复后仍回到用户原先看的那个文件
+    // 视图不可用时保留 current，恢复后仍回到用户原先看的那个文件
     if (!d) return;
     const keep = d.files.some(f => f.path === current);
     const path = keep ? current : (d.files.length ? d.files[0].path : null);
@@ -302,14 +332,73 @@
     }
   }
 
+  async function switchTo(next) {
+    mode = next;
+    document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+    document.getElementById('baseline').style.display = mode === 'incremental' ? '' : 'none';
+    await reload();
+  }
+
   document.querySelectorAll('.seg button').forEach(b =>
     b.addEventListener('click', () => switchTo(b.dataset.mode)));
   document.getElementById('baseline').addEventListener('change', () => switchTo('incremental'));
 
+  document.getElementById('scenarioView').addEventListener('change', async e => {
+    viewScenario = e.target.value;
+    await reload();
+  });
+
+  // 场景归因：start 清零 → 跑测试 → stop 定格。列表与按钮状态都以服务端为准
+  async function loadScenarios() {
+    const d = await (await fetch('/api/scenario')).json();
+    const sel = document.getElementById('scenarioView');
+    sel.innerHTML = '<option value="">实时（累计覆盖）</option>' +
+      d.scenarios.map(s => '<option value="' + esc(s.scenarioId) + '">场景 ' + esc(s.scenarioId) +
+        '（' + s.files + ' 文件 / ' + s.overallRatio + '%）</option>').join('');
+    sel.value = viewScenario;
+    // 服务端才知道场景有没有在跑；页面刷新后也要能正确恢复按钮状态
+    const running = !!d.active;
+    document.getElementById('recording').style.display = running ? '' : 'none';
+    document.getElementById('recording').lastChild.textContent = '场景 ' + (d.active || '') + ' 进行中';
+    document.getElementById('btnScenario').textContent = running ? '结束场景' : '开始场景';
+    document.getElementById('scenarioId').value = running ? d.active : document.getElementById('scenarioId').value;
+    document.getElementById('scenarioId').disabled = running;
+    // 场景进行中清零会让归因数据只剩清零之后那一段，服务端会拒绝，这里先把入口关掉
+    const reset = document.getElementById('btnReset');
+    reset.disabled = running;
+    reset.title = running ? '场景进行中不能清零，否则该场景的归因数据会被截断' : '';
+    return d;
+  }
+
+  document.getElementById('btnScenario').addEventListener('click', async () => {
+    const btn = document.getElementById('btnScenario');
+    const idInput = document.getElementById('scenarioId');
+    const starting = btn.textContent === '开始场景';
+    const url = starting
+      ? '/api/scenario/start?scenarioId=' + encodeURIComponent(idInput.value.trim())
+      : '/api/scenario/stop';
+    const r = await fetch(url, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) {
+      document.getElementById('banner').innerHTML = '<div class="err">' + esc(d.error) + '</div>';
+      return;
+    }
+    document.getElementById('banner').innerHTML = '';
+    // 场景一结束就切过去看它覆盖了什么 —— 这正是录制这一轮的目的
+    if (!starting) {
+      viewScenario = d.scenarioId;
+      idInput.value = '';
+    } else {
+      viewScenario = '';
+    }
+    await loadScenarios();
+    await reload();
+  });
+
   document.getElementById('btnCollect').addEventListener('click', async () => {
     const d = await (await fetch('/api/coverage/collect', { method: 'POST' })).json();
-    // /collect 返回的是全量口径快照，增量视图下不能直接渲染
-    if (mode === 'incremental') {
+    // /collect 返回的是实时全量快照，增量视图和场景视图下都不能直接渲染
+    if (mode === 'incremental' || viewScenario) {
       await refresh();
       return;
     }
@@ -326,7 +415,9 @@
   function connectWs() {
     const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/coverage');
     ws.onmessage = ev => {
-      // 推送内容同样是全量口径，增量视图下改为按当前口径重取
+      // 场景视图看的是 stop 时已定格的数据，实时推送与它无关，重渲染只会把它冲掉
+      if (viewScenario) return;
+      // 推送内容是全量口径，增量视图下改为按当前口径重取
       if (mode === 'incremental') {
         refresh();
         return;
@@ -337,6 +428,7 @@
     ws.onclose = () => setTimeout(connectWs, 3000);
   }
 
+  loadScenarios();
   loadSummary().then(d => {
     if (d && d.files.length) openFile(d.files[0].path);
   });
