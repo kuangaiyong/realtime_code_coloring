@@ -35,12 +35,18 @@ public class CoverageService {
     private final CoverageProperties props;
     private final CoveragePublisher publisher;
 
-    private final AtomicReference<Map<String, FileCoverage>> snapshot =
-            new AtomicReference<>(Collections.emptyMap());
+    /**
+     * 覆盖数据与它所属的构建版本必须整体替换。
+     * 拆成两个字段各自更新的话，被测服务重启换版本的那一刻，请求可能读到
+     * 「新数据 + 旧版本」的组合，据此算出的增量报告行号错位却仍是 200。
+     */
+    private record Snapshot(Map<String, FileCoverage> files, BuildVersion version) {}
+
+    private final AtomicReference<Snapshot> state =
+            new AtomicReference<>(new Snapshot(Collections.emptyMap(), null));
     private volatile String probeStatus = "UNKNOWN";
     private volatile String lastError;
     private volatile Instant lastCollectedAt;
-    private volatile BuildVersion buildVersion;
 
     public CoverageService(ProbeClient probeClient, CoverageAnalyzer analyzer, GitService git,
                            CoverageProperties props, CoveragePublisher publisher) {
@@ -74,9 +80,8 @@ public class CoverageService {
             }
             Map<String, FileCoverage> fresh = analyzer.analyze(dump.exec(), classesDir);
 
-            Map<String, FileCoverage> previous = snapshot.get();
-            snapshot.set(fresh);
-            buildVersion = BuildVersion.parse(dump.sessions());
+            Map<String, FileCoverage> previous = state.get().files();
+            state.set(new Snapshot(fresh, BuildVersion.parse(dump.sessions())));
             probeStatus = "CONNECTED";
             lastError = null;
             lastCollectedAt = Instant.now();
@@ -113,17 +118,18 @@ public class CoverageService {
     }
 
     public Map<String, Object> summary(String mode, String baseline) {
+        Snapshot s = state.get();
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("probeStatus", probeStatus);
         res.put("lastError", lastError);
         res.put("lastCollectedAt", lastCollectedAt == null ? null : lastCollectedAt.toString());
         res.put("mode", mode);
-        res.put("buildCommit", buildVersion == null ? null : buildVersion.commit());
+        res.put("buildCommit", s.version() == null ? null : s.version().commit());
 
-        Map<String, FileCoverage> snap = snapshot.get();
+        Map<String, FileCoverage> snap = s.files();
         if (MODE_INCREMENTAL.equals(mode)) {
             String ref = baseline == null || baseline.isBlank() ? props.getBaseline() : baseline;
-            Scope scope = incrementalScope(ref);
+            Scope scope = incrementalScope(s.version(), ref);
             res.put("baseline", ref);
             res.put("baselineCommit", scope.baselineCommit());
             res.put("changedFiles", scope.lines().size());
@@ -150,7 +156,8 @@ public class CoverageService {
 
     /** 返回单文件的源码与逐行状态，供染色视图渲染 */
     public Map<String, Object> fileDetail(String path, String mode, String baseline) {
-        FileCoverage cov = snapshot.get().get(path);
+        Snapshot s = state.get();
+        FileCoverage cov = s.files().get(path);
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("path", path);
         res.put("mode", mode);
@@ -162,7 +169,7 @@ public class CoverageService {
         Set<Integer> inDiff = null;
         if (MODE_INCREMENTAL.equals(mode)) {
             String ref = baseline == null || baseline.isBlank() ? props.getBaseline() : baseline;
-            Scope scope = incrementalScope(ref);
+            Scope scope = incrementalScope(s.version(), ref);
             res.put("baseline", ref);
             inDiff = scope.lines().getOrDefault(path, Set.of());
             cov = restrictOne(cov, inDiff);
@@ -201,7 +208,9 @@ public class CoverageService {
     /** 清零被测服务的计数器，用于「只看这一轮测试覆盖了什么」 */
     public void reset() throws Exception {
         probeClient.dump(props.getHost(), props.getPort(), true, props.getTimeoutMs());
-        snapshot.set(Collections.emptyMap());
+        // 清空覆盖数据但保留版本：被测实例没重启，产物版本没变，
+        // 丢掉它会让并发的增量请求误报「未上报 buildCommit」
+        state.set(new Snapshot(Collections.emptyMap(), state.get().version()));
         collect();
     }
 
@@ -211,8 +220,7 @@ public class CoverageService {
      * 算出「基线之后变动的行」这一分母。
      * 任何一步对不上都直接抛错：增量结果一旦行号错位，看上去依然是一份正常报告。
      */
-    private Scope incrementalScope(String baseline) {
-        BuildVersion bv = buildVersion;
+    private Scope incrementalScope(BuildVersion bv, String baseline) {
         if (bv == null) {
             throw new IncrementalUnavailableException(
                     "被测实例未上报 buildCommit。请在 JaCoCo agent 启动参数中加上 sessionid=$(git rev-parse HEAD)");

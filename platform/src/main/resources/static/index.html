@@ -215,9 +215,9 @@
 
     let banner = '';
     if (d.probeStatus === 'DISCONNECTED' && d.lastError) {
-      banner = '<div class="err">探针不可达：' + d.lastError + '<br>请确认被测服务已带 -javaagent 参数启动，且 tcpserver 端口可达。</div>';
+      banner = '<div class="err">探针不可达：' + esc(d.lastError) + '<br>请确认被测服务已带 -javaagent 参数启动，且 tcpserver 端口可达。</div>';
     } else if (d.probeStatus === 'ANALYZE_ERROR' && d.lastError) {
-      banner = '<div class="err">覆盖数据分析失败：' + d.lastError + '<br>探针连接正常，问题在平台侧 —— 请检查 coverage.classes-dir 配置是否指向被测服务的编译产物。</div>';
+      banner = '<div class="err">覆盖数据分析失败：' + esc(d.lastError) + '<br>探针连接正常，问题在平台侧 —— 请检查 coverage.classes-dir 配置是否指向被测服务的编译产物。</div>';
     }
     document.getElementById('banner').innerHTML = banner;
 
@@ -254,7 +254,7 @@
     document.getElementById('curPath').textContent = path;
 
     if (!d.found) {
-      document.getElementById('src').innerHTML = '<div class="err">' + (d.error || '未找到该文件') + '</div>';
+      document.getElementById('src').innerHTML = '<div class="err">' + esc(d.error || '未找到该文件') + '</div>';
       return;
     }
     document.getElementById('curRatio').textContent =
@@ -288,10 +288,8 @@
     document.getElementById('baseline').style.display = mode === 'incremental' ? '' : 'none';
     prevStatus = {};
     const d = await loadSummary();
-    if (!d) {
-      current = null;
-      return;
-    }
+    // 增量不可用时保留 current，口径恢复后仍回到用户原先看的那个文件
+    if (!d) return;
     const keep = d.files.some(f => f.path === current);
     const path = keep ? current : (d.files.length ? d.files[0].path : null);
     current = null;
