@@ -77,6 +77,20 @@ public class OrderService {
         return "REFUNDED:" + amount;
     }
 
+    /** 接口 D：取消订单 */
+    public String cancel(String bizNo, String reason) {
+        Order order = repo.get(bizNo);
+        if (order == null) {
+            return "ORDER_NOT_FOUND:" + bizNo;
+        }
+        if (isFinalState(order)) {
+            return "NOT_CANCELLABLE:" + order.getStatus();
+        }
+        order.setStatus("CANCELLED");
+        order.setRemark(reason);
+        return "CANCELLED:" + bizNo;
+    }
+
     private boolean isFinalState(Order order) {
         return "PAID".equals(order.getStatus())
                 || "REFUNDED".equals(order.getStatus())

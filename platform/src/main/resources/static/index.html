@@ -71,6 +71,17 @@
   button:hover { color: var(--el-color-primary); border-color: var(--el-color-primary); }
   button.primary { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; }
 
+  .seg { display: inline-flex; }
+  .seg button { border-radius: 0; margin-left: -1px; }
+  .seg button:first-child { border-radius: var(--radius) 0 0 var(--radius); margin-left: 0; }
+  .seg button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+  .seg button.on { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; z-index: 1; }
+  input {
+    height: 30px; padding: 0 10px; width: 130px; font-family: var(--mono); font-size: 13px;
+    border: 1px solid var(--el-border-color); border-radius: var(--radius);
+    background: var(--el-bg-color); color: var(--el-text-color-regular);
+  }
+
   main { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; padding: 14px; align-items: start; }
   .card { background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius); overflow: hidden; }
   .card-head { padding: 11px 14px; border-bottom: 1px solid var(--el-border-color-lighter); display: flex; align-items: center; gap: 8px; }
@@ -96,6 +107,8 @@
   .ln.flash { animation: flash 1s ease-out; }
   @keyframes flash { from { background: var(--el-color-success); } to { } }
   @media (prefers-reduced-motion: reduce) { .ln.flash { animation: none } }
+  /* 增量视图：基线之后没动过的行仍要显示以保留上下文，但不参与染色 */
+  .ln.out { background: none; border-left-color: transparent; opacity: .35; }
   .ln .no { width: 52px; flex: none; text-align: right; padding-right: 14px; color: var(--el-text-color-secondary); opacity: .7; user-select: none; font-size: 12px; }
   .ln .tx { color: var(--el-text-color-primary); padding-right: 16px; }
 
@@ -109,6 +122,11 @@
   <span id="probe" class="pill err"><i></i>探针未连接</span>
   <span id="overall" style="font-family:var(--mono);color:var(--el-text-color-primary)">—</span>
   <div class="spacer"></div>
+  <div class="seg">
+    <button data-mode="full" class="on">全量</button>
+    <button data-mode="incremental">增量</button>
+  </div>
+  <input id="baseline" value="HEAD~1" title="增量基线 ref（分支名、tag 或 commit）" style="display:none" />
   <button id="btnCollect">立即采集</button>
   <button id="btnReset" class="primary">清零计数器</button>
 </header>
@@ -140,13 +158,40 @@
 <script>
   let current = null;
   let prevStatus = {};
+  let mode = 'full';
 
   const cls = r => r >= 70 ? 's' : r >= 45 ? 'w' : 'd';
 
+  function params() {
+    return mode === 'incremental'
+      ? 'mode=incremental&baseline=' + encodeURIComponent(document.getElementById('baseline').value.trim())
+      : 'mode=full';
+  }
+
+  // 增量口径算不出可信结果时服务端返回 409。此时必须清空视图：
+  // 留着上一次的染色结果，用户会以为那就是本次增量的答案
+  function unavailable(msg) {
+    document.getElementById('banner').innerHTML = '<div class="err">增量口径不可用：' + esc(msg) + '</div>';
+    document.getElementById('overall').textContent = '—';
+    document.getElementById('fileCount').textContent = '0 个';
+    document.getElementById('files').innerHTML = '<div class="empty">—</div>';
+    document.getElementById('src').innerHTML = '<div class="empty">—</div>';
+  }
+
   async function loadSummary() {
-    const r = await fetch('/api/coverage/summary');
+    const r = await fetch('/api/coverage/summary?' + params());
     const d = await r.json();
+    if (r.status === 409) {
+      unavailable(d.error);
+      return null;
+    }
     render(d);
+    return d;
+  }
+
+  async function refresh() {
+    const d = await loadSummary();
+    if (d && current) await openFile(current);
     return d;
   }
 
@@ -162,8 +207,11 @@
     probe.className = 'pill ' + (connected ? 'ok' : 'err');
     probe.innerHTML = '<i></i>' + label;
 
-    document.getElementById('overall').textContent =
-      connected ? ('整体行覆盖率 ' + d.overallRatio + '%') : '—';
+    document.getElementById('overall').textContent = !connected ? '—'
+      : d.mode === 'incremental'
+        ? '增量行覆盖率 ' + d.overallRatio + '% · 基线 ' + d.baselineCommit.substring(0, 8)
+          + ' → 产物 ' + d.buildCommit.substring(0, 8)
+        : '整体行覆盖率 ' + d.overallRatio + '%';
 
     let banner = '';
     if (d.probeStatus === 'DISCONNECTED' && d.lastError) {
@@ -176,7 +224,8 @@
     document.getElementById('fileCount').textContent = d.files.length + ' 个';
     const box = document.getElementById('files');
     if (!d.files.length) {
-      box.innerHTML = '<div class="empty">尚无数据</div>';
+      box.innerHTML = '<div class="empty">' +
+        (d.mode === 'incremental' ? '基线之后没有变更的可执行代码' : '尚无数据') + '</div>';
       return;
     }
     box.innerHTML = d.files.map(f =>
@@ -196,8 +245,12 @@
     document.querySelectorAll('.file').forEach(b =>
       b.classList.toggle('on', b.dataset.path === path));
 
-    const r = await fetch('/api/coverage/file?path=' + encodeURIComponent(path));
+    const r = await fetch('/api/coverage/file?path=' + encodeURIComponent(path) + '&' + params());
     const d = await r.json();
+    if (r.status === 409) {
+      unavailable(d.error);
+      return;
+    }
     document.getElementById('curPath').textContent = path;
 
     if (!d.found) {
@@ -212,6 +265,11 @@
       next[r.line] = r.status;
       // 上一次是未覆盖、这次变成已覆盖 → 高亮闪一下，让「变绿」这件事可见
       const justCovered = prevStatus[r.line] === 'MISSED' && r.status === 'COVERED';
+      // 增量视图下基线之后没动过的行只作上下文，不染色
+      if (r.inDiff === false) {
+        return '<div class="ln out"><span class="no">' + r.line + '</span>' +
+               '<span class="tx">' + esc(r.text) + '</span></div>';
+      }
       return '<div class="ln ' + r.status + (justCovered ? ' flash' : '') + '">' +
              '<span class="no">' + r.line + '</span>' +
              '<span class="tx">' + esc(r.text) + '</span></div>';
@@ -223,21 +281,58 @@
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  // 切换口径后文件范围会变，原先选中的文件可能已不在范围内
+  async function switchTo(next) {
+    mode = next;
+    document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+    document.getElementById('baseline').style.display = mode === 'incremental' ? '' : 'none';
+    prevStatus = {};
+    const d = await loadSummary();
+    if (!d) {
+      current = null;
+      return;
+    }
+    const keep = d.files.some(f => f.path === current);
+    const path = keep ? current : (d.files.length ? d.files[0].path : null);
+    current = null;
+    if (path) {
+      await openFile(path);
+    } else {
+      document.getElementById('curPath').textContent = '未选择文件';
+      document.getElementById('curRatio').textContent = '';
+      document.getElementById('src').innerHTML = '<div class="empty">在左侧选择一个文件</div>';
+    }
+  }
+
+  document.querySelectorAll('.seg button').forEach(b =>
+    b.addEventListener('click', () => switchTo(b.dataset.mode)));
+  document.getElementById('baseline').addEventListener('change', () => switchTo('incremental'));
+
   document.getElementById('btnCollect').addEventListener('click', async () => {
-    render(await (await fetch('/api/coverage/collect', { method: 'POST' })).json());
+    const d = await (await fetch('/api/coverage/collect', { method: 'POST' })).json();
+    // /collect 返回的是全量口径快照，增量视图下不能直接渲染
+    if (mode === 'incremental') {
+      await refresh();
+      return;
+    }
+    render(d);
     if (current) openFile(current);
   });
   document.getElementById('btnReset').addEventListener('click', async () => {
     await fetch('/api/coverage/reset', { method: 'POST' });
     prevStatus = {};
-    await loadSummary();
-    if (current) openFile(current);
+    await refresh();
   });
 
   // 覆盖率变化时由服务端主动推送，避免前端空轮询
   function connectWs() {
     const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/coverage');
     ws.onmessage = ev => {
+      // 推送内容同样是全量口径，增量视图下改为按当前口径重取
+      if (mode === 'incremental') {
+        refresh();
+        return;
+      }
       render(JSON.parse(ev.data));
       if (current) openFile(current);
     };
@@ -245,7 +340,7 @@
   }
 
   loadSummary().then(d => {
-    if (d.files.length) openFile(d.files[0].path);
+    if (d && d.files.length) openFile(d.files[0].path);
   });
   connectWs();
 </script>

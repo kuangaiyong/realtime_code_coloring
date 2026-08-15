@@ -12,6 +12,10 @@ coverage:
   # 产物与源码目录：必须与探针所在进程的构建版本一致，否则 class id 对不上
   classes-dir: ../demo-service/target/classes
   source-dir: ../demo-service/src/main/java
+  # 增量口径：去哪个仓库算 diff、默认与哪个基线比。
+  # 默认与上一次提交比（本地开发场景）；接入 CI 时改为集成分支，如 main
+  repo-dir: ..
+  baseline: HEAD~1
   interval-ms: 3000
   timeout-ms: 3000
 

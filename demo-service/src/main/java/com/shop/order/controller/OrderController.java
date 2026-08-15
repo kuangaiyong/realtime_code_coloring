@@ -46,6 +46,13 @@ public class OrderController {
         return resp(orderService.refund(bizNo, amount));
     }
 
+    /** 接口 D */
+    @PostMapping("/cancel")
+    public Map<String, Object> cancel(@RequestParam String bizNo,
+                                      @RequestParam(defaultValue = "user cancelled") String reason) {
+        return resp(orderService.cancel(bizNo, reason));
+    }
+
     private Map<String, Object> resp(Object data) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("ok", true);

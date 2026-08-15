@@ -21,7 +21,7 @@ public class ProbeClient {
     /**
      * @param reset 抓取后是否清零计数器；清零后下一次抓到的就是「这段时间内新增的覆盖」
      */
-    public ExecutionDataStore dump(String host, int port, boolean reset, int timeoutMs) throws IOException {
+    public ProbeDump dump(String host, int port, boolean reset, int timeoutMs) throws IOException {
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(host, port), timeoutMs);
             socket.setSoTimeout(timeoutMs);
@@ -34,8 +34,10 @@ public class ProbeClient {
             RemoteControlReader reader = new RemoteControlReader(socket.getInputStream());
 
             ExecutionDataStore execStore = new ExecutionDataStore();
+            SessionInfoStore sessionStore = new SessionInfoStore();
             reader.setExecutionDataVisitor(execStore);
-            reader.setSessionInfoVisitor(new SessionInfoStore());
+            // 会话 ID 由被测方的 sessionid 启动参数指定，是平台唯一能拿到的「实例自报版本」
+            reader.setSessionInfoVisitor(sessionStore);
 
             writer.visitDumpCommand(true, reset);
 
@@ -43,7 +45,7 @@ public class ProbeClient {
             if (!reader.read()) {
                 throw new IOException("探针在返回执行数据前关闭了连接");
             }
-            return execStore;
+            return new ProbeDump(execStore, sessionStore.getInfos());
         }
     }
 }

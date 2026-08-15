@@ -37,10 +37,16 @@ start() {
   echo "==> 构建"
   mvn -q -B clean package
 
+  # sessionid 让被测实例把自己的构建版本带出来，平台据此校验增量口径能否对齐。
+  # 工作树脏时打上 -dirty 标记：此时产物对不上任何一个提交，增量必须拒绝出报告。
+  local commit dirty=""
+  commit=$(git rev-parse HEAD)
+  if [ -n "$(git status --porcelain -- demo-service/src)" ]; then dirty="-dirty"; fi
+
   # 注意：java.exe 是 Windows 程序，认不得 Git Bash 的 /c/... 路径，
   # 传给它的路径必须是相对路径或 Windows 路径。
   echo "==> 启动被测服务（源码零改动，仅挂载 JaCoCo 探针）"
-  java -javaagent:platform/target/agent/jacocoagent.jar=includes=com.shop.*,output=tcpserver,address=localhost,port=6300 \
+  java -javaagent:platform/target/agent/jacocoagent.jar=includes=com.shop.*,output=tcpserver,address=localhost,port=6300,sessionid=$commit$dirty \
        -jar demo-service/target/demo-service-0.1.0.jar > "$LOG_DIR/demo.log" 2>&1 &
   echo $! > "$LOG_DIR/demo.pid"
   wait_ready "$LOG_DIR/demo.log" "Started DemoServiceApplication" "demo-service"
@@ -82,6 +88,8 @@ verify() {
   python scripts/e2e_verify.py
   echo
   node scripts/ws_verify.js
+  echo
+  python scripts/e2e_incremental.py
 }
 
 case "${1:-start}" in
