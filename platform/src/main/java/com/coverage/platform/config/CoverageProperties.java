@@ -2,12 +2,19 @@ package com.coverage.platform.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.ArrayList;
+import java.util.List;
+
 @ConfigurationProperties(prefix = "coverage")
 public class CoverageProperties {
 
-    /** 被测服务的探针地址 */
-    private String host = "localhost";
-    private int port = 6300;
+    /**
+     * 被测服务的探针地址，形如 host:port，可配多个。
+     *
+     * 同一服务的多个实例各自持有一份计数器，只有把它们并起来才是这个服务的真实覆盖：
+     * 负载均衡会把请求分到任意一个实例，只看其中一个必然少算。
+     */
+    private List<String> instances = new ArrayList<>(List.of("localhost:6300"));
 
     /** 被测服务的产物目录与源码目录，三者版本必须一致 */
     private String classesDir;
@@ -21,11 +28,8 @@ public class CoverageProperties {
     private long intervalMs = 3000;
     private int timeoutMs = 3000;
 
-    public String getHost() { return host; }
-    public void setHost(String host) { this.host = host; }
-
-    public int getPort() { return port; }
-    public void setPort(int port) { this.port = port; }
+    public List<String> getInstances() { return instances; }
+    public void setInstances(List<String> instances) { this.instances = instances; }
 
     public String getClassesDir() { return classesDir; }
     public void setClassesDir(String classesDir) { this.classesDir = classesDir; }

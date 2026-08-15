@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.net.ServerSocket;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -26,9 +27,11 @@ class CoverageServiceTest {
     void setUp() throws Exception {
         CoverageProperties props = new CoverageProperties();
         // 取一个刚释放、确定没人监听的端口：本测试只关心够不到探针时的行为
+        int dead;
         try (ServerSocket free = new ServerSocket(0)) {
-            props.setPort(free.getLocalPort());
+            dead = free.getLocalPort();
         }
+        props.setInstances(List.of("localhost:" + dead));
         props.setTimeoutMs(300);
         service = new CoverageService(new ProbeClient(), new CoverageAnalyzer(),
                 new GitService(props), props, new CoveragePublisher());
