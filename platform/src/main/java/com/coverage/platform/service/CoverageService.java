@@ -139,10 +139,16 @@ public class CoverageService {
             try {
                 BuildVersion v;
                 if (ProbeEndpoint.GO.equals(ep.language())) {
+                    // 版本先取、数据后收，且三次抓取全部成功才入列。
+                    // 反过来的话，buildId 失败时这台已被标成 DISCONNECTED，
+                    // 它的覆盖却已经并进了聚合结果，而版本又没进 unifiedVersion 的校验
+                    // —— 实例间版本不一致会被这条缝绕过去
+                    v = BuildVersion.parseId(goProbe.buildId(ep));
                     // meta 与 counters 要一并取：counters 单独存在没有意义，
                     // 块的位置信息全在 meta 里
-                    goDumps.add(new byte[][]{goProbe.meta(ep), goProbe.counters(ep)});
-                    v = BuildVersion.parseId(goProbe.buildId(ep));
+                    byte[] meta = goProbe.meta(ep);
+                    byte[] counters = goProbe.counters(ep);
+                    goDumps.add(new byte[][]{meta, counters});
                 } else {
                     ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
                     for (ExecutionData d : dump.exec().getContents()) {
@@ -156,7 +162,7 @@ public class CoverageService {
             } catch (Exception e) {
                 // 单个实例不可达不该让整批采集失败：其余实例的数据仍然是真实的，
                 // 只是这一份聚合结果少了它那部分，必须在状态里说清楚是哪一台
-                statuses.add(new InstanceStatus(ep.toString(), "DISCONNECTED", null, e.getMessage()));
+                statuses.add(new InstanceStatus(ep.toString(), "DISCONNECTED", null, describe(e)));
             }
         }
         instances = List.copyOf(statuses);
@@ -204,11 +210,22 @@ public class CoverageService {
             }
         } catch (Exception e) {
             if (!"ANALYZE_ERROR".equals(probeStatus)) {
-                log.error("探针连接正常，但覆盖数据分析失败（请检查平台的 classes-dir 配置）：{}", e.getMessage());
+                // 不在这里猜是哪项配置的问题：Java 走 classes-dir、Go 走 go-tool，
+                // 写死一个只会把另一种语言的故障引去查错地方。异常自己会说明白
+                log.error("探针连接正常，但覆盖数据分析失败：{}", describe(e));
             }
             probeStatus = "ANALYZE_ERROR";
-            lastError = e.getMessage();
+            lastError = describe(e);
         }
+    }
+
+    /**
+     * 连接类异常常常没有 message（如 ConnectException），直接取会让界面上显示
+     * 「go://localhost:6400（null）」——看着像平台的 bug，其实是对方没起来。
+     */
+    private static String describe(Exception e) {
+        String m = e.getMessage();
+        return m == null || m.isBlank() ? e.getClass().getSimpleName() : m;
     }
 
     private List<ProbeEndpoint> endpoints() {

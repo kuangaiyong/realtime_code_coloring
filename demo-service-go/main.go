@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"flag"
 	"log"
+	"net"
 	"net/http"
+	"strconv"
 	"sync"
 )
 
@@ -123,17 +125,24 @@ func main() {
 	mux.HandleFunc("/api/order/refund", func(w http.ResponseWriter, r *http.Request) {
 		var amount int64
 		if v := r.URL.Query().Get("amount"); v != "" {
-			for _, c := range v {
-				if c < '0' || c > '9' {
-					respond(w, "BAD_AMOUNT")
-					return
-				}
-				amount = amount*10 + int64(c-'0')
+			// ParseUint 而非 ParseInt：金额不接受符号，且溢出会报错而不是绕回负数
+			// —— 手写的逐位累加在超长数字串上会溢出成负值，直接绕过 AMOUNT_EXCEEDED
+			n, err := strconv.ParseUint(v, 10, 63)
+			if err != nil {
+				respond(w, "BAD_AMOUNT")
+				return
 			}
+			amount = int64(n)
 		}
 		respond(w, store.Refund(r.URL.Query().Get("bizNo"), amount))
 	})
 
+	// 先监听成功再打就绪日志。反过来的话端口被占用时日志已经写着「started」，
+	// 等就绪的脚本会判成启动成功，真正的失败要等到后面某个用例莫名其妙地失败才暴露
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatalf("demo-service-go listen %s failed: %v", *addr, err)
+	}
 	log.Printf("demo-service-go started on %s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, mux))
+	log.Fatal(http.Serve(ln, mux))
 }

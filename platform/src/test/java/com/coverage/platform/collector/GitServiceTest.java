@@ -113,6 +113,23 @@ class GitServiceTest {
                 "被测源码没变就不该阻断增量报告，否则任何一次无关提交都会误报");
     }
 
+    /**
+     * git 的 pathspec 为空不是「什么都不比」而是「整仓都比」。
+     * 一个源码根都没配还照常放行的话，README、脚本的改动都会被算成「被测源码漂移」，
+     * 增量口径从此永久 409，提示里点名的却是与被测服务毫无关系的文件。
+     */
+    @Test
+    void 一个源码根都没配时直接报错而不是退化成整仓diff() throws Exception {
+        CoverageProperties bare = new CoverageProperties();
+        bare.setRepoDir(repo.toString());
+        GitService noRoots = new GitService(bare);
+        Files.writeString(repo.resolve("README.md"), "只动了与被测服务无关的文件\n", StandardCharsets.UTF_8);
+
+        IOException e = assertThrows(IOException.class, () -> noRoots.sourceDrift(baseline));
+        assertTrue(e.getMessage().contains("源码根"), e.getMessage());
+        assertThrows(IOException.class, () -> noRoots.changedLines(baseline, baseline));
+    }
+
     @Test
     void ref可以是分支名或相对引用() throws Exception {
         assertEquals(baseline, git.resolve("HEAD"));

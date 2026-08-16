@@ -45,13 +45,38 @@
 | 5 | 实时推送与染色渲染 | `scripts/e2e_verify.py`、`scripts/ws_verify.js` | 端到端延迟 **≤ 5s** |
 | 6 | 场景边界归因 + 并发场景拒绝 | `scripts/e2e_scenario.py` | 两场景覆盖行集合互不越界；并发 start、进行中清零均返回 409 |
 | 7 | 产物与源码版本一致性校验 | `scripts/e2e_incremental.py` | 源码漂移时返回 409 而非 200 |
-| 8 | 多实例聚合 + 实例间版本校验 | `scripts/e2e_multi_instance.py` | 各实例覆盖取并集；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
+| 8 | 多实例聚合 + 实例间版本校验 | `scripts/e2e_multi_instance.py`（Java）、`scripts/e2e_go.py`（Go） | 各实例覆盖取并集；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
+| 9 | Go 采集与归一化（多语言共存） | `scripts/e2e_go.py` | Go 行级染色与 Java 同等质量；清零生效；两种语言共存于同一套口径且路径均以仓库根为基准；跨语言场景归因互不越界 |
+
+> **两种语言的多实例聚合走的是两条代码路径**，因此 #8 需要两个脚本各测一次：
+> Java 在 exec 层按探针取或，Go 把多份 meta/counters 一起交给 `covdata` 按块求和。
+> 合并出错的表现是「几行没变绿」——静默少算，界面上看不出是 bug，只能靠用例守。
 
 新增/修改上述任一功能，必须同步新增或调整对应 E2E 用例，并在 commit 描述里
 贴出可观察证据。
 
-至此 P1 的核心功能已全部有 E2E 覆盖。下一阶段（P2 Go 接入）的关键验收是
-**不修改 Analyzer / Web 任何代码**，只新增采集器与归一化适配器。
+### P2 验收标准的执行情况（如实记录）
+
+原定「接入新语言**不修改 Analyzer / Web 任何代码**」。实际：Web 一行未改，
+**Analyzer 改了一处** —— `analyze()` 增加 `sourceRoot` 参数，使产出的路径以仓库根
+为基准。这不是为迁就 Go 打的补丁，而是原设计缺陷的修正：IR 路径原本以「源码根」
+为基准，而单一 `source-dir` 的假设在多语言下本就不成立 —— 两种语言各有源码根时，
+「源码根相对路径」既无法唯一定位文件，也对不上 `git diff` 的输出。
+GitService 因此不再剥前缀，逻辑反而更简单。
+
+**结论：分层设计基本成立，但「IR 路径基准」这个契约在 P0 时定错了。**
+后续接入 C++/Rust 时如果又要改 Analyzer，就必须重新审视分层是否真的成立。
+
+### Go 与 Java 的行级粒度差异（已知限制，不是 bug）
+
+JaCoCo 是**探针模型**：哪一行有字节码探针，哪一行才进 IR，空行/注释/花括号一律 EMPTY。
+Go 是**块模型**：profile 给的是「起行.起列 → 止行.止列」的文本区间，
+区间内的每一行都被视为同一个块的一部分。两者对不齐：
+
+- **空行已剔除**：strip 后为空即判定为非可执行行，无需解析源码，不存在误判。
+  不剔除的话，`git diff` 里的空行会平白挤进增量分母，把 Go 的比例冲淡；
+- **块尾的 `}` 与块内注释仍计入**：要剔除就得真解析 Go 源码，代价与收益不成正比。
+  因此同样一份代码，Go 的行数分母会比 Java 口径略大 —— 跨语言比较绝对数值时需知晓。
 
 ---
 
@@ -63,13 +88,27 @@
 bash scripts/run_local.sh verify
 ```
 
-它会依次重启**两个**被测实例复位业务状态 → 跑 5 套 E2E。全部为真实服务、
-真实探针、真实 git、真实 HTTP，**不允许用 mock / 桩 / 假数据通过验证**。
+它会依次重启**全部四个**被测实例（2 个 Java + 2 个 Go）复位业务状态 → 跑 6 套 E2E。
+全部为真实服务、真实探针、真实 git、真实 HTTP，**不允许用 mock / 桩 / 假数据通过验证**。
 
-多实例用例需要摆布 2 号实例，起停 JVM 由 `run_local.sh` 的
+每种语言都起两个实例，是因为「多实例聚合」在两种语言下是两条代码路径（见 §二 的注）。
+
+多实例用例需要摆布 Java 2 号实例，起停 JVM 由 `run_local.sh` 的
 `demo2-stop|demo2-start|demo2-mismatch|demo2-dirty` 子命令负责。
 
+**验证必须在工作树干净（被测源码已提交）时跑**：源码一脏，被测实例自报的
+sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂移相关的用例必然失败。
+所以本项目的顺序是「先在 dev 提交、再跑 verify」，而不是反过来。
+
 单测：`mvn -B test`（真实 socket、真实 git 仓库，同样无 mock）。
+
+### 工具链依赖
+
+平台侧需要 **JDK 17 + Maven + Go**。Go 不只是被测服务需要 —— **平台自己**要调
+`go tool covdata textfmt` 做归一化：covmeta/covcounters 是 Go 内部二进制格式，
+没有对外稳定契约，自行解析必然随版本崩。
+默认取 PATH 里的 `go`；装在非常规位置时用 `coverage.go-tool` 指定绝对路径
+（**别把某台机器的绝对路径写死进 application.yml**）。
 
 ### 两个反复踩到的坑
 
@@ -96,3 +135,27 @@ bash scripts/run_local.sh verify
 多实例时每台用不同的探针端口，逐个填进平台的 `coverage.instances`。
 **各实例的 sessionid 必须完全一致（含 `-dirty` 后缀）**：commit 相同但一台脏一台净，
 加载的是两份不同的字节码，平台会判为版本冲突并拒绝出增量报告。
+
+### Go
+
+Go 编译为原生机器码，运行期没有可改写的中间表示，**必须带插桩重新编译一次**：
+
+```bash
+go build -cover -covermode=atomic -tags=goverage -o demo-go.exe .
+COVERAGE_ADDR=127.0.0.1:6400 COVERAGE_BUILD_ID=<40位commit>[-dirty] ./demo-go.exe
+```
+
+但**既有业务源码一行不改**：探针 `coverage_agent.go` 由 build tag `goverage` 守卫、
+与 `main` 同包，`init()` 自动执行，业务代码不 import 也不调用任何东西；
+不带 tag 的生产构建里这个文件根本不参与编译。
+
+- `-covermode=atomic` 是硬要求：`runtime/coverage.ClearCounters()` 只在 atomic 模式下可用，
+  否则场景归因的清零会失败（Go 会明确报错，平台据此拒绝，不会静默把上一轮算进来）。
+- `COVERAGE_BUILD_ID` 等价于 JaCoCo 的 `sessionid`，两种语言共用同一套版本校验。
+  **脏标记要按全部被测源码根一起判定**：各语言各算各的话，只改了 Go 源码时
+  Java 报 `<sha>`、Go 报 `<sha>-dirty`，平台判成「实例间版本不一致」，
+  把人引去核对版本，而真正的原因是有未提交的改动。
+- `COVERAGE_ADDR` **默认只绑回环**（`127.0.0.1:6400`），与 Java 侧的 `address=localhost` 对齐。
+  写成 `:6400` 会绑到所有网卡，而 `/coverage/clear` 能清零计数器 ——
+  等于把「正在录的那个场景」交给同网段的任何人随手作废。
+- 探针地址在平台侧写作 `go://host:port`；不写语言前缀默认 `java`。

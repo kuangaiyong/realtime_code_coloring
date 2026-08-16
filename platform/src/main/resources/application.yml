@@ -12,6 +12,7 @@ coverage:
     - java://localhost:6300
     - java://localhost:6301
     - go://localhost:6400
+    - go://localhost:6401
   # 增量口径：去哪个仓库算 diff、默认与哪个基线比。
   # IR 里的文件路径一律以 repo-dir 为基准，多语言才能共存于同一套口径
   repo-dir: ..
@@ -19,10 +20,10 @@ coverage:
   # Java：产物目录必须与探针所在进程的构建版本一致，否则 class id 对不上
   classes-dir: ../demo-service/target/classes
   java-source-root: demo-service/src/main/java
-  # Go：归一化要调 `go tool covdata`，二进制格式没有稳定契约可自行解析
+  # Go：归一化要调 `go tool covdata`，二进制格式没有稳定契约可自行解析。
+  # go 可执行文件默认取 PATH 里的 `go`，装在非常规位置时用 go-tool 指定绝对路径
   go-source-root: demo-service-go
   go-module-path: github.com/kuangaiyong/realtime_code_coloring/demo-service-go
-  go-tool: C:/Users/Administrator/devtools/go/bin/go.exe
   interval-ms: 3000
   timeout-ms: 3000
 

@@ -23,7 +23,10 @@ import (
 func init() {
 	addr := os.Getenv("COVERAGE_ADDR")
 	if addr == "" {
-		addr = ":6400"
+		// 与 Java 侧的 address=localhost 对齐，默认只绑回环。
+		// ":6400" 会绑到所有网卡，而 /coverage/clear 能清零计数器 ——
+		// 等于把「正在录的那个场景」交给同网段的任何人随手作废
+		addr = "127.0.0.1:6400"
 	}
 
 	mux := http.NewServeMux()

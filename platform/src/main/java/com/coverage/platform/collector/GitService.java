@@ -48,7 +48,7 @@ public class GitService {
     public Map<String, Set<Integer>> changedLines(String baseSha, String targetSha) throws IOException {
         List<String> args = new ArrayList<>(
                 List.of("diff", "-M", "--unified=0", "--no-color", baseSha, targetSha, "--"));
-        args.addAll(props.getSourceRoots());
+        args.addAll(sourceRoots());
         String diff = run(args.toArray(String[]::new));
 
         Map<String, Set<Integer>> result = new LinkedHashMap<>();
@@ -84,7 +84,7 @@ public class GitService {
      */
     public List<String> sourceDrift(String commitSha) throws IOException {
         List<String> args = new ArrayList<>(List.of("diff", "--name-only", commitSha, "--"));
-        args.addAll(props.getSourceRoots());
+        args.addAll(sourceRoots());
         String out = run(args.toArray(String[]::new));
         List<String> files = new ArrayList<>();
         for (String line : out.split("\n")) {
@@ -93,6 +93,20 @@ public class GitService {
             }
         }
         return files;
+    }
+
+    /**
+     * git 的 pathspec 为空时不是「什么都不比」，而是「整仓都比」。
+     * 一个源码根都没配却照常放行的话，README、脚本的改动会被报成「被测源码漂移」，
+     * 增量口径从此永久 409，而提示指向的却是完全无关的文件。
+     */
+    private List<String> sourceRoots() throws IOException {
+        List<String> roots = props.getSourceRoots();
+        if (roots.isEmpty()) {
+            throw new IOException("未配置任何被测源码根（coverage.java-source-root / coverage.go-source-root），"
+                    + "无法界定增量范围");
+        }
+        return roots;
     }
 
     private String run(String... args) throws IOException {

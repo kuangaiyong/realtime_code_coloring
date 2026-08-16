@@ -20,6 +20,11 @@ export PATH="$JAVA_HOME/bin:$MVN_HOME/bin:$GO_HOME/bin:$PATH"
 LOG_DIR="$ROOT/.run"
 mkdir -p "$LOG_DIR"
 
+# 脏标记必须按「全部被测源码根」判定，两种语言用同一个范围。
+# 各算各的话，只改了 Go 源码时 Java 实例报 <sha>、Go 实例报 <sha>-dirty，
+# 平台判成「实例间版本不一致」，把人引去核对版本，而真正的原因是有未提交的改动
+SOURCE_ROOTS="demo-service/src demo-service-go"
+
 # 等待服务就绪；启动失败或超时都要报错退出，不能无限等下去
 wait_ready() {
   local log=$1 marker=$2 name=$3 waited=0
@@ -54,7 +59,7 @@ start_demo() {
   if [ -z "$sid" ]; then
     local commit dirty=""
     commit=$(git rev-parse HEAD)
-    if [ -n "$(git status --porcelain -- demo-service/src)" ]; then dirty="-dirty"; fi
+    if [ -n "$(git status --porcelain -- $SOURCE_ROOTS)" ]; then dirty="-dirty"; fi
     sid="$commit$dirty"
   fi
 
@@ -69,15 +74,17 @@ start_demo() {
 # Go 被测服务。源码零改动：探针文件由 build tag 守卫、与 main 同包，
 # init() 自动执行，业务代码不 import 也不调用任何东西。
 # 但 Go 编译为原生机器码，运行期无法插桩，必须带 -cover 重新构建一次。
+# $1=HTTP 端口 $2=探针端口 $3=日志/进程名
 start_demo_go() {
+  local http=$1 probe=$2 name=$3
   local commit dirty=""
   commit=$(git rev-parse HEAD)
-  if [ -n "$(git status --porcelain -- demo-service-go)" ]; then dirty="-dirty"; fi
+  if [ -n "$(git status --porcelain -- $SOURCE_ROOTS)" ]; then dirty="-dirty"; fi
 
-  COVERAGE_ADDR=":6400" COVERAGE_BUILD_ID="$commit$dirty" \
-    ./.run/demo-go.exe -addr=:18070 > "$LOG_DIR/demo-go.log" 2>&1 &
-  echo $! > "$LOG_DIR/demo-go.pid"
-  wait_ready "$LOG_DIR/demo-go.log" "demo-service-go started" "demo-service-go"
+  COVERAGE_ADDR="127.0.0.1:$probe" COVERAGE_BUILD_ID="$commit$dirty" \
+    ./.run/demo-go.exe -addr=:$http > "$LOG_DIR/$name.log" 2>&1 &
+  echo $! > "$LOG_DIR/$name.pid"
+  wait_ready "$LOG_DIR/$name.log" "demo-service-go started" "$name"
 }
 
 build_go() {
@@ -85,10 +92,14 @@ build_go() {
     "$GO" build -cover -covermode=atomic -tags=goverage -o "$ROOT/.run/demo-go.exe" . )
 }
 
+# Java 与 Go 各起两个实例：同一服务多实例部署时，负载均衡会把请求分到任意一台，
+# 只看其中一台必然少算。两种语言的合并走的是两条不同的代码路径
+# （Java 在 exec 层取或，Go 交给 covdata 按块求和），都要有实例可摆布才验得了
 start_all_demos() {
   start_demo 18080 6300 demo
   start_demo 18081 6301 demo2
-  start_demo_go
+  start_demo_go 18070 6400 demo-go
+  start_demo_go 18071 6401 demo-go2
 }
 
 start() {
@@ -101,7 +112,8 @@ start() {
   start_all_demos
   echo "    demo-service#1     http://localhost:18080   探针 tcp://localhost:6300"
   echo "    demo-service#2     http://localhost:18081   探针 tcp://localhost:6301"
-  echo "    demo-service-go    http://localhost:18070   探针 http://localhost:6400"
+  echo "    demo-service-go#1  http://localhost:18070   探针 http://localhost:6400"
+  echo "    demo-service-go#2  http://localhost:18071   探针 http://localhost:6401"
 
   echo "==> 启动染色平台"
   ( cd "$ROOT/platform" && exec java -jar target/platform-0.3.0.jar ) > "$LOG_DIR/platform.log" 2>&1 &
@@ -110,17 +122,16 @@ start() {
   echo "    platform      http://localhost:18090   ← 打开这个看染色"
 }
 
+ALL_PORTS="18070 18071 18080 18081 18090"
+
 stop() {
   # 最后复核端口确实已释放，避免谎报成功
-  kill_port 18080
-  kill_port 18081
-  kill_port 18070
-  kill_port 18090
+  for port in $ALL_PORTS; do kill_port $port; done
   rm -f "$LOG_DIR"/*.pid
 
   sleep 2
   local alive=""
-  for port in 18070 18080 18081 18090; do
+  for port in $ALL_PORTS; do
     if netstat -ano 2>/dev/null | grep -E "LISTENING" | grep -qE ":$port\b"; then
       alive="$alive $port"
     fi
@@ -129,7 +140,7 @@ stop() {
     echo "!! 以下端口仍被占用：$alive"
     exit 1
   fi
-  echo "已停止（18070 / 18080 / 18081 / 18090 均已释放）"
+  echo "已停止（$ALL_PORTS 均已释放）"
 }
 
 verify() {
@@ -139,6 +150,7 @@ verify() {
   kill_port 18080
   kill_port 18081
   kill_port 18070
+  kill_port 18071
   # 等端口真正释放，否则新进程可能撞上「Address already in use」
   sleep 2
   start_all_demos
@@ -154,6 +166,8 @@ verify() {
   python scripts/e2e_scenario.py
   echo
   python scripts/e2e_multi_instance.py
+  echo
+  python scripts/e2e_go.py
 }
 
 case "${1:-start}" in
