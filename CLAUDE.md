@@ -45,12 +45,15 @@
 | 5 | 实时推送与染色渲染 | `scripts/e2e_verify.py`、`scripts/ws_verify.js` | 端到端延迟 **≤ 5s** |
 | 6 | 场景边界归因 + 并发场景拒绝 | `scripts/e2e_scenario.py` | 两场景覆盖行集合互不越界；并发 start、进行中清零均返回 409 |
 | 7 | 产物与源码版本一致性校验 | `scripts/e2e_incremental.py` | 源码漂移时返回 409 而非 200 |
-| 8 | 多实例聚合 + 实例间版本校验 | `scripts/e2e_multi_instance.py`（Java）、`scripts/e2e_go.py`（Go） | 各实例覆盖取并集；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
-| 9 | Go 采集与归一化（多语言共存） | `scripts/e2e_go.py` | Go 行级染色与 Java 同等质量；清零生效；两种语言共存于同一套口径且路径均以仓库根为基准；跨语言场景归因互不越界 |
+| 8 | 多实例聚合 + 实例间版本校验 | `e2e_multi_instance.py`（Java）、`e2e_go.py`（Go）、`e2e_cpp.py`（C++） | 各实例覆盖取并集；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
+| 9 | Go 采集与归一化（多语言共存） | `scripts/e2e_go.py` | Go 行级染色与 Java 同等质量；清零生效；路径以仓库根为基准；跨语言场景归因互不越界 |
+| 10 | C++ 采集与归一化（多语言共存） | `scripts/e2e_cpp.py` | C++ 行级染色达到与 Java 同级的**四态**；清零生效（含删 .gcda）；三种语言共存于同一套口径；跨语言场景归因互不越界 |
 
-> **两种语言的多实例聚合走的是两条代码路径**，因此 #8 需要两个脚本各测一次：
-> Java 在 exec 层按探针取或，Go 把多份 meta/counters 一起交给 `covdata` 按块求和。
-> 合并出错的表现是「几行没变绿」——静默少算，界面上看不出是 bug，只能靠用例守。
+> **三种语言的多实例聚合走的是三条代码路径**，因此 #8 需要三个脚本各测一次：
+> Java 在 exec 层按探针取或，Go 把多份 meta/counters 交给 `covdata` 按块求和，
+> C++ 用 `gcov-tool merge` 合并 `.gcda`。三者都是在语言自己的原生数据层面合并 ——
+> 提前退化成行状态再合并会掉精度。合并出错的表现是「几行没变绿」，
+> 静默少算，界面上看不出是 bug，只能靠用例守。
 
 新增/修改上述任一功能，必须同步新增或调整对应 E2E 用例，并在 commit 描述里
 贴出可观察证据。
@@ -78,6 +81,24 @@ Go 是**块模型**：profile 给的是「起行.起列 → 止行.止列」的�
 - **块尾的 `}` 与块内注释仍计入**：要剔除就得真解析 Go 源码，代价与收益不成正比。
   因此同样一份代码，Go 的行数分母会比 Java 口径略大 —— 跨语言比较绝对数值时需知晓。
 
+C++ 没有这个问题：gcov 直接给出「本行无代码」（输出里的 `-`），
+而且用 `N*` 标出「跑过但行内还有块没跑到」，正是 JaCoCo 的 PARTIAL。
+**三种语言里只有 Go 是三态，Java 与 C++ 都是四态。**
+
+### P3 验收标准的执行情况（如实记录）
+
+P2 定下的判据是「接入新语言不修改 Analyzer / Web 任何代码，只新增采集器与归一化适配器」。
+**P3 做到了**：`CoverageAnalyzer`、`GoCoverageAnalyzer`、`GitService`、Web 一行未改，
+新增的只有 `CppProbeClient` + `CppCoverageAnalyzer`，其余是接线
+（`ProbeEndpoint` 认 `cpp://`、`CoverageProperties` 加配置项、`CoverageService` 加一个分支）。
+这反过来说明 P2 时改 `analyze()` 的路径基准确实是在补原设计的缺陷，而不是分层不成立。
+
+计划书 §4.3 原本给 C++ 设想的是 **LD_PRELOAD 注入构造函数** 或 **`kill -SIGUSR1` 触发
+`__gcov_dump()`**，并把「LD_PRELOAD 是否可行」列为 P0 级 POC（遗留项 V1）。
+实际走的是第三条路：**探针放在独立编译单元里，用全局对象的构造函数自动启动** ——
+与 Go 的 build tag 探针文件同一个手法，业务代码不 include 也不调用任何东西。
+它不依赖 POSIX（Windows 上根本没有 LD_PRELOAD 和 SIGUSR1），更干净，**V1 因此作废**。
+
 ---
 
 ## 三、验证方式（全局规则 2：禁止 mock）
@@ -88,10 +109,10 @@ Go 是**块模型**：profile 给的是「起行.起列 → 止行.止列」的�
 bash scripts/run_local.sh verify
 ```
 
-它会依次重启**全部四个**被测实例（2 个 Java + 2 个 Go）复位业务状态 → 跑 6 套 E2E。
+它会依次重启**全部六个**被测实例（2 个 Java + 2 个 Go + 2 个 C++）复位业务状态 → 跑 7 套 E2E。
 全部为真实服务、真实探针、真实 git、真实 HTTP，**不允许用 mock / 桩 / 假数据通过验证**。
 
-每种语言都起两个实例，是因为「多实例聚合」在两种语言下是两条代码路径（见 §二 的注）。
+每种语言都起两个实例，是因为「多实例聚合」在三种语言下是三条代码路径（见 §二 的注）。
 
 多实例用例需要摆布 Java 2 号实例，起停 JVM 由 `run_local.sh` 的
 `demo2-stop|demo2-start|demo2-mismatch|demo2-dirty` 子命令负责。
@@ -104,11 +125,17 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 
 ### 工具链依赖
 
-平台侧需要 **JDK 17 + Maven + Go**。Go 不只是被测服务需要 —— **平台自己**要调
-`go tool covdata textfmt` 做归一化：covmeta/covcounters 是 Go 内部二进制格式，
-没有对外稳定契约，自行解析必然随版本崩。
-默认取 PATH 里的 `go`；装在非常规位置时用 `coverage.go-tool` 指定绝对路径
-（**别把某台机器的绝对路径写死进 application.yml**）。
+平台侧需要 **JDK 17 + Maven + Go + GCC（MinGW-w64）**。后两个不只是被测服务要用 ——
+**平台自己**要调它们做归一化，因为这些覆盖数据都是内部二进制格式，没有对外稳定契约，
+自行解析必然随版本崩：
+
+| 语言 | 平台调用的工具 | 配置项（默认取 PATH） |
+|---|---|---|
+| Go | `go tool covdata textfmt` | `coverage.go-tool` |
+| C++ | `gcov -t -r`、`gcov-tool merge` | `coverage.gcov-tool`、`coverage.gcov-merge-tool` |
+
+**别把某台机器的绝对路径写死进 application.yml。** 本机的 MinGW-w64 装在
+`~/devtools/mingw64`，由 `run_local.sh` 的 `MINGW_HOME` 放进 PATH。
 
 ### 两个反复踩到的坑
 
@@ -159,3 +186,41 @@ COVERAGE_ADDR=127.0.0.1:6400 COVERAGE_BUILD_ID=<40位commit>[-dirty] ./demo-go.e
   写成 `:6400` 会绑到所有网卡，而 `/coverage/clear` 能清零计数器 ——
   等于把「正在录的那个场景」交给同网段的任何人随手作废。
 - 探针地址在平台侧写作 `go://host:port`；不写语言前缀默认 `java`。
+
+### C++
+
+与 Go 同理，必须带插桩重新编译一次；**既有业务源码同样一行不改** ——
+探针 `coverage_agent.cpp` 是独立编译单元，靠全局对象的构造函数（早于 `main` 执行）
+自动启动，业务代码不 include 也不调用它任何东西；正常构建不编译这个文件。
+
+```bash
+g++ -std=c++17 --coverage -c order.cpp -o <绝对路径>/order.o   # 业务代码插桩
+g++ -std=c++17            -c coverage_agent.cpp -o .../coverage_agent.o  # 探针不插桩
+g++ -o demo-cpp.exe .../*.o --coverage -lws2_32
+
+GCOV_PREFIX=<每实例一个目录> GCOV_PREFIX_STRIP=99 \
+COVERAGE_DATA_DIR=<同一个目录> COVERAGE_ADDR=127.0.0.1:6500 \
+COVERAGE_BUILD_ID=<40位commit>[-dirty] ./demo-cpp.exe
+```
+
+**gcov 运行期 API 的两条硬事实**（POC 实测得出，弄错就是静默错误的覆盖数据）：
+
+1. `__gcov_dump()` **只生效一次**，之后必须 `__gcov_reset()` 重新武装，否则后续 dump
+   什么都不写。而「没有 .gcda」与「计数器全零」在 gcov 输出里长得一模一样，全是 `#####`
+   —— 这个坑第一次就踩到了，靠加一步「检查 .gcda 是否真的产生」才发现；
+2. `.gcda` 写入时会与磁盘上已有内容**合并**。所以「dump + reset」交出的是累计值而非增量，
+   轮询不丢历史；但真要清零就必须连 `.gcda` 一起删掉，光调 `__gcov_reset()` 是不够的。
+
+其余约定：
+
+- 编译的**工作目录必须是源码根**：`.gcno` 里记的是编译时的相对源码名，
+  平台侧的 `gcov` 要在同一目录下才找得到源码（`coverage.cpp-source-root`）。
+- **对象文件必须用绝对路径**：`.gcda` 的落点是编译期写死进产物的，用相对路径会跟着
+  进程的工作目录跑。
+- `GCOV_PREFIX` 是多实例的关键：不分开的话两个实例会往同一个 `.gcda` 互相覆盖，
+  聚合出来的是「最后写的那一份」。`STRIP=99` 把目录层级剥光，目录才是平的。
+  **已知限制**：剥平之后，不同目录下同名的 `.cpp` 会撞车。本 demo 无同名文件；
+  真接大型工程时要改成保留目录结构，并相应改 `gcov -o` 的调用方式。
+- `.gcno` 是编译期产物，平台靠 `coverage.cpp-objects-dir` 找到它 ——
+  相当于 Java 的 `classes-dir`，缺了它解不出任何行号。
+- 探针地址在平台侧写作 `cpp://host:port`。

@@ -1,6 +1,8 @@
 package com.coverage.platform.service;
 
 import com.coverage.platform.collector.CoverageAnalyzer;
+import com.coverage.platform.collector.CppCoverageAnalyzer;
+import com.coverage.platform.collector.CppProbeClient;
 import com.coverage.platform.collector.GitService;
 import com.coverage.platform.collector.GoCoverageAnalyzer;
 import com.coverage.platform.collector.GoProbeClient;
@@ -37,6 +39,7 @@ class CoverageServiceTest {
         props.setTimeoutMs(300);
         service = new CoverageService(new ProbeClient(), new CoverageAnalyzer(),
                 new GoProbeClient(props), new GoCoverageAnalyzer(props),
+                new CppProbeClient(props), new CppCoverageAnalyzer(props),
                 new GitService(props), props, new CoveragePublisher());
     }
 

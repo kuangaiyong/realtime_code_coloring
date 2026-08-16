@@ -35,6 +35,15 @@ public class CoverageProperties {
     /** Go：不参与统计的文件后缀，默认排除探针自身 —— 它测的是自己，不是被测代码 */
     private List<String> goExclude = new ArrayList<>(List.of("coverage_agent.go"));
 
+    /** C++：源码根相对仓库根的位置。也是 gcov 的工作目录 —— .gcno 里记的是编译时的相对源码名 */
+    private String cppSourceRoot;
+    /** C++：对象文件目录，.gcno 在这里。它是编译期产物，与探针交回的 .gcda 配套才解得出行号 */
+    private String cppObjectsDir;
+    /** C++：gcov 可执行文件。二进制格式没有稳定契约可自行解析，与 Go 调 covdata 同理 */
+    private String gcovTool = "gcov";
+    /** C++：多实例在 .gcda 层面合并所用的工具 */
+    private String gcovMergeTool = "gcov-tool";
+
     private long intervalMs = 3000;
     private int timeoutMs = 3000;
 
@@ -46,6 +55,9 @@ public class CoverageProperties {
         }
         if (goSourceRoot != null && !goSourceRoot.isBlank()) {
             roots.add(goSourceRoot);
+        }
+        if (cppSourceRoot != null && !cppSourceRoot.isBlank()) {
+            roots.add(cppSourceRoot);
         }
         return roots;
     }
@@ -70,6 +82,18 @@ public class CoverageProperties {
 
     public List<String> getGoExclude() { return goExclude; }
     public void setGoExclude(List<String> goExclude) { this.goExclude = goExclude; }
+
+    public String getCppSourceRoot() { return cppSourceRoot; }
+    public void setCppSourceRoot(String cppSourceRoot) { this.cppSourceRoot = cppSourceRoot; }
+
+    public String getCppObjectsDir() { return cppObjectsDir; }
+    public void setCppObjectsDir(String cppObjectsDir) { this.cppObjectsDir = cppObjectsDir; }
+
+    public String getGcovTool() { return gcovTool; }
+    public void setGcovTool(String gcovTool) { this.gcovTool = gcovTool; }
+
+    public String getGcovMergeTool() { return gcovMergeTool; }
+    public void setGcovMergeTool(String gcovMergeTool) { this.gcovMergeTool = gcovMergeTool; }
 
     public String getRepoDir() { return repoDir; }
     public void setRepoDir(String repoDir) { this.repoDir = repoDir; }

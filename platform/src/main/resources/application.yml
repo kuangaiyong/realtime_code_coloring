@@ -13,6 +13,8 @@ coverage:
     - java://localhost:6301
     - go://localhost:6400
     - go://localhost:6401
+    - cpp://localhost:6500
+    - cpp://localhost:6501
   # 增量口径：去哪个仓库算 diff、默认与哪个基线比。
   # IR 里的文件路径一律以 repo-dir 为基准，多语言才能共存于同一套口径
   repo-dir: ..
@@ -24,6 +26,10 @@ coverage:
   # go 可执行文件默认取 PATH 里的 `go`，装在非常规位置时用 go-tool 指定绝对路径
   go-source-root: demo-service-go
   go-module-path: github.com/kuangaiyong/realtime_code_coloring/demo-service-go
+  # C++：.gcno 是编译期产物，与探针交回的 .gcda 配套才解得出行号（相当于 Java 的 classes-dir）。
+  # gcov / gcov-tool 同样默认取 PATH
+  cpp-source-root: demo-service-cpp
+  cpp-objects-dir: ../.run/cpp-obj
   interval-ms: 3000
   timeout-ms: 3000
 

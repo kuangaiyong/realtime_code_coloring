@@ -5,6 +5,8 @@ import com.coverage.platform.collector.GitService;
 import com.coverage.platform.collector.ProbeClient;
 import com.coverage.platform.collector.ProbeDump;
 import com.coverage.platform.collector.ProbeEndpoint;
+import com.coverage.platform.collector.CppCoverageAnalyzer;
+import com.coverage.platform.collector.CppProbeClient;
 import com.coverage.platform.collector.GoCoverageAnalyzer;
 import com.coverage.platform.collector.GoProbeClient;
 import com.coverage.platform.config.CoverageProperties;
@@ -40,6 +42,8 @@ public class CoverageService {
     private final CoverageAnalyzer analyzer;
     private final GoProbeClient goProbe;
     private final GoCoverageAnalyzer goAnalyzer;
+    private final CppProbeClient cppProbe;
+    private final CppCoverageAnalyzer cppAnalyzer;
     private final GitService git;
     private final CoverageProperties props;
     private final CoveragePublisher publisher;
@@ -93,12 +97,15 @@ public class CoverageService {
     private final Object collectLock = new Object();
 
     public CoverageService(ProbeClient probeClient, CoverageAnalyzer analyzer,
-                           GoProbeClient goProbe, GoCoverageAnalyzer goAnalyzer, GitService git,
+                           GoProbeClient goProbe, GoCoverageAnalyzer goAnalyzer,
+                           CppProbeClient cppProbe, CppCoverageAnalyzer cppAnalyzer, GitService git,
                            CoverageProperties props, CoveragePublisher publisher) {
         this.probeClient = probeClient;
         this.analyzer = analyzer;
         this.goProbe = goProbe;
         this.goAnalyzer = goAnalyzer;
+        this.cppProbe = cppProbe;
+        this.cppAnalyzer = cppAnalyzer;
         this.git = git;
         this.props = props;
         this.publisher = publisher;
@@ -132,6 +139,7 @@ public class CoverageService {
         ExecutionDataStore javaMerged = new ExecutionDataStore();
         boolean anyJava = false;
         List<byte[][]> goDumps = new ArrayList<>();
+        List<byte[]> cppDumps = new ArrayList<>();
         List<InstanceStatus> statuses = new ArrayList<>();
         List<BuildVersion> reported = new ArrayList<>();
 
@@ -149,6 +157,11 @@ public class CoverageService {
                     byte[] meta = goProbe.meta(ep);
                     byte[] counters = goProbe.counters(ep);
                     goDumps.add(new byte[][]{meta, counters});
+                } else if (ProbeEndpoint.CPP.equals(ep.language())) {
+                    v = BuildVersion.parseId(cppProbe.buildId(ep));
+                    // dump 会顺带清零并重新武装计数器：gcov 的 __gcov_dump() 只生效一次，
+                    // 不 reset 的话下一次什么都不写。累计不会丢 —— .gcda 写入是合并语义
+                    cppDumps.add(cppProbe.dump(ep));
                 } else {
                     ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
                     for (ExecutionData d : dump.exec().getContents()) {
@@ -190,6 +203,9 @@ public class CoverageService {
             }
             if (!goDumps.isEmpty()) {
                 fresh.putAll(goAnalyzer.analyze(goDumps));
+            }
+            if (!cppDumps.isEmpty()) {
+                fresh.putAll(cppAnalyzer.analyze(cppDumps));
             }
 
             Map<String, FileCoverage> previous = state.get().files();
@@ -423,6 +439,8 @@ public class CoverageService {
             for (ProbeEndpoint ep : endpoints()) {
                 if (ProbeEndpoint.GO.equals(ep.language())) {
                     goProbe.clear(ep);
+                } else if (ProbeEndpoint.CPP.equals(ep.language())) {
+                    cppProbe.clear(ep);
                 } else {
                     probeClient.dump(ep.host(), ep.port(), true, props.getTimeoutMs());
                 }
