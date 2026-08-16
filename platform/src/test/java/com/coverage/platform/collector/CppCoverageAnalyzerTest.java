@@ -86,5 +86,7 @@ class CppCoverageAnalyzerTest {
         assertEquals("MISSED", a.status("====="), "只能由异常路径到达，同样没跑过");
         assertEquals("PARTIAL", a.status("3*"), "跑过，但行内还有块没跑到");
         assertEquals("COVERED", a.status("3"), "全跑到了");
+        assertEquals("MISSED", a.status("???"), "认不出来的标记按没跑过算 —— "
+                + "把没跑过的说成跑过是这个平台最不能犯的错");
     }
 }

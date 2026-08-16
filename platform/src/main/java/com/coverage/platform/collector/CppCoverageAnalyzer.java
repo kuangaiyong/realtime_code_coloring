@@ -201,6 +201,9 @@ public class CppCoverageAnalyzer {
 
         Map<String, FileCoverage> result = new LinkedHashMap<>();
         byFile.forEach((path, lines) -> {
+            if (lines.isEmpty()) {
+                return; // 纯声明的头文件没有可执行行，列进来只会是一行 0/0 的噪声
+            }
             int missed = (int) lines.stream().filter(l -> "MISSED".equals(l.status())).count();
             int covered = lines.size() - missed;
             int slash = path.lastIndexOf('/');
@@ -222,7 +225,8 @@ public class CppCoverageAnalyzer {
      * {@code N} 全跑到了。C++ 因此能做到与 Java 同级的四态染色。
      */
     String status(String count) {
-        if (count.startsWith("#") || count.startsWith("=")) {
+        // 认不出来的一律当没跑过：把没跑过的说成跑过，是这个平台最不能犯的错
+        if (count.isEmpty() || !Character.isDigit(count.charAt(0))) {
             return "MISSED";
         }
         return count.endsWith("*") ? "PARTIAL" : "COVERED";
