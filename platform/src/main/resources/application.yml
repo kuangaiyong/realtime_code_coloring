@@ -6,18 +6,37 @@ spring:
     name: coverage-platform
 
 coverage:
-  # 被测服务的 JaCoCo 探针地址（tcpserver 模式），可配多个实例。
+  # 被测实例的探针地址，形如 [语言://]host:port，不写语言默认 java。
   # 同一服务的多个实例各自持有计数器，聚合起来才是这个服务的真实覆盖
   instances:
-    - localhost:6300
-    - localhost:6301
-  # 产物与源码目录：必须与探针所在进程的构建版本一致，否则 class id 对不上
-  classes-dir: ../demo-service/target/classes
-  source-dir: ../demo-service/src/main/java
+    - java://localhost:6300
+    - java://localhost:6301
+    - go://localhost:6400
+    - go://localhost:6401
+    - cpp://localhost:6500
+    - cpp://localhost:6501
+    - rust://localhost:6600
+    - rust://localhost:6601
   # 增量口径：去哪个仓库算 diff、默认与哪个基线比。
-  # 默认与上一次提交比（本地开发场景）；接入 CI 时改为集成分支，如 main
+  # IR 里的文件路径一律以 repo-dir 为基准，多语言才能共存于同一套口径
   repo-dir: ..
   baseline: HEAD~1
+  # Java：产物目录必须与探针所在进程的构建版本一致，否则 class id 对不上
+  classes-dir: ../demo-service/target/classes
+  java-source-root: demo-service/src/main/java
+  # Go：归一化要调 `go tool covdata`，二进制格式没有稳定契约可自行解析。
+  # go 可执行文件默认取 PATH 里的 `go`，装在非常规位置时用 go-tool 指定绝对路径
+  go-source-root: demo-service-go
+  go-module-path: github.com/kuangaiyong/realtime_code_coloring/demo-service-go
+  # C++：.gcno 是编译期产物，与探针交回的 .gcda 配套才解得出行号（相当于 Java 的 classes-dir）。
+  # gcov / gcov-tool 同样默认取 PATH
+  cpp-source-root: demo-service-cpp
+  cpp-objects-dir: ../.run/cpp-obj
+  # Rust：行号信息在产物自带的 coverage mapping 里，所以要指到产物本身（相当于 Java 的 classes-dir）。
+  # llvm-profdata / llvm-cov 默认取 PATH，但**版本必须与 rustc 匹配**，
+  # 用系统 LLVM 往往版本对不上，取 rustup 的 llvm-tools 组件最稳
+  rust-source-root: demo-service-rust
+  rust-binary: ../demo-service-rust/target/x86_64-pc-windows-msvc/release/demo-service-rust.exe
   interval-ms: 3000
   timeout-ms: 3000
 

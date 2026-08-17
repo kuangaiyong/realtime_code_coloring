@@ -5,6 +5,12 @@ import com.coverage.platform.collector.GitService;
 import com.coverage.platform.collector.ProbeClient;
 import com.coverage.platform.collector.ProbeDump;
 import com.coverage.platform.collector.ProbeEndpoint;
+import com.coverage.platform.collector.CppCoverageAnalyzer;
+import com.coverage.platform.collector.CppProbeClient;
+import com.coverage.platform.collector.GoCoverageAnalyzer;
+import com.coverage.platform.collector.GoProbeClient;
+import com.coverage.platform.collector.RustCoverageAnalyzer;
+import com.coverage.platform.collector.RustProbeClient;
 import com.coverage.platform.config.CoverageProperties;
 import com.coverage.platform.model.BuildVersion;
 import com.coverage.platform.model.FileCoverage;
@@ -36,6 +42,12 @@ public class CoverageService {
 
     private final ProbeClient probeClient;
     private final CoverageAnalyzer analyzer;
+    private final GoProbeClient goProbe;
+    private final GoCoverageAnalyzer goAnalyzer;
+    private final CppProbeClient cppProbe;
+    private final CppCoverageAnalyzer cppAnalyzer;
+    private final RustProbeClient rustProbe;
+    private final RustCoverageAnalyzer rustAnalyzer;
     private final GitService git;
     private final CoverageProperties props;
     private final CoveragePublisher publisher;
@@ -88,10 +100,19 @@ public class CoverageService {
      */
     private final Object collectLock = new Object();
 
-    public CoverageService(ProbeClient probeClient, CoverageAnalyzer analyzer, GitService git,
+    public CoverageService(ProbeClient probeClient, CoverageAnalyzer analyzer,
+                           GoProbeClient goProbe, GoCoverageAnalyzer goAnalyzer,
+                           CppProbeClient cppProbe, CppCoverageAnalyzer cppAnalyzer,
+                           RustProbeClient rustProbe, RustCoverageAnalyzer rustAnalyzer, GitService git,
                            CoverageProperties props, CoveragePublisher publisher) {
         this.probeClient = probeClient;
         this.analyzer = analyzer;
+        this.goProbe = goProbe;
+        this.goAnalyzer = goAnalyzer;
+        this.cppProbe = cppProbe;
+        this.cppAnalyzer = cppAnalyzer;
+        this.rustProbe = rustProbe;
+        this.rustAnalyzer = rustAnalyzer;
         this.git = git;
         this.props = props;
         this.publisher = publisher;
@@ -118,25 +139,57 @@ public class CoverageService {
             lastError = e.getMessage();
             return;
         }
-        // 各实例的执行数据并进同一个 store：JaCoCo 按 class id 归并、逐探针取或，
-        // 结果正是「这些实例合起来跑到了哪些行」。同一行只要有一台跑过就算覆盖
-        ExecutionDataStore merged = new ExecutionDataStore();
+        // 同语言的实例先在各自的原生数据层面合并：Java 走 exec 的探针取或，
+        // Go 交给 covdata 按块求和，C++ 走 gcov-tool merge，Rust 走 llvm-profdata merge。
+        // 若提前退化成行状态再合并，两台各覆盖一半分支时
+        // 结果会从 COVERED 掉成 PARTIAL，精度平白损失。
+        // 跨语言才在 IR 层合并 —— 各语言的文件路径互不相交，直接并起来即可
+        ExecutionDataStore javaMerged = new ExecutionDataStore();
+        boolean anyJava = false;
+        List<byte[][]> goDumps = new ArrayList<>();
+        List<byte[]> cppDumps = new ArrayList<>();
+        List<byte[]> rustDumps = new ArrayList<>();
         List<InstanceStatus> statuses = new ArrayList<>();
         List<BuildVersion> reported = new ArrayList<>();
 
         for (ProbeEndpoint ep : endpoints) {
             try {
-                ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
-                for (ExecutionData d : dump.exec().getContents()) {
-                    merged.visitClassExecution(d);
+                BuildVersion v;
+                if (ProbeEndpoint.GO.equals(ep.language())) {
+                    // 版本先取、数据后收，且三次抓取全部成功才入列。
+                    // 反过来的话，buildId 失败时这台已被标成 DISCONNECTED，
+                    // 它的覆盖却已经并进了聚合结果，而版本又没进 unifiedVersion 的校验
+                    // —— 实例间版本不一致会被这条缝绕过去
+                    v = BuildVersion.parseId(goProbe.buildId(ep));
+                    // meta 与 counters 要一并取：counters 单独存在没有意义，
+                    // 块的位置信息全在 meta 里
+                    byte[] meta = goProbe.meta(ep);
+                    byte[] counters = goProbe.counters(ep);
+                    goDumps.add(new byte[][]{meta, counters});
+                } else if (ProbeEndpoint.CPP.equals(ep.language())) {
+                    v = BuildVersion.parseId(cppProbe.buildId(ep));
+                    // dump 会顺带清零并重新武装计数器：gcov 的 __gcov_dump() 只生效一次，
+                    // 不 reset 的话下一次什么都不写。累计不会丢 —— .gcda 写入是合并语义
+                    cppDumps.add(cppProbe.dump(ep));
+                } else if (ProbeEndpoint.RUST.equals(ep.language())) {
+                    v = BuildVersion.parseId(rustProbe.buildId(ep));
+                    // 与 C++ 不同，__llvm_profile_write_file() 可以反复调用，不必 reset 重新武装；
+                    // 但它同样是合并语义，所以探针每次落盘前会先删掉旧的 .profraw，交回的是当前累计值
+                    rustDumps.add(rustProbe.dump(ep));
+                } else {
+                    ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
+                    for (ExecutionData d : dump.exec().getContents()) {
+                        javaMerged.visitClassExecution(d);
+                    }
+                    anyJava = true;
+                    v = BuildVersion.parse(dump.sessions());
                 }
-                BuildVersion v = BuildVersion.parse(dump.sessions());
                 reported.add(v);
                 statuses.add(new InstanceStatus(ep.toString(), "CONNECTED", v, null));
             } catch (Exception e) {
                 // 单个实例不可达不该让整批采集失败：其余实例的数据仍然是真实的，
                 // 只是这一份聚合结果少了它那部分，必须在状态里说清楚是哪一台
-                statuses.add(new InstanceStatus(ep.toString(), "DISCONNECTED", null, e.getMessage()));
+                statuses.add(new InstanceStatus(ep.toString(), "DISCONNECTED", null, describe(e)));
             }
         }
         instances = List.copyOf(statuses);
@@ -153,12 +206,24 @@ public class CoverageService {
         }
 
         try {
-            File classesDir = new File(props.getClassesDir());
-            if (!classesDir.isDirectory()) {
-                // 探针是好的，问题出在平台侧配置。混同为「探针未连接」会让人去查被测服务，方向完全错
-                throw new IllegalStateException("classes-dir 不是有效目录：" + classesDir.getAbsolutePath());
+            Map<String, FileCoverage> fresh = new LinkedHashMap<>();
+            if (anyJava) {
+                File classesDir = new File(props.getClassesDir());
+                if (!classesDir.isDirectory()) {
+                    // 探针是好的，问题出在平台侧配置。混同为「探针未连接」会让人去查被测服务，方向完全错
+                    throw new IllegalStateException("classes-dir 不是有效目录：" + classesDir.getAbsolutePath());
+                }
+                fresh.putAll(analyzer.analyze(javaMerged, classesDir, props.getJavaSourceRoot()));
             }
-            Map<String, FileCoverage> fresh = analyzer.analyze(merged, classesDir);
+            if (!goDumps.isEmpty()) {
+                fresh.putAll(goAnalyzer.analyze(goDumps));
+            }
+            if (!cppDumps.isEmpty()) {
+                fresh.putAll(cppAnalyzer.analyze(cppDumps));
+            }
+            if (!rustDumps.isEmpty()) {
+                fresh.putAll(rustAnalyzer.analyze(rustDumps));
+            }
 
             Map<String, FileCoverage> previous = state.get().files();
             state.set(new Snapshot(fresh, unifiedVersion(reported), versionConflict(statuses)));
@@ -178,11 +243,22 @@ public class CoverageService {
             }
         } catch (Exception e) {
             if (!"ANALYZE_ERROR".equals(probeStatus)) {
-                log.error("探针连接正常，但覆盖数据分析失败（请检查平台的 classes-dir 配置）：{}", e.getMessage());
+                // 不在这里猜是哪项配置的问题：Java 走 classes-dir、Go 走 go-tool，
+                // 写死一个只会把另一种语言的故障引去查错地方。异常自己会说明白
+                log.error("探针连接正常，但覆盖数据分析失败：{}", describe(e));
             }
             probeStatus = "ANALYZE_ERROR";
-            lastError = e.getMessage();
+            lastError = describe(e);
         }
+    }
+
+    /**
+     * 连接类异常常常没有 message（如 ConnectException），直接取会让界面上显示
+     * 「go://localhost:6400（null）」——看着像平台的 bug，其实是对方没起来。
+     */
+    private static String describe(Exception e) {
+        String m = e.getMessage();
+        return m == null || m.isBlank() ? e.getClass().getSimpleName() : m;
     }
 
     private List<ProbeEndpoint> endpoints() {
@@ -329,7 +405,8 @@ public class CoverageService {
         cov.lines().forEach(l -> statusByLine.put(l.line(), l.status()));
 
         List<Map<String, Object>> rows = new ArrayList<>();
-        Path src = Path.of(props.getSourceDir(), path);
+        // IR 里的路径以仓库根为基准，多语言各自的源码根都在其下
+        Path src = Path.of(props.getRepoDir(), path);
         try {
             List<String> srcLines = Files.readAllLines(src, StandardCharsets.UTF_8);
             for (int i = 0; i < srcLines.size(); i++) {
@@ -377,7 +454,15 @@ public class CoverageService {
             // 场景归因就会把别人早先跑过的代码算成这个场景跑的。
             // 任一台失败就抛出：宁可让调用方重试，也不能留下半清零的集群
             for (ProbeEndpoint ep : endpoints()) {
-                probeClient.dump(ep.host(), ep.port(), true, props.getTimeoutMs());
+                if (ProbeEndpoint.GO.equals(ep.language())) {
+                    goProbe.clear(ep);
+                } else if (ProbeEndpoint.CPP.equals(ep.language())) {
+                    cppProbe.clear(ep);
+                } else if (ProbeEndpoint.RUST.equals(ep.language())) {
+                    rustProbe.clear(ep);
+                } else {
+                    probeClient.dump(ep.host(), ep.port(), true, props.getTimeoutMs());
+                }
             }
             // 清空覆盖数据但保留版本：被测实例没重启，产物版本没变，
             // 丢掉它会让并发的增量请求误报「未上报 buildCommit」

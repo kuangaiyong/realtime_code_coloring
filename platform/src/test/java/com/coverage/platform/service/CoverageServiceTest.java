@@ -1,8 +1,14 @@
 package com.coverage.platform.service;
 
 import com.coverage.platform.collector.CoverageAnalyzer;
+import com.coverage.platform.collector.CppCoverageAnalyzer;
+import com.coverage.platform.collector.CppProbeClient;
 import com.coverage.platform.collector.GitService;
+import com.coverage.platform.collector.GoCoverageAnalyzer;
+import com.coverage.platform.collector.GoProbeClient;
 import com.coverage.platform.collector.ProbeClient;
+import com.coverage.platform.collector.RustCoverageAnalyzer;
+import com.coverage.platform.collector.RustProbeClient;
 import com.coverage.platform.config.CoverageProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,6 +40,9 @@ class CoverageServiceTest {
         props.setInstances(List.of("localhost:" + dead));
         props.setTimeoutMs(300);
         service = new CoverageService(new ProbeClient(), new CoverageAnalyzer(),
+                new GoProbeClient(props), new GoCoverageAnalyzer(props),
+                new CppProbeClient(props), new CppCoverageAnalyzer(props),
+                new RustProbeClient(props), new RustCoverageAnalyzer(props),
                 new GitService(props), props, new CoveragePublisher());
     }
 

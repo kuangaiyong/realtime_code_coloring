@@ -42,11 +42,14 @@ public class GitService {
     }
 
     /**
-     * baseline → target 之间，源码根目录下每个文件的新增/修改行号。
+     * baseline → target 之间，各源码根目录下每个文件的新增/修改行号（路径以仓库根为基准）。
      * 只看新侧行号，因为染色渲染的是新代码；删除的行没有可染色的载体。
      */
     public Map<String, Set<Integer>> changedLines(String baseSha, String targetSha) throws IOException {
-        String diff = run("diff", "-M", "--unified=0", "--no-color", baseSha, targetSha, "--", sourcePrefix());
+        List<String> args = new ArrayList<>(
+                List.of("diff", "-M", "--unified=0", "--no-color", baseSha, targetSha, "--"));
+        args.addAll(sourceRoots());
+        String diff = run(args.toArray(String[]::new));
 
         Map<String, Set<Integer>> result = new LinkedHashMap<>();
         Set<Integer> current = null;
@@ -55,7 +58,7 @@ public class GitService {
                 String target = line.substring(4).strip();
                 // 文件被删除时新侧是 /dev/null，没有可染色的行
                 current = target.equals("/dev/null") ? null
-                        : result.computeIfAbsent(toSourceRelative(target.substring(2)), k -> new TreeSet<>());
+                        : result.computeIfAbsent(target.substring(2), k -> new TreeSet<>());
                 continue;
             }
             if (current == null || !line.startsWith("@@")) {
@@ -80,26 +83,30 @@ public class GitService {
      * 非空即意味着平台正在渲染的源码不是产物构建时的那一份，行号无从对齐。
      */
     public List<String> sourceDrift(String commitSha) throws IOException {
-        String out = run("diff", "--name-only", commitSha, "--", sourcePrefix());
+        List<String> args = new ArrayList<>(List.of("diff", "--name-only", commitSha, "--"));
+        args.addAll(sourceRoots());
+        String out = run(args.toArray(String[]::new));
         List<String> files = new ArrayList<>();
         for (String line : out.split("\n")) {
             if (!line.isBlank()) {
-                files.add(toSourceRelative(line.strip()));
+                files.add(line.strip());
             }
         }
         return files;
     }
 
-    /** 源码根目录相对仓库根的位置，即 diff 里路径的公共前缀 */
-    private String sourcePrefix() {
-        Path repo = Path.of(props.getRepoDir()).toAbsolutePath().normalize();
-        Path src = Path.of(props.getSourceDir()).toAbsolutePath().normalize();
-        return repo.relativize(src).toString().replace('\\', '/');
-    }
-
-    private String toSourceRelative(String repoRelativePath) {
-        String prefix = sourcePrefix() + "/";
-        return repoRelativePath.startsWith(prefix) ? repoRelativePath.substring(prefix.length()) : repoRelativePath;
+    /**
+     * git 的 pathspec 为空时不是「什么都不比」，而是「整仓都比」。
+     * 一个源码根都没配却照常放行的话，README、脚本的改动会被报成「被测源码漂移」，
+     * 增量口径从此永久 409，而提示指向的却是完全无关的文件。
+     */
+    private List<String> sourceRoots() throws IOException {
+        List<String> roots = props.getSourceRoots();
+        if (roots.isEmpty()) {
+            throw new IOException("未配置任何被测源码根（coverage.java-source-root / coverage.go-source-root），"
+                    + "无法界定增量范围");
+        }
+        return roots;
     }
 
     private String run(String... args) throws IOException {

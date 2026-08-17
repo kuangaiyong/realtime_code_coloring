@@ -16,7 +16,7 @@ import urllib.request
 
 PLATFORM = "http://localhost:18090"
 DEMO = "http://localhost:18080"
-TARGET = "com/shop/order/service/OrderService.java"
+TARGET = "demo-service/src/main/java/com/shop/order/service/OrderService.java"
 MAX_LATENCY_SEC = 5.0
 
 

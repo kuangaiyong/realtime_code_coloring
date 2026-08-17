@@ -22,12 +22,21 @@ public record BuildVersion(String commit, boolean dirty) {
     /** 会话 ID 不符合约定（例如未配置 sessionid，JaCoCo 会用「主机名-随机数」兜底）时返回 null */
     public static BuildVersion parse(List<SessionInfo> sessions) {
         for (int i = sessions.size() - 1; i >= 0; i--) {
-            Matcher m = SESSION_ID.matcher(sessions.get(i).getId());
-            if (m.matches()) {
-                return new BuildVersion(m.group(1), m.group(2) != null);
+            BuildVersion v = parseId(sessions.get(i).getId());
+            if (v != null) {
+                return v;
             }
         }
         return null;
+    }
+
+    /**
+     * 从实例自报的版本串解析。Go 探针直接给出这个串，不像 JaCoCo 要裹在 SessionInfo 里，
+     * 但约定完全一致，以便两种语言的版本能互相比对。
+     */
+    public static BuildVersion parseId(String id) {
+        Matcher m = SESSION_ID.matcher(id == null ? "" : id.trim());
+        return m.matches() ? new BuildVersion(m.group(1), m.group(2) != null) : null;
     }
 
     public String shortCommit() {

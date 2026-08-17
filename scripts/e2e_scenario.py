@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PLATFORM = "http://localhost:18090"
 DEMO = "http://localhost:18080"
 SRC = "demo-service/src/main/java"
-CONTROLLER = "com/shop/order/controller/OrderController.java"
+CONTROLLER = "demo-service/src/main/java/com/shop/order/controller/OrderController.java"
 MAPPING = re.compile(r'@(?:Get|Post)Mapping\("/(\w+)"\)')
 
 

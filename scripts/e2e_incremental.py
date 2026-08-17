@@ -23,7 +23,11 @@ ROOT = Path(__file__).resolve().parent.parent
 PLATFORM = "http://localhost:18090"
 DEMO = "http://localhost:18080"
 SRC = "demo-service/src/main/java"
-SERVICE = "com/shop/order/service/OrderService.java"
+# 平台的增量范围覆盖全部源码根，本脚本要独立算出同一个范围才能做集合比对。
+# 必须与 application.yml 的 java-source-root / go-source-root 保持一致 ——
+# 少一个根，平台算出来的变更文件会被这里判成「多出来的」
+SOURCE_ROOTS = [SRC, "demo-service-go", "demo-service-cpp", "demo-service-rust"]
+SERVICE = "demo-service/src/main/java/com/shop/order/service/OrderService.java"
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 POLL_SEC = 15
 
@@ -69,7 +73,7 @@ def file_detail(path, mode="full", baseline=None):
 
 def diff_lines(base, target):
     """独立于平台再算一遍 `git diff` 的新增/修改行，用来核对平台的增量范围"""
-    raw = git("diff", "-M", "--unified=0", "--no-color", base, target, "--", SRC)
+    raw = git("diff", "-M", "--unified=0", "--no-color", base, target, "--", *SOURCE_ROOTS)
     res, cur = {}, None
     for line in raw.split("\n"):
         if line.startswith("+++ "):
@@ -78,7 +82,8 @@ def diff_lines(base, target):
                 cur = None
             else:
                 rel = target_path[2:]
-                cur = res.setdefault(rel[len(SRC) + 1:] if rel.startswith(SRC + "/") else rel, set())
+                # 平台的 IR 路径与 git diff 一样以仓库根为基准，不再需要剥前缀
+                cur = res.setdefault(rel, set())
             continue
         if cur is None or not line.startswith("@@"):
             continue
@@ -232,7 +237,7 @@ def main():
 
     # ---- 4. 源码与产物不是同一版本时必须拒绝出报告 ----
     print("\n  >> 模拟「产物是旧的、源码已经改了」：直接改动被测源码文件")
-    target = ROOT / SRC / SERVICE
+    target = ROOT / SERVICE
     original = target.read_bytes()
     try:
         target.write_bytes(original + b"// drift\n")
