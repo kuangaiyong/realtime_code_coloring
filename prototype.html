@@ -1672,13 +1672,14 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                 <div>
                   <div class="alert-title">无需重新编译，也无需改动任何源码</div>
-                  <div class="alert-desc">JaCoCo 在类加载时做字节码插桩。注意：探针必须随 JVM 启动加载，不支持对已运行的进程动态挂载。</div>
+                  <div class="alert-desc">JaCoCo 在类加载时做字节码插桩。注意：探针必须随 JVM 启动加载，不支持对已运行的进程动态挂载。sessionid 是实例自报的构建版本，不配它则增量覆盖率不可用。</div>
                 </div>
               </div>
               <div class="field" style="width:100%;margin-bottom:12px"><label>在启动命令中加入以下参数</label></div>
               <pre class="snippet">java -javaagent:/opt/probe/jacocoagent.jar=\
        includes=com.shop.*,\
-       output=tcpserver,address=*,port=6300 \
+       output=tcpserver,address=*,port=6300,\
+       sessionid=$(git rev-parse HEAD) \
      -jar order-service.jar</pre>
               <div class="alert warning" style="margin-top:16px">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
@@ -1693,49 +1694,55 @@
               <div class="alert warning">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
                 <div>
-                  <div class="alert-title">需要重新编译一次带插桩的产物</div>
-                  <div class="alert-desc">Go 编译为原生机器码，运行期没有可供改写的中间表示。覆盖代码通过 build tag 隔离，生产构建不受影响。</div>
+                  <div class="alert-title">需要重新编译一次带插桩的产物，但业务源码一行不改</div>
+                  <div class="alert-desc">Go 编译为原生机器码，运行期没有可供改写的中间表示。探针文件与 main 同包、由 build tag 守卫，init() 自动执行，业务代码不 import 也不调用任何东西；不带 tag 的生产构建里它根本不参与编译。</div>
                 </div>
               </div>
-              <pre class="snippet"><span class="cm"># 1. main.go 中加入一行 blank import</span>
-import _ "github.com/Trendyol/goverage"
+              <pre class="snippet"><span class="cm"># 1. 带插桩构建。-covermode=atomic 是硬要求：清零用的 ClearCounters() 只在 atomic 下可用</span>
+go build -cover -covermode=atomic -tags=goverage -o inventory-svc .
 
-<span class="cm"># 2. 用插桩参数构建（-covermode=atomic 是场景清零的前提）</span>
-go build -cover -covermode=atomic -tags=goverage \
-  -coverpkg=./... -o inventory-svc .
-
-<span class="cm"># 3. 启动时指定数据目录</span>
-GOCOVERDIR=/var/cover COVERAGE_HTTP_PORT=7777 ./inventory-svc</pre>
+<span class="cm"># 2. 启动。COVERAGE_BUILD_ID 等价于 JaCoCo 的 sessionid，是增量口径的前提</span>
+COVERAGE_ADDR=127.0.0.1:6400 \
+COVERAGE_BUILD_ID=$(git rev-parse HEAD) ./inventory-svc</pre>
             </div>
 
             <div class="lang-pane" data-pane="cpp" style="display:none">
               <div class="alert warning">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
                 <div>
-                  <div class="alert-title">需要重新编译；dump 触发器方案待验证</div>
-                  <div class="alert-desc">LD_PRELOAD 注入信号处理器的方案尚在 POC 中，当前请先在 main 中注册 SIGUSR1 处理器。</div>
+                  <div class="alert-title">需要重新编译；探针靠构造函数自动启动，不用信号</div>
+                  <div class="alert-desc">探针是独立编译单元，全局对象的构造函数早于 main 执行，业务代码不 include 也不调用它任何东西。不依赖 LD_PRELOAD 与 SIGUSR1，Windows 上同样可用；正常构建不编译这个文件。</div>
                 </div>
               </div>
-              <pre class="snippet"><span class="cm"># 编译期加入覆盖率插桩</span>
-g++ --coverage -O0 -g -o match-engine main.cpp
+              <pre class="snippet"><span class="cm"># 1. 业务代码插桩、探针不插桩。工作目录须是源码根（.gcno 记的是相对源码名），</span>
+<span class="cm">#    对象文件须用绝对路径（.gcda 的落点是编译期写死进产物的）</span>
+g++ -std=c++17 -O0 -g --coverage -c order.cpp -o /build/obj/order.o
+g++ -std=c++17 -O0            -c coverage_agent.cpp -o /build/obj/coverage_agent.o
+g++ -o match-engine /build/obj/order.o /build/obj/coverage_agent.o --coverage
 
-<span class="cm"># 平台通过信号触发 dump，无需停止进程</span>
-kill -SIGUSR1 $(pidof match-engine)</pre>
+<span class="cm"># 2. 启动。GCOV_PREFIX 每实例一个目录，否则两个实例往同一个 .gcda 互相覆盖</span>
+GCOV_PREFIX=/var/cover/match-eng-1 GCOV_PREFIX_STRIP=99 \
+COVERAGE_DATA_DIR=/var/cover/match-eng-1 COVERAGE_ADDR=127.0.0.1:6500 \
+COVERAGE_BUILD_ID=$(git rev-parse HEAD) ./match-engine</pre>
             </div>
 
             <div class="lang-pane" data-pane="rust" style="display:none">
               <div class="alert warning">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
                 <div>
-                  <div class="alert-title">插桩零改动，但运行中导出仍在验证</div>
-                  <div class="alert-desc">连续同步模式在 Linux 上官方标注为「基本完成，待测试」。若验证不通过，将退回 minicov 方案（需引入依赖）。</div>
+                  <div class="alert-title">需要重新编译；源码与 Cargo.toml 均零改动</div>
+                  <div class="alert-desc">探针是单独编译的目标文件，构建时经 -C link-arg 注入，靠启动期自动执行的构造函数拉起，业务代码里没有任何一处提到它。既没走连续同步模式（%c），也没引入 minicov 依赖。Windows 上须编成 msvc 目标：官方只给 msvc 发 profiler_builtins。</div>
                 </div>
               </div>
-              <pre class="snippet"><span class="cm"># 源码一行不改，仅加编译参数</span>
-RUSTFLAGS="-C instrument-coverage" cargo build --release
+              <pre class="snippet"><span class="cm"># 1. 探针单独编成 .o，经 link-arg 注入；Cargo.toml 一行不动</span>
+gcc -c coverage_agent.c -o /build/obj/coverage_agent.o
+RUSTFLAGS="-C instrument-coverage -C link-arg=/build/obj/coverage_agent.o" \
+  cargo build --release
 
-<span class="cm"># 连续同步模式：计数器持续写盘，进程被 kill 也不丢数据</span>
-LLVM_PROFILE_FILE="/var/cover/svc-%p-%c.profraw" ./target/release/svc</pre>
+<span class="cm"># 2. 启动。每实例一个 profraw，且必须是字面路径 —— %p / %m 之类的模式由 LLVM 展开，</span>
+<span class="cm">#    探针按同一个字符串删不到旧文件，交回的就是历次累计的叠加，界面上看不出异样</span>
+LLVM_PROFILE_FILE=/var/cover/svc-1.profraw COVERAGE_ADDR=127.0.0.1:6600 \
+COVERAGE_BUILD_ID=$(git rev-parse HEAD) ./target/release/svc</pre>
             </div>
           </div>
         </div>
@@ -1761,13 +1768,13 @@ LLVM_PROFILE_FILE="/var/cover/svc-%p-%c.profraw" ./target/release/svc</pre>
                   </tr>
                   <tr>
                     <td class="name mono">inv-svc-1</td><td>inventory-svc</td><td><span class="tag sm info">Go</span></td>
-                    <td class="mono">10.20.3.21:7777</td><td class="mono">7c04e11</td>
+                    <td class="mono">go://10.20.3.21:6400</td><td class="mono">7c04e11</td>
                     <td><span class="tag sm success">在线</span></td><td class="muted mono">4 秒前</td>
                     <td><div class="ops"><button class="btn text sm">立即采集</button></div></td>
                   </tr>
                   <tr>
                     <td class="name mono">match-eng-2</td><td>match-engine</td><td><span class="tag sm info">C++</span></td>
-                    <td class="mono">10.20.3.42:sig</td><td class="mono">2b8ff90</td>
+                    <td class="mono">cpp://10.20.3.42:6500</td><td class="mono">2b8ff90</td>
                     <td><span class="tag sm danger">离线</span></td><td class="muted mono">4 分钟前</td>
                     <td><div class="ops"><button class="btn text sm">重连</button><button class="btn text sm danger-text">摘除</button></div></td>
                   </tr>
