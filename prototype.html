@@ -845,15 +845,15 @@
             <div class="stat-icon p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg></div>
             <div class="stat-meta">
               <div class="stat-label">接入服务</div>
-              <div class="stat-value">4<small>个</small></div>
-              <div class="stat-trend up">Java 2 · Go 1 · C++ 1</div>
+              <div class="stat-value">5<small>个</small></div>
+              <div class="stat-trend up">Java 2 · Go 1 · C++ 1 · Rust 1</div>
             </div>
           </div>
           <div class="stat">
             <div class="stat-icon s"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
             <div class="stat-meta">
               <div class="stat-label">在线实例</div>
-              <div class="stat-value" id="statInst">9<small>/10</small></div>
+              <div class="stat-value" id="statInst">11<small>/12</small></div>
               <div class="stat-trend down">1 个实例探针未就绪</div>
             </div>
           </div>
@@ -938,6 +938,16 @@
                       <td class="muted mono">28 秒前</td>
                       <td><div class="ops"><button class="btn text sm" data-goto="color">查看染色</button></div></td>
                     </tr>
+                    <tr>
+                      <td class="name">risk-engine<div class="muted">风控引擎</div></td>
+                      <td><span class="tag sm info">Rust 1.82</span></td>
+                      <td class="mono">2</td>
+                      <td><span class="tag sm success">已连接</span></td>
+                      <td><div class="prog"><div class="prog-bar"><div class="prog-fill w" style="width:58.6%"></div></div><span class="prog-txt">58.6%</span></div></td>
+                      <td class="mono">531</td>
+                      <td class="muted mono">9 秒前</td>
+                      <td><div class="ops"><button class="btn text sm" data-goto="color">查看染色</button></div></td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -954,6 +964,9 @@
                 <div class="tl-item"><div class="tl-dot p"></div><div class="tl-body">
                   <div class="tl-title">order-service 收到计数器清零请求（来自接口自动化流水线 #4412）</div>
                   <div class="tl-time">14:31:55</div></div></div>
+                <div class="tl-item"><div class="tl-dot p"></div><div class="tl-body">
+                  <div class="tl-title">risk-engine 收割 profraw 完毕，llvm-profdata 合并 2 个实例</div>
+                  <div class="tl-time">14:31:40</div></div></div>
                 <div class="tl-item"><div class="tl-dot w"></div><div class="tl-body">
                   <div class="tl-title">match-engine-2 探针未响应，已重试 2 次</div>
                   <div class="tl-time">14:31:12</div></div></div>
