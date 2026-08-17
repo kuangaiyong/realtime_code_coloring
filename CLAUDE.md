@@ -171,7 +171,7 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 `~/devtools/mingw64`，rustup 在 `~/devtools/rustup`，
 由 `run_local.sh` 的 `MINGW_HOME` / `RUSTUP_HOME` 放进 PATH。
 
-### 两个反复踩到的坑
+### 三个反复踩到的坑
 
 1. **业务状态无法靠清零复位**。覆盖率计数器能清零，订单状态不能——订单进入终态后
    回不到 CREATED。E2E 若依赖业务状态，第二次跑必然走进别的分支而失败。
@@ -179,6 +179,11 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 2. **版本号散落在 jar 路径里**。`scripts/run_local.sh` 引用
    `platform/target/platform-<版本>.jar`，改 pom 版本号时必须同步改它，
    否则启动脚本找不到产物。
+3. **`verify` 假定平台已经在跑**。它只重启被测实例，不启动平台；平台没起时
+   第一套用例就以「连接被拒绝」失败。更麻烦的是它已经把 8 个被测实例拉起来了，
+   而 Java 实例握着 `platform/target/agent/jacocoagent.jar`，接着跑 `start` 会在
+   `mvn clean` 删不掉这个 jar 上失败。**从全停状态恢复的顺序是
+   `stop` → `start` → `verify`**，别直接跑 `verify`。
 
 ---
 
