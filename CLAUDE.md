@@ -306,6 +306,9 @@ CRT/SDK 导入库」，**不装 Visual Studio**。xwin 只下载库文件（约 
 - `LLVM_PROFILE_FILE` **每个实例必须指向不同的文件**：LLVM 运行时按这个路径落盘，
   共用一个文件的话两个实例互相覆盖，聚合出来的是「最后写的那一份」
   —— 与 C++ 侧 `GCOV_PREFIX` 要解决的是同一个问题。
+  而且**必须是字面路径，不能用 `%p` / `%m` 之类的模式**：探针要按同一个字符串
+  删掉旧文件（见上面第 2 条），模式由 LLVM 展开，探针删不到，
+  交回的就成了历次累计的叠加 —— 而这在界面上看不出任何异样。
 - 行号信息在产物自带的 coverage mapping 里，所以平台要配 `coverage.rust-binary`
   指向**产物本身**（相当于 Java 的 `classes-dir`、C++ 的 `.gcno`）。
 - 探针用 MinGW 的 gcc 编译却要链进 MSVC ABI 的产物，因此 `-mno-stack-arg-probe`
