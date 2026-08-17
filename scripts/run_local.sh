@@ -83,7 +83,7 @@ start_demo() {
   # 注意：java.exe 是 Windows 程序，认不得 Git Bash 的 /c/... 路径，
   # 传给它的路径必须是相对路径或 Windows 路径。
   java -javaagent:platform/target/agent/jacocoagent.jar=includes=com.shop.*,output=tcpserver,address=localhost,port=$probe,sessionid=$sid \
-       -jar demo-service/target/demo-service-0.4.0.jar --server.port=$http > "$LOG_DIR/$name.log" 2>&1 &
+       -jar demo-service/target/demo-service-0.4.1.jar --server.port=$http > "$LOG_DIR/$name.log" 2>&1 &
   echo $! > "$LOG_DIR/$name.pid"
   wait_ready "$LOG_DIR/$name.log" "Started DemoServiceApplication" "$name"
 }
@@ -226,7 +226,7 @@ start() {
   echo "    demo-service-rust#2 http://localhost:18051  探针 http://localhost:6601"
 
   echo "==> 启动染色平台"
-  ( cd "$ROOT/platform" && exec java -jar target/platform-0.4.0.jar ) > "$LOG_DIR/platform.log" 2>&1 &
+  ( cd "$ROOT/platform" && exec java -jar target/platform-0.4.1.jar ) > "$LOG_DIR/platform.log" 2>&1 &
   echo $! > "$LOG_DIR/platform.pid"
   wait_ready "$LOG_DIR/platform.log" "Started PlatformApplication" "platform"
   echo "    platform      http://localhost:18090   ← 打开这个看染色"
