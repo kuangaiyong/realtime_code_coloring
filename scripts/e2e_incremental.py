@@ -26,7 +26,7 @@ SRC = "demo-service/src/main/java"
 # 平台的增量范围覆盖全部源码根，本脚本要独立算出同一个范围才能做集合比对。
 # 必须与 application.yml 的 java-source-root / go-source-root 保持一致 ——
 # 少一个根，平台算出来的变更文件会被这里判成「多出来的」
-SOURCE_ROOTS = [SRC, "demo-service-go", "demo-service-cpp"]
+SOURCE_ROOTS = [SRC, "demo-service-go", "demo-service-cpp", "demo-service-rust"]
 SERVICE = "demo-service/src/main/java/com/shop/order/service/OrderService.java"
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 POLL_SEC = 15

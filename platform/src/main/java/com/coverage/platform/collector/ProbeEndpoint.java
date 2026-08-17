@@ -11,6 +11,7 @@ public record ProbeEndpoint(String language, String host, int port) {
     public static final String JAVA = "java";
     public static final String GO = "go";
     public static final String CPP = "cpp";
+    public static final String RUST = "rust";
 
     public static ProbeEndpoint parse(String spec) {
         String s = spec == null ? "" : spec.trim();
@@ -19,8 +20,8 @@ public record ProbeEndpoint(String language, String host, int port) {
         if (scheme > 0) {
             lang = s.substring(0, scheme).toLowerCase();
             s = s.substring(scheme + 3).trim();
-            if (!JAVA.equals(lang) && !GO.equals(lang) && !CPP.equals(lang)) {
-                throw new IllegalArgumentException("不支持的被测语言：" + lang + "（目前支持 java、go、cpp）");
+            if (!JAVA.equals(lang) && !GO.equals(lang) && !CPP.equals(lang) && !RUST.equals(lang)) {
+                throw new IllegalArgumentException("不支持的被测语言：" + lang + "（目前支持 java、go、cpp、rust）");
             }
         }
         int i = s.lastIndexOf(':');

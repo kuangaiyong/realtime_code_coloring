@@ -9,6 +9,8 @@ import com.coverage.platform.collector.CppCoverageAnalyzer;
 import com.coverage.platform.collector.CppProbeClient;
 import com.coverage.platform.collector.GoCoverageAnalyzer;
 import com.coverage.platform.collector.GoProbeClient;
+import com.coverage.platform.collector.RustCoverageAnalyzer;
+import com.coverage.platform.collector.RustProbeClient;
 import com.coverage.platform.config.CoverageProperties;
 import com.coverage.platform.model.BuildVersion;
 import com.coverage.platform.model.FileCoverage;
@@ -44,6 +46,8 @@ public class CoverageService {
     private final GoCoverageAnalyzer goAnalyzer;
     private final CppProbeClient cppProbe;
     private final CppCoverageAnalyzer cppAnalyzer;
+    private final RustProbeClient rustProbe;
+    private final RustCoverageAnalyzer rustAnalyzer;
     private final GitService git;
     private final CoverageProperties props;
     private final CoveragePublisher publisher;
@@ -98,7 +102,8 @@ public class CoverageService {
 
     public CoverageService(ProbeClient probeClient, CoverageAnalyzer analyzer,
                            GoProbeClient goProbe, GoCoverageAnalyzer goAnalyzer,
-                           CppProbeClient cppProbe, CppCoverageAnalyzer cppAnalyzer, GitService git,
+                           CppProbeClient cppProbe, CppCoverageAnalyzer cppAnalyzer,
+                           RustProbeClient rustProbe, RustCoverageAnalyzer rustAnalyzer, GitService git,
                            CoverageProperties props, CoveragePublisher publisher) {
         this.probeClient = probeClient;
         this.analyzer = analyzer;
@@ -106,6 +111,8 @@ public class CoverageService {
         this.goAnalyzer = goAnalyzer;
         this.cppProbe = cppProbe;
         this.cppAnalyzer = cppAnalyzer;
+        this.rustProbe = rustProbe;
+        this.rustAnalyzer = rustAnalyzer;
         this.git = git;
         this.props = props;
         this.publisher = publisher;
@@ -133,13 +140,15 @@ public class CoverageService {
             return;
         }
         // 同语言的实例先在各自的原生数据层面合并：Java 走 exec 的探针取或，
-        // Go 交给 covdata 按块求和。若提前退化成行状态再合并，两台各覆盖一半分支时
+        // Go 交给 covdata 按块求和，C++ 走 gcov-tool merge，Rust 走 llvm-profdata merge。
+        // 若提前退化成行状态再合并，两台各覆盖一半分支时
         // 结果会从 COVERED 掉成 PARTIAL，精度平白损失。
         // 跨语言才在 IR 层合并 —— 各语言的文件路径互不相交，直接并起来即可
         ExecutionDataStore javaMerged = new ExecutionDataStore();
         boolean anyJava = false;
         List<byte[][]> goDumps = new ArrayList<>();
         List<byte[]> cppDumps = new ArrayList<>();
+        List<byte[]> rustDumps = new ArrayList<>();
         List<InstanceStatus> statuses = new ArrayList<>();
         List<BuildVersion> reported = new ArrayList<>();
 
@@ -162,6 +171,11 @@ public class CoverageService {
                     // dump 会顺带清零并重新武装计数器：gcov 的 __gcov_dump() 只生效一次，
                     // 不 reset 的话下一次什么都不写。累计不会丢 —— .gcda 写入是合并语义
                     cppDumps.add(cppProbe.dump(ep));
+                } else if (ProbeEndpoint.RUST.equals(ep.language())) {
+                    v = BuildVersion.parseId(rustProbe.buildId(ep));
+                    // 与 C++ 不同，__llvm_profile_write_file() 可以反复调用，不必 reset 重新武装；
+                    // 但它同样是合并语义，所以探针每次落盘前会先删掉旧的 .profraw，交回的是当前累计值
+                    rustDumps.add(rustProbe.dump(ep));
                 } else {
                     ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
                     for (ExecutionData d : dump.exec().getContents()) {
@@ -206,6 +220,9 @@ public class CoverageService {
             }
             if (!cppDumps.isEmpty()) {
                 fresh.putAll(cppAnalyzer.analyze(cppDumps));
+            }
+            if (!rustDumps.isEmpty()) {
+                fresh.putAll(rustAnalyzer.analyze(rustDumps));
             }
 
             Map<String, FileCoverage> previous = state.get().files();
@@ -441,6 +458,8 @@ public class CoverageService {
                     goProbe.clear(ep);
                 } else if (ProbeEndpoint.CPP.equals(ep.language())) {
                     cppProbe.clear(ep);
+                } else if (ProbeEndpoint.RUST.equals(ep.language())) {
+                    rustProbe.clear(ep);
                 } else {
                     probeClient.dump(ep.host(), ep.port(), true, props.getTimeoutMs());
                 }

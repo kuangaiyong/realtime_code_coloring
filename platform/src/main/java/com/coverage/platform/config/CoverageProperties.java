@@ -44,6 +44,15 @@ public class CoverageProperties {
     /** C++：多实例在 .gcda 层面合并所用的工具 */
     private String gcovMergeTool = "gcov-tool";
 
+    /** Rust：源码根相对仓库根的位置，如 demo-service-rust */
+    private String rustSourceRoot;
+    /** Rust：被测产物。行号信息在它的 coverage mapping 里，相当于 Java 的 classes-dir */
+    private String rustBinary;
+    /** Rust：合并多实例 .profraw 并转成 profdata 的工具，版本须与 rustc 匹配 */
+    private String llvmProfdataTool = "llvm-profdata";
+    /** Rust：把 profdata 导成 LCOV 的工具 */
+    private String llvmCovTool = "llvm-cov";
+
     private long intervalMs = 3000;
     private int timeoutMs = 3000;
 
@@ -58,6 +67,9 @@ public class CoverageProperties {
         }
         if (cppSourceRoot != null && !cppSourceRoot.isBlank()) {
             roots.add(cppSourceRoot);
+        }
+        if (rustSourceRoot != null && !rustSourceRoot.isBlank()) {
+            roots.add(rustSourceRoot);
         }
         return roots;
     }
@@ -94,6 +106,18 @@ public class CoverageProperties {
 
     public String getGcovMergeTool() { return gcovMergeTool; }
     public void setGcovMergeTool(String gcovMergeTool) { this.gcovMergeTool = gcovMergeTool; }
+
+    public String getRustSourceRoot() { return rustSourceRoot; }
+    public void setRustSourceRoot(String rustSourceRoot) { this.rustSourceRoot = rustSourceRoot; }
+
+    public String getRustBinary() { return rustBinary; }
+    public void setRustBinary(String rustBinary) { this.rustBinary = rustBinary; }
+
+    public String getLlvmProfdataTool() { return llvmProfdataTool; }
+    public void setLlvmProfdataTool(String llvmProfdataTool) { this.llvmProfdataTool = llvmProfdataTool; }
+
+    public String getLlvmCovTool() { return llvmCovTool; }
+    public void setLlvmCovTool(String llvmCovTool) { this.llvmCovTool = llvmCovTool; }
 
     public String getRepoDir() { return repoDir; }
     public void setRepoDir(String repoDir) { this.repoDir = repoDir; }

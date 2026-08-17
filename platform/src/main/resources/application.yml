@@ -15,6 +15,8 @@ coverage:
     - go://localhost:6401
     - cpp://localhost:6500
     - cpp://localhost:6501
+    - rust://localhost:6600
+    - rust://localhost:6601
   # 增量口径：去哪个仓库算 diff、默认与哪个基线比。
   # IR 里的文件路径一律以 repo-dir 为基准，多语言才能共存于同一套口径
   repo-dir: ..
@@ -30,6 +32,11 @@ coverage:
   # gcov / gcov-tool 同样默认取 PATH
   cpp-source-root: demo-service-cpp
   cpp-objects-dir: ../.run/cpp-obj
+  # Rust：行号信息在产物自带的 coverage mapping 里，所以要指到产物本身（相当于 Java 的 classes-dir）。
+  # llvm-profdata / llvm-cov 默认取 PATH，但**版本必须与 rustc 匹配**，
+  # 用系统 LLVM 往往版本对不上，取 rustup 的 llvm-tools 组件最稳
+  rust-source-root: demo-service-rust
+  rust-binary: ../demo-service-rust/target/x86_64-pc-windows-msvc/release/demo-service-rust.exe
   interval-ms: 3000
   timeout-ms: 3000
 

@@ -1,0 +1,13 @@
+[package]
+name = "demo-service-rust"
+version = "0.1.0"
+edition = "2021"
+
+# 依赖为空是有意的：覆盖率探针不是 crate 依赖，而是一个独立编译的 .o，
+# 由构建时的 -C link-arg 注入，靠 .CRT$XCU 段的函数指针在 main 之前自动执行。
+# 因此接入覆盖率既不改业务源码，也不改这个清单文件。
+[dependencies]
+
+[[bin]]
+name = "demo-service-rust"
+path = "src/main.rs"

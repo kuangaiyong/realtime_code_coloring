@@ -45,13 +45,15 @@
 | 5 | 实时推送与染色渲染 | `scripts/e2e_verify.py`、`scripts/ws_verify.js` | 端到端延迟 **≤ 5s** |
 | 6 | 场景边界归因 + 并发场景拒绝 | `scripts/e2e_scenario.py` | 两场景覆盖行集合互不越界；并发 start、进行中清零均返回 409 |
 | 7 | 产物与源码版本一致性校验 | `scripts/e2e_incremental.py` | 源码漂移时返回 409 而非 200 |
-| 8 | 多实例聚合 + 实例间版本校验 | `e2e_multi_instance.py`（Java）、`e2e_go.py`（Go）、`e2e_cpp.py`（C++） | 各实例覆盖取并集；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
+| 8 | 多实例聚合 + 实例间版本校验 | `e2e_multi_instance.py`（Java）、`e2e_go.py`（Go）、`e2e_cpp.py`（C++）、`e2e_rust.py`（Rust） | 各实例覆盖取并集；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
 | 9 | Go 采集与归一化（多语言共存） | `scripts/e2e_go.py` | Go 行级染色与 Java 同等质量；清零生效；路径以仓库根为基准；跨语言场景归因互不越界 |
 | 10 | C++ 采集与归一化（多语言共存） | `scripts/e2e_cpp.py` | C++ 行级染色达到与 Java 同级的**四态**；清零生效（含删 .gcda）；三种语言共存于同一套口径；跨语言场景归因互不越界 |
+| 11 | Rust 采集与归一化（多语言共存） | `scripts/e2e_rust.py` | Rust 行级染色成立；清零生效（含删 .profraw）；四种语言共存于同一套口径；跨语言场景归因互不越界 |
 
-> **三种语言的多实例聚合走的是三条代码路径**，因此 #8 需要三个脚本各测一次：
+> **四种语言的多实例聚合走的是四条代码路径**，因此 #8 需要四个脚本各测一次：
 > Java 在 exec 层按探针取或，Go 把多份 meta/counters 交给 `covdata` 按块求和，
-> C++ 用 `gcov-tool merge` 合并 `.gcda`。三者都是在语言自己的原生数据层面合并 ——
+> C++ 用 `gcov-tool merge` 合并 `.gcda`，Rust 用 `llvm-profdata merge` 合并 `.profraw`。
+> 四者都是在语言自己的原生数据层面合并 ——
 > 提前退化成行状态再合并会掉精度。合并出错的表现是「几行没变绿」，
 > 静默少算，界面上看不出是 bug，只能靠用例守。
 
@@ -83,7 +85,11 @@ Go 是**块模型**：profile 给的是「起行.起列 → 止行.止列」的�
 
 C++ 没有这个问题：gcov 直接给出「本行无代码」（输出里的 `-`），
 而且用 `N*` 标出「跑过但行内还有块没跑到」，正是 JaCoCo 的 PARTIAL。
-**三种语言里只有 Go 是三态，Java 与 C++ 都是四态。**
+
+Rust 介于两者之间：`llvm-cov export --format=lcov` 的 `DA:` 记录只列可执行行，
+空行与注释压根不出现，所以 EMPTY 是天然的、无需像 Go 那样另行剔除；
+但它不输出 `BRDA` 分支记录，因此没有 PARTIAL。
+**四种语言里 Go 与 Rust 是三态，Java 与 C++ 是四态。**
 
 ### P3 验收标准的执行情况（如实记录）
 
@@ -99,6 +105,27 @@ P2 定下的判据是「接入新语言不修改 Analyzer / Web 任何代码，�
 与 Go 的 build tag 探针文件同一个手法，业务代码不 include 也不调用任何东西。
 它不依赖 POSIX（Windows 上根本没有 LD_PRELOAD 和 SIGUSR1），更干净，**V1 因此作废**。
 
+### P4 验收标准的执行情况（如实记录）
+
+判据仍是「接入新语言不修改 Analyzer / Web 任何代码」。**P4 做到了**：
+`CoverageAnalyzer`、`GoCoverageAnalyzer`、`CppCoverageAnalyzer`、`GitService`、Web
+一行未改，新增的只有 `RustProbeClient` + `RustCoverageAnalyzer`，其余是接线
+（`ProbeEndpoint` 认 `rust://`、`CoverageProperties` 加配置项、`CoverageService` 加一个分支）。
+连着 P3 一起看，分层在第三、第四种语言上都成立了 —— P2 那次改 `analyze()` 确实是
+补原设计的缺陷，不是分层不成立。
+
+计划书 §4.4 给 Rust 排的优先级是「A. `LLVM_PROFILE_FILE=%c` 连续模式（零改动）→
+不通则退回 B. minicov（引入依赖 + 写调用代码，需重新向用户确认侵入性）」。
+**两条都没走**：`%c` 官方文档自己写着 Windows 需要较大改动，而 minicov 要动 Cargo.toml
+和业务代码，正是本项目要避免的。实际走的是与 Go / C++ 同一个手法 ——
+**探针放在独立编译单元里，靠启动期自动执行的构造函数拉起**，
+在 Rust 上具体是链进一个 C 目标文件、用 `.CRT$XCU` 段注册。
+连 `Cargo.toml` 都不用动，比计划里任何一条都干净，**V2 / V3 因此一并作废**。
+
+真正的意外在别处：**Windows 上 gnu 目标根本用不了 LLVM 覆盖率**（详见 §四 Rust 一节），
+被迫引入 msvc 目标 + xwin + lld-link 这一套。这是平台侧的环境依赖，不是代码问题，
+但换机器部署时会被绊住，所以记在这里。
+
 ---
 
 ## 三、验证方式（全局规则 2：禁止 mock）
@@ -109,10 +136,11 @@ P2 定下的判据是「接入新语言不修改 Analyzer / Web 任何代码，�
 bash scripts/run_local.sh verify
 ```
 
-它会依次重启**全部六个**被测实例（2 个 Java + 2 个 Go + 2 个 C++）复位业务状态 → 跑 7 套 E2E。
+它会依次重启**全部八个**被测实例（2 个 Java + 2 个 Go + 2 个 C++ + 2 个 Rust）复位业务状态
+→ 跑 8 套 E2E。
 全部为真实服务、真实探针、真实 git、真实 HTTP，**不允许用 mock / 桩 / 假数据通过验证**。
 
-每种语言都起两个实例，是因为「多实例聚合」在三种语言下是三条代码路径（见 §二 的注）。
+每种语言都起两个实例，是因为「多实例聚合」在四种语言下是四条代码路径（见 §二 的注）。
 
 多实例用例需要摆布 Java 2 号实例，起停 JVM 由 `run_local.sh` 的
 `demo2-stop|demo2-start|demo2-mismatch|demo2-dirty` 子命令负责。
@@ -125,17 +153,23 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 
 ### 工具链依赖
 
-平台侧需要 **JDK 17 + Maven + Go + GCC（MinGW-w64）**。后两个不只是被测服务要用 ——
-**平台自己**要调它们做归一化，因为这些覆盖数据都是内部二进制格式，没有对外稳定契约，
-自行解析必然随版本崩：
+平台侧需要 **JDK 17 + Maven + Go + GCC（MinGW-w64）+ Rust（rustup）**。
+后三个不只是被测服务要用 —— **平台自己**要调它们做归一化，
+因为这些覆盖数据都是内部二进制格式，没有对外稳定契约，自行解析必然随版本崩：
 
 | 语言 | 平台调用的工具 | 配置项（默认取 PATH） |
 |---|---|---|
 | Go | `go tool covdata textfmt` | `coverage.go-tool` |
 | C++ | `gcov -t -r`、`gcov-tool merge` | `coverage.gcov-tool`、`coverage.gcov-merge-tool` |
+| Rust | `llvm-profdata merge -sparse`、`llvm-cov export --format=lcov` | `coverage.llvm-profdata-tool`、`coverage.llvm-cov-tool` |
+
+**Rust 的两个工具版本必须与 rustc 匹配**，系统上随便一个 LLVM 往往对不上，
+会以「不认识的 profraw 版本」失败。取 rustup 的 `llvm-tools` 组件最稳，
+它在 `<toolchain>/lib/rustlib/x86_64-pc-windows-gnu/bin/` 下。
 
 **别把某台机器的绝对路径写死进 application.yml。** 本机的 MinGW-w64 装在
-`~/devtools/mingw64`，由 `run_local.sh` 的 `MINGW_HOME` 放进 PATH。
+`~/devtools/mingw64`，rustup 在 `~/devtools/rustup`，
+由 `run_local.sh` 的 `MINGW_HOME` / `RUSTUP_HOME` 放进 PATH。
 
 ### 两个反复踩到的坑
 
@@ -224,3 +258,58 @@ COVERAGE_BUILD_ID=<40位commit>[-dirty] ./demo-cpp.exe
 - `.gcno` 是编译期产物，平台靠 `coverage.cpp-objects-dir` 找到它 ——
   相当于 Java 的 `classes-dir`，缺了它解不出任何行号。
 - 探针地址在平台侧写作 `cpp://host:port`。
+
+### Rust
+
+同样必须带插桩重新编译一次；**源码零改动做得比 Go / C++ 还彻底 —— 连 `Cargo.toml`
+都不用动**：探针 `coverage_agent.c` 是单独用 gcc 编译的 `.o`，构建时经 `-C link-arg`
+注入，靠 `.CRT$XCU` 段里的函数指针在 `main` 之前自动执行（MSVC 启动代码会遍历该段）。
+业务代码里没有任何一处提到它，正常构建也不会带上它。
+
+```bash
+gcc -c coverage_agent.c -o <绝对路径>/coverage_agent.o -mno-stack-arg-probe -O1
+RUSTFLAGS="-C instrument-coverage \
+  -C link-arg=<绝对路径>/coverage_agent.o -C link-arg=ws2_32.lib \
+  -L native=<xwin>/crt/lib/x86_64 -L native=<xwin>/sdk/lib/um/x86_64 \
+  -L native=<xwin>/sdk/lib/ucrt/x86_64 \
+  -C linker=<toolchain>/lib/rustlib/x86_64-pc-windows-gnu/bin/rust-lld.exe \
+  -C linker-flavor=lld-link" \
+  cargo build --release --target x86_64-pc-windows-msvc
+
+LLVM_PROFILE_FILE=<每实例一个文件>.profraw COVERAGE_ADDR=127.0.0.1:6600 \
+COVERAGE_BUILD_ID=<40位commit>[-dirty] ./demo-service-rust.exe
+```
+
+**Windows 上必须编成 `x86_64-pc-windows-msvc`，gnu 目标走不通**（实测结论，
+别再试第二次）：
+
+1. 官方只给 msvc 目标发 `profiler_builtins`，gnu 目标上 `-C instrument-coverage`
+   直接 E0463；
+2. 想用 `-Z build-std=...,profiler_builtins` 自建也不行 —— 它的 `build.rs` 要
+   compiler-rt 源码（`RUST_COMPILER_RT_FOR_PROFILER`），备齐之后能编出来，
+   但**链出来的 exe 根本加载不了**（"not a valid application for this OS platform"）：
+   LLVM 把覆盖率元数据放在 MSVC 风格的 `$`-分组 COFF 段里，GNU ld 排不出正确的布局。
+
+因此路线是「msvc 目标 + rustup 自带的 `rust-lld`（`lld-link` 模式）+ xwin 拉来的
+CRT/SDK 导入库」，**不装 Visual Studio**。xwin 只下载库文件（约 630MB）。
+
+**LLVM 运行期 API 的两条硬事实**（POC 实测得出，弄错就是静默错误的覆盖数据）：
+
+1. `__llvm_profile_write_file()` **可以反复调用**，不像 gcov 的 `__gcov_dump()`
+   那样只生效一次 —— 这一点比 C++ 省事；
+2. 但它写入时会与磁盘上已有的 `.profraw` **合并**。所以每次 dump 前必须先把文件删掉，
+   否则交回的是「历次累计 + 本次」的重复叠加；真要清零时，
+   光调 `__llvm_profile_reset_counters()` 也不够，同样得连文件一起删。
+
+其余约定：
+
+- `LLVM_PROFILE_FILE` **每个实例必须指向不同的文件**：LLVM 运行时按这个路径落盘，
+  共用一个文件的话两个实例互相覆盖，聚合出来的是「最后写的那一份」
+  —— 与 C++ 侧 `GCOV_PREFIX` 要解决的是同一个问题。
+- 行号信息在产物自带的 coverage mapping 里，所以平台要配 `coverage.rust-binary`
+  指向**产物本身**（相当于 Java 的 `classes-dir`、C++ 的 `.gcno`）。
+- 探针用 MinGW 的 gcc 编译却要链进 MSVC ABI 的产物，因此 `-mno-stack-arg-probe`
+  不能省（否则出现 MSVC 侧没有的 `___chkstk_ms` 符号），
+  探针内部也全程只调 Win32 API，一句 CRT 都不碰。
+- `COVERAGE_ADDR` 默认只绑回环（`127.0.0.1:6600`），与其余三种语言一致。
+- 探针地址在平台侧写作 `rust://host:port`。

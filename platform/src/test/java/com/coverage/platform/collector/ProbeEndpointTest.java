@@ -28,14 +28,17 @@ class ProbeEndpointTest {
         assertEquals(ProbeEndpoint.GO, go.language());
         assertEquals("10.0.0.9", go.host());
         assertEquals(6400, go.port());
+
+        assertEquals(ProbeEndpoint.CPP, ProbeEndpoint.parse("cpp://localhost:6500").language());
+        assertEquals(ProbeEndpoint.RUST, ProbeEndpoint.parse("rust://localhost:6600").language());
     }
 
     @Test
     void 不支持的语言直接报错() {
         // 装作支持却采不到数据，界面上表现为「这个服务一行都没覆盖」，比报错难查得多
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                () -> ProbeEndpoint.parse("rust://localhost:6500"));
-        assertTrue(e.getMessage().contains("rust"), e.getMessage());
+                () -> ProbeEndpoint.parse("python://localhost:6700"));
+        assertTrue(e.getMessage().contains("python"), e.getMessage());
     }
 
     @Test
