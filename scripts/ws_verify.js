@@ -67,6 +67,55 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
   }
   console.log(`  [PASS] 染色页面可访问（${html.length} 字节，含 WebSocket 与 API 调用）`);
 
+  // 总览看板与覆盖率排行。渲染发生在浏览器里，这里断言不了像素，
+  // 但能断言两件真会坏的事：视图钩子在不在、以及看板赖以计算的字段在不在。
+  // 后端哪天少返回一个字段，看板会安静地渲染成空白 —— 正是本项目最怕的静默失效
+  for (const marker of ['data-view="dash"', 'id="viewDash"', 'id="dashStats"',
+                        'id="instBox"', 'id="rankBox"', 'data-rank="ratio"', 'data-rank="missed"']) {
+    if (!html.includes(marker)) fail(`看板视图缺少钩子: ${marker}`);
+  }
+  console.log('  [PASS] 看板与排行的视图钩子齐备');
+
+  const dash = await (await fetch(`${PLATFORM}/api/coverage/summary`)).json();
+  if (!Array.isArray(dash.instances) || dash.instances.length === 0) fail('summary 未返回 instances[]，看板的实例表会空白');
+  for (const i of dash.instances) {
+    for (const k of ['endpoint', 'status', 'buildCommit', 'dirty']) {
+      if (!(k in i)) fail(`实例 ${i.endpoint} 缺少字段 ${k}`);
+    }
+    if (!/^(java|go|cpp|rust):\/\//.test(i.endpoint)) fail(`看板按 endpoint 前缀判定语言，但取到 ${i.endpoint}`);
+  }
+  console.log(`  [PASS] 实例表字段齐备，${dash.instances.length} 个实例的语言前缀均可识别`);
+
+  if (!dash.lastCollectedAt || isNaN(new Date(dash.lastCollectedAt).getTime())) {
+    fail(`lastCollectedAt 不可解析: ${dash.lastCollectedAt}`);
+  }
+  console.log(`  [PASS] 最后采集时间可解析（${dash.lastCollectedAt}）`);
+
+  for (const f of dash.files) {
+    for (const k of ['path', 'sourceFileName', 'packageName', 'ratio', 'coveredLines', 'missedLines']) {
+      if (!(k in f)) fail(`文件 ${f.path} 缺少排行需要的字段 ${k}`);
+    }
+  }
+  // 两种排序必须给出不同的问题的答案，否则留两个按钮没有意义
+  const byRatio = dash.files.slice().sort((a, b) => a.ratio - b.ratio || b.missedLines - a.missedLines);
+  const byMissed = dash.files.slice().sort((a, b) => b.missedLines - a.missedLines || a.ratio - b.ratio);
+  for (let n = 1; n < byRatio.length; n++) {
+    if (byRatio[n].ratio < byRatio[n - 1].ratio) fail('「覆盖率最低」排序不是非递减');
+    if (byMissed[n].missedLines > byMissed[n - 1].missedLines) fail('「未覆盖行最多」排序不是非递增');
+  }
+  if (new Set(byRatio.map(f => f.path)).size !== dash.files.length) fail('排序后文件集合发生变化');
+  console.log(`  [PASS] ${dash.files.length} 个文件两种排序均单调且不丢文件`
+    + `（最低 ${byRatio[0].sourceFileName} ${byRatio[0].ratio}%`
+    + ` / 缺口最大 ${byMissed[0].sourceFileName} ${byMissed[0].missedLines} 行）`);
+
+  const covered = dash.files.reduce((a, f) => a + f.coveredLines, 0);
+  const missed = dash.files.reduce((a, f) => a + f.missedLines, 0);
+  const derived = Math.round((covered / (covered + missed)) * 1000) / 10;
+  if (Math.abs(derived - dash.overallRatio) > 0.15) {
+    fail(`看板的行数合计与服务端 overallRatio 对不上: 合计推出 ${derived}%，服务端 ${dash.overallRatio}%`);
+  }
+  console.log(`  [PASS] 看板行数合计（已覆盖 ${covered} / 未覆盖 ${missed}）与服务端 ${dash.overallRatio}% 自洽`);
+
   ws.close();
   console.log('-'.repeat(70));
   console.log('  推送链路验证：全部通过');

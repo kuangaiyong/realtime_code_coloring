@@ -131,6 +131,38 @@
   .err { margin: 14px; padding: 10px 14px; background: var(--el-color-danger-light-9); color: var(--el-color-danger); border-radius: var(--radius); font-size: 13px; }
   /* 数据不完整但可用：与「算不出结果」区分开，避免把降级当成故障 */
   .warn { margin: 14px; padding: 10px 14px; background: var(--el-color-warning-light-9); color: var(--el-color-warning); border-radius: var(--radius); font-size: 13px; }
+
+  /* 看板与染色是两种看法，不并排铺开：源码视图是核心，不能被挤到折叠线以下 */
+  .tabs { display: flex; padding: 0 18px; background: var(--el-bg-color); border-bottom: 1px solid var(--el-border-color-lighter); }
+  .tabs button { border: none; background: none; height: 40px; padding: 0 16px; border-radius: 0; border-bottom: 2px solid transparent; }
+  .tabs button:hover, .tabs button.on { color: var(--el-color-primary); border-bottom-color: var(--el-color-primary); }
+
+  #viewDash { padding: 14px; display: grid; gap: 14px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 14px; }
+  .stat { background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius); padding: 13px 14px; }
+  .stat .k { font-size: 12px; color: var(--el-text-color-secondary); }
+  .stat .v { font-size: 21px; font-family: var(--mono); color: var(--el-text-color-primary); margin-top: 5px; }
+  .stat .v small { font-size: 13px; color: var(--el-text-color-secondary); }
+
+  table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.tbl th { text-align: left; font-size: 12px; font-weight: 600; color: var(--el-text-color-secondary); padding: 9px 14px; border-bottom: 1px solid var(--el-border-color-lighter); }
+  table.tbl td { padding: 9px 14px; border-bottom: 1px solid var(--el-border-color-lighter); }
+  table.tbl tr:last-child td { border-bottom: none; }
+  table.tbl td.mono { font-family: var(--mono); font-size: 12px; }
+
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px; border: 1px solid; }
+  .tag.ok { color: var(--el-color-success); border-color: var(--el-color-success); background: var(--el-color-success-light-9); }
+  .tag.err { color: var(--el-color-danger); border-color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
+  .tag.warn { color: var(--el-color-warning); border-color: var(--el-color-warning); background: var(--el-color-warning-light-9); }
+
+  /* 条形图看差距更快，但数字仍要在 —— 只给条形图就没法核对 */
+  .bar-track { height: 6px; min-width: 84px; flex: 1; border-radius: 3px; background: var(--el-fill-color-light); overflow: hidden; }
+  .bar-fill { height: 100%; }
+  .bar-fill.s { background: var(--el-color-success); }
+  .bar-fill.w { background: var(--el-color-warning); }
+  .bar-fill.d { background: var(--el-color-danger); }
+  .rank-name { cursor: pointer; color: var(--el-color-primary); }
+  .rank-name:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -157,9 +189,14 @@
   <button id="btnScenario">开始场景</button>
 </div>
 
+<div class="tabs">
+  <button data-view="color" class="on">代码染色</button>
+  <button data-view="dash">总览看板</button>
+</div>
+
 <div id="banner"></div>
 
-<main>
+<main id="viewColor">
   <div class="card">
     <div class="card-head"><h2>源文件</h2><span class="sub" id="fileCount">0</span></div>
     <div id="files"><div class="empty">等待采集…</div></div>
@@ -181,14 +218,45 @@
   </div>
 </main>
 
+<section id="viewDash" style="display:none">
+  <div class="stats" id="dashStats"></div>
+
+  <div class="card">
+    <div class="card-head"><h2>被测实例</h2><span class="sub" id="dashCollected"></span></div>
+    <div id="instBox"><div class="empty">等待采集…</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>覆盖率排行</h2>
+      <div class="seg" style="margin-left:auto">
+        <button data-rank="ratio" class="on">覆盖率最低</button>
+        <button data-rank="missed">未覆盖行最多</button>
+      </div>
+    </div>
+    <div id="rankBox"><div class="empty">等待采集…</div></div>
+  </div>
+</section>
+
 <script>
   let current = null;
   let prevStatus = {};
   let mode = 'full';
+  let view = 'color';
+  // 换排序不必重新采集，所以留住上一份文件列表
+  let rankBy = 'ratio';
+  let lastFiles = [];
   // 看哪一份数据：空串是实时累计覆盖，否则是某个已归档场景的独占覆盖
   let viewScenario = '';
 
   const cls = r => r >= 70 ? 's' : r >= 45 ? 'w' : 'd';
+
+  // PARTIAL 也是有数据的：少了某台实例的那部分，但其余仍是真的，
+  // 因此照常显示覆盖率，只是状态与全连上区分开。
+  // 顶栏与看板必须共用这一个判断 —— 一处显示「—」另一处却给个数字，
+  // 用户会以为那个数字是可信的
+  const hasData = d => d.probeStatus === 'CONNECTED' || d.probeStatus === 'PARTIAL'
+    || d.probeStatus === 'ARCHIVED';
 
   function params() {
     const p = mode === 'incremental'
@@ -205,6 +273,12 @@
     document.getElementById('fileCount').textContent = '0 个';
     document.getElementById('files').innerHTML = '<div class="empty">—</div>';
     document.getElementById('src').innerHTML = '<div class="empty">—</div>';
+    // 看板同样要清空：一屏可信的数字比染色更容易被当成结论，留着上一次的更危险
+    lastFiles = [];
+    document.getElementById('dashStats').innerHTML = '';
+    document.getElementById('dashCollected').textContent = '';
+    document.getElementById('instBox').innerHTML = '<div class="empty">—</div>';
+    document.getElementById('rankBox').innerHTML = '<div class="empty">—</div>';
   }
 
   async function loadSummary() {
@@ -230,8 +304,6 @@
     const total = (d.instances || []).length;
     // PARTIAL 也是有数据的：少了某台实例的那部分，但其余仍是真的，
     // 因此照常显示覆盖率，只是状态与全连上区分开
-    const hasData = d.probeStatus === 'CONNECTED' || d.probeStatus === 'PARTIAL'
-      || d.probeStatus === 'ARCHIVED';
     // 探针不可达与平台配置错误是两回事，排查方向完全不同，界面上必须分开说
     const label = {
       CONNECTED: '探针已连接 · ' + live + '/' + total + ' 实例 · 3s 轮询',
@@ -247,7 +319,7 @@
 
     // 场景视图看的是已定格的归档数据，必须标出来，否则会被当成实时累计覆盖
     const scope = d.scenarioId ? '场景 ' + d.scenarioId + ' · ' : '';
-    document.getElementById('overall').textContent = !hasData ? '—'
+    document.getElementById('overall').textContent = !hasData(d) ? '—'
       : d.mode === 'incremental'
         ? scope + '增量行覆盖率 ' + d.overallRatio + '% · 基线 ' + d.baselineCommit.substring(0, 8)
           + ' → 产物 ' + d.buildCommit.substring(0, 8)
@@ -270,6 +342,10 @@
     }
     document.getElementById('banner').innerHTML = banner;
 
+    // 看板与染色共用这一份 summary，不另发请求：多取一次不只是浪费，
+    // 两份数据还可能来自不同轮采集，两个视图的数字就会对不上
+    renderDash(d);
+
     document.getElementById('fileCount').textContent = d.files.length + ' 个';
     const box = document.getElementById('files');
     if (!d.files.length) {
@@ -286,6 +362,98 @@
       '</button>').join('');
     box.querySelectorAll('.file').forEach(b =>
       b.addEventListener('click', () => openFile(b.dataset.path)));
+  }
+
+  const LANG = { java: 'Java', go: 'Go', cpp: 'C++', rust: 'Rust' };
+
+  function renderDash(d) {
+    const files = d.files || [];
+    lastFiles = files;
+    const covered = files.reduce((a, f) => a + f.coveredLines, 0);
+    const missed = files.reduce((a, f) => a + f.missedLines, 0);
+    const inst = d.instances || [];
+    const live = inst.filter(i => i.status === 'CONNECTED').length;
+    // 看板的数字随口径变，不标出来会被当成全量：增量下的「未覆盖 12 行」
+    // 和全量下的「未覆盖 12 行」是完全不同的两件事
+    const scope = d.scenarioId ? '场景 ' + d.scenarioId
+      : d.mode === 'incremental' ? '增量口径' : '全量口径';
+
+    // 探针够不到时顶栏显示「—」，看板这几个数字也必须一起变成「—」
+    const ok = hasData(d);
+    document.getElementById('dashStats').innerHTML = [
+      ['统计口径', esc(scope)],
+      ['行覆盖率', ok ? d.overallRatio + '<small>%</small>' : '—'],
+      ['已覆盖行', ok ? covered : '—'],
+      ['未覆盖行', ok ? missed : '—'],
+      ['源文件', files.length + '<small> 个</small>'],
+      ['在线实例', inst.length ? live + '<small>/' + inst.length + '</small>' : '—']
+    ].map(([k, v]) => '<div class="stat"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>').join('');
+
+    document.getElementById('dashCollected').textContent =
+      d.lastCollectedAt ? '最后采集 ' + new Date(d.lastCollectedAt).toLocaleTimeString() : '';
+
+    const instBox = document.getElementById('instBox');
+    if (!inst.length) {
+      // 场景快照是定格数据，服务端不返回实例列表。写成「无实例」会被读成全部掉线
+      instBox.innerHTML = '<div class="empty">' +
+        (d.probeStatus === 'ARCHIVED' ? '场景快照不含实例信息（数据已定格）' : '尚无实例') + '</div>';
+    } else {
+      instBox.innerHTML = '<table class="tbl"><thead><tr>' +
+        '<th>探针地址</th><th>语言</th><th>状态</th><th>构建版本</th><th>说明</th>' +
+        '</tr></thead><tbody>' + inst.map(i => {
+          const lang = String(i.endpoint).split('://')[0];
+          const ok = i.status === 'CONNECTED';
+          return '<tr>' +
+            '<td class="mono">' + esc(i.endpoint) + '</td>' +
+            '<td>' + esc(LANG[lang] || lang) + '</td>' +
+            '<td><span class="tag ' + (ok ? 'ok' : 'err') + '">' + esc(i.status) + '</span></td>' +
+            // dirty 单独标出来：版本不一致的横幅只说「有实例对不上」，
+            // 不点名的话得去翻各实例的启动参数才知道是哪一台脏了
+            '<td class="mono">' + (i.buildCommit ? esc(i.buildCommit.substring(0, 8)) : '—') +
+              (i.dirty ? ' <span class="tag warn" title="该实例构建时被测源码有未提交改动，增量口径不可用">dirty</span>' : '') +
+            '</td>' +
+            '<td>' + (i.error ? '<span style="color:var(--el-color-danger)">' + esc(i.error) + '</span>' : '') + '</td>' +
+          '</tr>';
+        }).join('') + '</tbody></table>';
+    }
+
+    renderRank();
+  }
+
+  // 「覆盖率最低」与「未覆盖行最多」不是一回事：一个 0% 的小文件和一个 60% 却缺 500 行的
+  // 大文件，该先补哪个取决于问的是哪个问题。所以两种排序都留着，而不是替用户选一个
+  function renderRank() {
+    const box = document.getElementById('rankBox');
+    if (!lastFiles.length) { box.innerHTML = '<div class="empty">尚无数据</div>'; return; }
+    const rows = lastFiles.slice().sort(rankBy === 'missed'
+      ? (a, b) => b.missedLines - a.missedLines || a.ratio - b.ratio
+      : (a, b) => a.ratio - b.ratio || b.missedLines - a.missedLines);
+    box.innerHTML = '<table class="tbl"><thead><tr>' +
+      '<th style="width:34px">#</th><th>文件</th><th style="width:170px">行覆盖率</th>' +
+      '<th style="width:84px">已覆盖</th><th style="width:84px">未覆盖</th>' +
+      '</tr></thead><tbody>' + rows.map((f, n) =>
+        '<tr>' +
+          '<td class="mono">' + (n + 1) + '</td>' +
+          '<td><span class="rank-name" data-path="' + esc(f.path) + '" title="' + esc(f.path) + '">' +
+            esc(f.sourceFileName) + '</span>' +
+            '<div style="font-size:12px;color:var(--el-text-color-secondary)">' + esc(f.packageName) + '</div></td>' +
+          '<td><div style="display:flex;align-items:center;gap:8px">' +
+            '<div class="bar-track"><div class="bar-fill ' + cls(f.ratio) + '" style="width:' + f.ratio + '%"></div></div>' +
+            '<span class="pc ' + cls(f.ratio) + '" style="font-family:var(--mono);font-size:12px">' + f.ratio + '%</span>' +
+          '</div></td>' +
+          '<td class="mono">' + f.coveredLines + '</td>' +
+          '<td class="mono">' + f.missedLines + '</td>' +
+        '</tr>').join('') + '</tbody></table>';
+    // 排行的用处是「找到该补的文件、然后去看它」，所以点文件名直接跳进染色视图
+    box.querySelectorAll('.rank-name').forEach(el =>
+      el.addEventListener('click', () => { switchView('color'); openFile(el.dataset.path); }));
+  }
+
+  function switchView(next) {
+    view = next;
+    document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
+    document.getElementById('viewColor').style.display = view === 'color' ? '' : 'none';
+    document.getElementById('viewDash').style.display = view === 'dash' ? '' : 'none';
   }
 
   async function openFile(path) {
@@ -355,14 +523,24 @@
 
   async function switchTo(next) {
     mode = next;
-    document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+    // 限定 [data-mode]：排行的排序切换也是一组 .seg，不限定会把它的选中态一并抹掉
+    document.querySelectorAll('.seg button[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
     document.getElementById('baseline').style.display = mode === 'incremental' ? '' : 'none';
     await reload();
   }
 
-  document.querySelectorAll('.seg button').forEach(b =>
+  document.querySelectorAll('.seg button[data-mode]').forEach(b =>
     b.addEventListener('click', () => switchTo(b.dataset.mode)));
   document.getElementById('baseline').addEventListener('change', () => switchTo('incremental'));
+
+  document.querySelectorAll('.tabs button').forEach(b =>
+    b.addEventListener('click', () => switchView(b.dataset.view)));
+  document.querySelectorAll('button[data-rank]').forEach(b =>
+    b.addEventListener('click', () => {
+      rankBy = b.dataset.rank;
+      document.querySelectorAll('button[data-rank]').forEach(x => x.classList.toggle('on', x.dataset.rank === rankBy));
+      renderRank();
+    }));
 
   document.getElementById('scenarioView').addEventListener('change', async e => {
     viewScenario = e.target.value;
