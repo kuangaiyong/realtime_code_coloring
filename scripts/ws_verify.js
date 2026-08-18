@@ -71,10 +71,16 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
   // 但能断言两件真会坏的事：视图钩子在不在、以及看板赖以计算的字段在不在。
   // 后端哪天少返回一个字段，看板会安静地渲染成空白 —— 正是本项目最怕的静默失效
   for (const marker of ['data-view="dash"', 'id="viewDash"', 'id="dashStats"',
-                        'id="instBox"', 'id="rankBox"', 'data-rank="ratio"', 'data-rank="missed"']) {
+                        'id="instBox"', 'id="rankBox"', 'data-rank="ratio"', 'data-rank="missed"',
+                        'id="trendBox"', 'id="trendMeta"']) {
     if (!html.includes(marker)) fail(`看板视图缺少钩子: ${marker}`);
   }
-  console.log('  [PASS] 看板与排行的视图钩子齐备');
+  console.log('  [PASS] 看板、排行与曲线的视图钩子齐备');
+
+  // 曲线画的是本次会话内的采样，不是跨构建历史（平台目前零持久化）。
+  // 这句免责一旦被删掉，用户会把一段会话内的爬升读成「这个项目的覆盖率长期趋势」
+  if (!html.includes('非跨构建历史')) fail('覆盖率曲线缺少「非跨构建历史」的声明');
+  console.log('  [PASS] 覆盖率曲线声明了数据范围（会话内采样，非跨构建历史）');
 
   const dash = await (await fetch(`${PLATFORM}/api/coverage/summary`)).json();
   if (!Array.isArray(dash.instances) || dash.instances.length === 0) fail('summary 未返回 instances[]，看板的实例表会空白');

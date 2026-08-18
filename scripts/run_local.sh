@@ -10,6 +10,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 
+# 版本号在本脚本里只出现这一处。原先两处 jar 路径各写一遍，改 pom 版本号漏改一处
+# 只会报「文件不存在」，看不出根因是版本没跟上（CLAUDE.md 第二个坑）
+VERSION=0.4.2
+
 JAVA_HOME="${JAVA_HOME:-/c/Users/Administrator/devtools/jdk-17.0.20+8}"
 MVN_HOME="${MVN_HOME:-/c/Users/Administrator/devtools/apache-maven-3.9.16}"
 GO_HOME="${GO_HOME:-/c/Users/Administrator/devtools/go}"
@@ -83,7 +87,7 @@ start_demo() {
   # 注意：java.exe 是 Windows 程序，认不得 Git Bash 的 /c/... 路径，
   # 传给它的路径必须是相对路径或 Windows 路径。
   java -javaagent:platform/target/agent/jacocoagent.jar=includes=com.shop.*,output=tcpserver,address=localhost,port=$probe,sessionid=$sid \
-       -jar demo-service/target/demo-service-0.4.2.jar --server.port=$http > "$LOG_DIR/$name.log" 2>&1 &
+       -jar "demo-service/target/demo-service-$VERSION.jar" --server.port=$http > "$LOG_DIR/$name.log" 2>&1 &
   echo $! > "$LOG_DIR/$name.pid"
   wait_ready "$LOG_DIR/$name.log" "Started DemoServiceApplication" "$name"
 }
@@ -226,7 +230,7 @@ start() {
   echo "    demo-service-rust#2 http://localhost:18051  探针 http://localhost:6601"
 
   echo "==> 启动染色平台"
-  ( cd "$ROOT/platform" && exec java -jar target/platform-0.4.2.jar ) > "$LOG_DIR/platform.log" 2>&1 &
+  ( cd "$ROOT/platform" && exec java -jar "target/platform-$VERSION.jar" ) > "$LOG_DIR/platform.log" 2>&1 &
   echo $! > "$LOG_DIR/platform.pid"
   wait_ready "$LOG_DIR/platform.log" "Started PlatformApplication" "platform"
   echo "    platform      http://localhost:18090   ← 打开这个看染色"
