@@ -72,7 +72,8 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
   // 后端哪天少返回一个字段，看板会安静地渲染成空白 —— 正是本项目最怕的静默失效
   for (const marker of ['data-view="dash"', 'id="viewDash"', 'id="dashStats"',
                         'id="instBox"', 'id="rankBox"', 'data-rank="ratio"', 'data-rank="missed"',
-                        'id="trendBox"', 'id="trendMeta"', 'id="btnPerInst"']) {
+                        'id="trendBox"', 'id="trendMeta"', 'id="btnPerInst"',
+                        'data-trend="session"', 'data-trend="build"']) {
     if (!html.includes(marker)) fail(`看板视图缺少钩子: ${marker}`);
   }
   console.log('  [PASS] 看板、排行与曲线的视图钩子齐备');
@@ -121,6 +122,25 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
     fail(`看板的行数合计与服务端 overallRatio 对不上: 合计推出 ${derived}%，服务端 ${dash.overallRatio}%`);
   }
   console.log(`  [PASS] 看板行数合计（已覆盖 ${covered} / 未覆盖 ${missed}）与服务端 ${dash.overallRatio}% 自洽`);
+
+  // 跨构建趋势。历史不可用时必须给出原因 —— 回一张空图会被读成
+  // 「这个项目一直没有覆盖」，而真实原因可能只是数据库没起
+  const tr = await (await fetch(`${PLATFORM}/api/coverage/trend`)).json();
+  if (typeof tr.available !== 'boolean') fail('趋势接口未返回 available 标志');
+  if (!tr.available) {
+    if (!tr.error) fail('历史不可用却没有说明原因');
+    console.log(`  [PASS] 历史不可用时明确给出了原因（${tr.error}）`);
+  } else {
+    if (!Array.isArray(tr.builds)) fail('趋势接口未返回 builds[]');
+    for (const b of tr.builds) {
+      if (!/^[0-9a-f]{40}$/.test(b.buildCommit)) fail(`历史里的 buildCommit 不是 40 位 sha: ${b.buildCommit}`);
+      if (b.coveredLines < 0 || b.overallRatio < 0 || b.overallRatio > 100) {
+        fail(`历史记录数值异常: ${JSON.stringify(b)}`);
+      }
+    }
+    // 记录的是峰值，所以任一构建的已覆盖行不该为 0（真跑过才会入库）
+    console.log(`  [PASS] 跨构建趋势可用，${tr.builds.length} 个构建记录，commit 与数值均合法`);
+  }
 
   ws.close();
   console.log('-'.repeat(70));

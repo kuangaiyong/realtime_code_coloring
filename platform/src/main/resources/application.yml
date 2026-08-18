@@ -4,6 +4,20 @@ server:
 spring:
   application:
     name: coverage-platform
+  # 覆盖率历史（跨构建趋势）。凭据一律走环境变量，不写进仓库；
+  # 本机由 run_local.sh 从 gitignore 掉的 .env.local 里读出来注入。
+  #
+  # initialization-fail-timeout: -1 是刻意的：数据库连不上时平台必须照常启动、
+  # 照常采集覆盖 —— 历史只是附加能力，不能让它把核心功能拖死。
+  # 连不上的后果是趋势接口明确报错，而不是平台起不来
+  datasource:
+    url: ${COVERAGE_DB_URL:jdbc:mysql://127.0.0.1:3306/code_coloring?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8}
+    username: ${COVERAGE_DB_USER:root}
+    password: ${COVERAGE_DB_PASSWORD:}
+    hikari:
+      initialization-fail-timeout: -1
+      connection-timeout: 3000
+      maximum-pool-size: 4
 
 coverage:
   # 被测实例的探针地址，形如 [语言://]host:port，不写语言默认 java。

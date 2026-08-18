@@ -10,6 +10,7 @@ import com.coverage.platform.collector.ProbeClient;
 import com.coverage.platform.collector.RustCoverageAnalyzer;
 import com.coverage.platform.collector.RustProbeClient;
 import com.coverage.platform.config.CoverageProperties;
+import com.coverage.platform.history.CoverageHistory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -43,7 +44,11 @@ class CoverageServiceTest {
                 new GoProbeClient(props), new GoCoverageAnalyzer(props),
                 new CppProbeClient(props), new CppCoverageAnalyzer(props),
                 new RustProbeClient(props), new RustCoverageAnalyzer(props),
-                new GitService(props), props, new CoveragePublisher());
+                new GitService(props), props, new CoveragePublisher(),
+                // 数据源指向一个必然连不上的地址：这些用例要证明的正是
+                // 「历史写不进去也不影响其余行为」
+                new CoverageHistory(new org.springframework.jdbc.datasource.DriverManagerDataSource(
+                        "jdbc:mysql://127.0.0.1:1/nonexistent")));
     }
 
     @Test

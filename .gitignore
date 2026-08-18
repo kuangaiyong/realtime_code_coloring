@@ -7,3 +7,6 @@ target/
 *.iml
 .vscode/
 .DS_Store
+
+# 本机数据库凭据，绝不入库（见 CLAUDE.md 工具链依赖一节）
+.env.local

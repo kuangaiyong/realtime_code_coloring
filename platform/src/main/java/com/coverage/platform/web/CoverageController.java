@@ -40,6 +40,17 @@ public class CoverageController {
         return service.perInstance();
     }
 
+    /**
+     * 跨构建覆盖率趋势：每个构建一个点，取该构建观测到的峰值。
+     *
+     * available=false 时必须把 error 一并显示出来 —— 回一张空图会被读成
+     * 「这个项目一直没有覆盖」，而真实原因可能只是数据库没起。
+     */
+    @GetMapping("/trend")
+    public Map<String, Object> trend(@RequestParam(defaultValue = "50") int limit) {
+        return service.trend(Math.max(1, Math.min(limit, 500)));
+    }
+
     /** 单文件源码与逐行染色状态 */
     @GetMapping("/file")
     public Map<String, Object> file(@RequestParam String path,

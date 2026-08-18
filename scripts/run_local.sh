@@ -32,6 +32,12 @@ XWIN_HOME="${XWIN_HOME:-/c/Users/Administrator/devtools/xwin}"
 export JAVA_HOME RUSTUP_HOME CARGO_HOME
 export PATH="$JAVA_HOME/bin:$MVN_HOME/bin:$GO_HOME/bin:$MINGW_HOME/bin:$RUST_LLVM_BIN:$CARGO_HOME/bin:$PATH"
 
+# 数据库凭据从 .env.local 读（已 gitignore）。没有这个文件也要能跑：
+# 覆盖率历史连不上就退化成「趋势不可用」，采集与染色不受影响
+if [ -f "$ROOT/.env.local" ]; then
+  set -a; . "$ROOT/.env.local"; set +a
+fi
+
 LOG_DIR="$ROOT/.run"
 mkdir -p "$LOG_DIR"
 

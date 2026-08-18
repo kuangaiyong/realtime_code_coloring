@@ -31,6 +31,18 @@
       <version>${jacoco.version}</version>
     </dependency>
 
+    <!-- 覆盖率历史：只存「每个构建一条终值」，量极小，用 JdbcTemplate 直接写，
+         不引 JPA —— 一张表两条语句，映射框架带来的抽象不值当 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.mysql</groupId>
+      <artifactId>mysql-connector-j</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>

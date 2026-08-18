@@ -12,6 +12,7 @@ import com.coverage.platform.collector.GoProbeClient;
 import com.coverage.platform.collector.RustCoverageAnalyzer;
 import com.coverage.platform.collector.RustProbeClient;
 import com.coverage.platform.config.CoverageProperties;
+import com.coverage.platform.history.CoverageHistory;
 import com.coverage.platform.model.BuildVersion;
 import com.coverage.platform.model.FileCoverage;
 import org.jacoco.core.data.ExecutionData;
@@ -51,6 +52,7 @@ public class CoverageService {
     private final GitService git;
     private final CoverageProperties props;
     private final CoveragePublisher publisher;
+    private final CoverageHistory history;
 
     /**
      * 覆盖数据与它所属的构建版本必须整体替换。
@@ -104,7 +106,8 @@ public class CoverageService {
                            GoProbeClient goProbe, GoCoverageAnalyzer goAnalyzer,
                            CppProbeClient cppProbe, CppCoverageAnalyzer cppAnalyzer,
                            RustProbeClient rustProbe, RustCoverageAnalyzer rustAnalyzer, GitService git,
-                           CoverageProperties props, CoveragePublisher publisher) {
+                           CoverageProperties props, CoveragePublisher publisher,
+                           CoverageHistory history) {
         this.probeClient = probeClient;
         this.analyzer = analyzer;
         this.goProbe = goProbe;
@@ -116,6 +119,7 @@ public class CoverageService {
         this.git = git;
         this.props = props;
         this.publisher = publisher;
+        this.history = history;
     }
 
     @Scheduled(fixedDelayString = "${coverage.interval-ms:3000}")
@@ -236,6 +240,19 @@ public class CoverageService {
                             .collect(Collectors.joining("、", "以下实例不可达，聚合结果缺少它们的覆盖：", ""));
             lastCollectedAt = Instant.now();
 
+            // 记进历史，供跨构建趋势。只记「全部实例版本一致且工作树干净」的构建：
+            // 版本对不齐时这份聚合本身就不该被当成某个 commit 的成绩，
+            // 脏工作树则根本无法用 commit 标识这份代码
+            BuildVersion v = state.get().version();
+            if (v != null && !v.dirty() && state.get().versionError() == null) {
+                int covered = 0, missed = 0;
+                for (FileCoverage f : fresh.values()) {
+                    covered += f.coveredLines();
+                    missed += f.missedLines();
+                }
+                history.record(v.commit(), round(overallRatio(fresh)), covered, missed, fresh.size());
+            }
+
             if (changed(previous, fresh)) {
                 log.info("覆盖率发生变化，已推送：{} 个文件，整体 {}%",
                         fresh.size(), String.format("%.1f", overallRatio(fresh)));
@@ -334,6 +351,11 @@ public class CoverageService {
             res.put("collectedAt", Instant.now().toString());
             return res;
         }
+    }
+
+    /** 跨构建趋势。数据来自历史表，与实时采集无关 */
+    public Map<String, Object> trend(int limit) {
+        return history.recent(limit);
     }
 
     private List<ProbeEndpoint> endpoints() {
