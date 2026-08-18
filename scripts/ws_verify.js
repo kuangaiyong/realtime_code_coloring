@@ -72,7 +72,7 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
   // 后端哪天少返回一个字段，看板会安静地渲染成空白 —— 正是本项目最怕的静默失效
   for (const marker of ['data-view="dash"', 'id="viewDash"', 'id="dashStats"',
                         'id="instBox"', 'id="rankBox"', 'data-rank="ratio"', 'data-rank="missed"',
-                        'id="trendBox"', 'id="trendMeta"']) {
+                        'id="trendBox"', 'id="trendMeta"', 'id="btnPerInst"']) {
     if (!html.includes(marker)) fail(`看板视图缺少钩子: ${marker}`);
   }
   console.log('  [PASS] 看板、排行与曲线的视图钩子齐备');

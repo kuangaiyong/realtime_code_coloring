@@ -273,6 +273,44 @@ def main():
             ok = False
 
     print("\n" + "-" * 78)
+    # ---- 按实例分别归一化（实例对比视图的数据源） ----
+    print()
+    print("  >> 各实例分别归一化：GET /api/coverage/instances")
+    agg_before = sum(f["coveredLines"] for f in must(*summary(), what="summary")["files"])
+    st, per = http(f"{PLATFORM}/api/coverage/instances")
+    if st != 200:
+        print(f"  [FAIL] 取各实例覆盖失败：{st} {per}")
+        ok = False
+    else:
+        rows = [r for r in per["instances"] if r["coveredLines"] is not None]
+        for r in per["instances"]:
+            print(f"    {r['endpoint']:<24s} {r['status']:<12s} "
+                  f"{r['overallRatio']}%  已覆盖 {r['coveredLines']}")
+        if len(per["instances"]) < 2 or not rows:
+            print("  [FAIL] 至少应有两个实例分别给出覆盖")
+            ok = False
+        else:
+            # 聚合是并集：不会比任何单台少（否则多实例白做），
+            # 也不会等于简单相加（同一行被多台覆盖只能算一次）
+            mx = max(r["coveredLines"] for r in rows)
+            sm = sum(r["coveredLines"] for r in rows)
+            if mx <= agg_before <= sm and agg_before != sm:
+                print(f"  [PASS] 聚合 {agg_before} 行落在并集区间内"
+                      f"（单实例最大 {mx} ≤ 聚合 ≤ 相加 {sm}，且不等于相加）")
+            else:
+                print(f"  [FAIL] 聚合 {agg_before} 不符合并集语义：最大 {mx} / 相加 {sm}")
+                ok = False
+
+        # 按实例取数走的是非破坏性接口，多取这一次不能把热路径的累计弄丢
+        time.sleep(8)
+        agg_after = sum(f["coveredLines"] for f in must(*summary(), what="summary")["files"])
+        if agg_after >= agg_before:
+            print(f"  [PASS] 额外取数未损坏聚合累计（{agg_before} → {agg_after}）")
+        else:
+            print(f"  [FAIL] 按实例取数把聚合弄丢了 {agg_before - agg_after} 行")
+            ok = False
+
+    print()
     print("  验收结论：" + ("全部通过" if ok else "存在失败项"))
     sys.exit(0 if ok else 1)
 

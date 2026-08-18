@@ -28,6 +28,18 @@ public class CoverageController {
         return service.summary(mode, baseline, scenarioId);
     }
 
+    /**
+     * 各实例分别的覆盖情况，用于「哪台实例跑到了什么」的对比。
+     *
+     * 按需触发而非随轮询返回：它要对每个实例各调一次外部归一化工具，开销与实例数成正比。
+     * 注意各实例的行状态不可相加当聚合用（见 CoverageService#perInstance），
+     * 聚合值请取 /summary。
+     */
+    @GetMapping("/instances")
+    public Map<String, Object> instances() {
+        return service.perInstance();
+    }
+
     /** 单文件源码与逐行染色状态 */
     @GetMapping("/file")
     public Map<String, Object> file(@RequestParam String path,

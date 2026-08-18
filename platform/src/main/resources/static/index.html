@@ -244,7 +244,11 @@
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>被测实例</h2><span class="sub" id="dashCollected"></span></div>
+    <div class="card-head">
+      <h2>被测实例</h2>
+      <button id="btnPerInst" title="对每个实例各跑一次归一化，开销与实例数成正比，所以不随轮询自动做">加载各实例覆盖</button>
+      <span class="sub" id="dashCollected"></span>
+    </div>
     <div id="instBox"><div class="empty">等待采集…</div></div>
   </div>
 
@@ -272,6 +276,10 @@
   // 界面上必须写明这一点，否则会被当成「这个项目的覆盖率长期趋势」
   let trend = [];
   let trendKey = '';
+  // 各实例分别的覆盖。按需拉取，且是拉取那一刻的定格值 ——
+  // 聚合仍在每 3 秒往前走，所以必须标出取数时间，否则两组数字并排会读成同一时刻的
+  let perInst = null;
+  let perInstAt = '';
   // 看哪一份数据：空串是实时累计覆盖，否则是某个已归档场景的独占覆盖
   let viewScenario = '';
 
@@ -438,8 +446,11 @@
       instBox.innerHTML = '<div class="empty">' +
         (d.probeStatus === 'ARCHIVED' ? '场景快照不含实例信息（数据已定格）' : '尚无实例') + '</div>';
     } else {
+      const pi = perInst ? new Map(perInst.map(r => [r.endpoint, r])) : null;
       instBox.innerHTML = '<div class="tbl-wrap"><table class="tbl"><thead><tr>' +
-        '<th>探针地址</th><th>语言</th><th>状态</th><th>构建版本</th><th>说明</th>' +
+        '<th>探针地址</th><th>语言</th><th>状态</th><th>构建版本</th>' +
+        (pi ? '<th>该实例行覆盖率</th><th>已覆盖</th><th>未覆盖</th>' : '') +
+        '<th>说明</th>' +
         '</tr></thead><tbody>' + inst.map(i => {
           const lang = String(i.endpoint).split('://')[0];
           const ok = i.status === 'CONNECTED';
@@ -452,9 +463,23 @@
             '<td class="mono">' + (i.buildCommit ? esc(i.buildCommit.substring(0, 8)) : '—') +
               (i.dirty ? ' <span class="tag warn" title="该实例构建时被测源码有未提交改动，增量口径不可用">dirty</span>' : '') +
             '</td>' +
+            (pi ? (() => {
+              const r = pi.get(i.endpoint);
+              if (!r || r.overallRatio === null || r.overallRatio === undefined) {
+                return '<td class="mono">—</td><td class="mono">—</td><td class="mono">—</td>';
+              }
+              return '<td><span class="pc ' + cls(r.overallRatio) + '" style="font-family:var(--mono);font-size:12px">'
+                   + r.overallRatio + '%</span></td>'
+                   + '<td class="mono">' + r.coveredLines + '</td>'
+                   + '<td class="mono">' + r.missedLines + '</td>';
+            })() : '') +
             '<td>' + (i.error ? '<span style="color:var(--el-color-danger)">' + esc(i.error) + '</span>' : '') + '</td>' +
           '</tr>';
-        }).join('') + '</tbody></table></div>';
+        }).join('') + '</tbody></table></div>' +
+        (perInst ? '<div class="legend" style="border-bottom:none;border-top:1px solid var(--el-border-color-lighter)">'
+          + '各实例覆盖取自 ' + esc(perInstAt) + ' 的定格值，不随轮询刷新；'
+          + '这几列<strong>不能相加当聚合用</strong> —— 两台各覆盖同一行的不同分支时，'
+          + '按实例算是 PARTIAL、合并算才是 COVERED。聚合值以顶栏为准。</div>' : '');
     }
 
     renderRank();
@@ -607,6 +632,27 @@
   document.querySelectorAll('.seg button[data-mode]').forEach(b =>
     b.addEventListener('click', () => switchTo(b.dataset.mode)));
   document.getElementById('baseline').addEventListener('change', () => switchTo('incremental'));
+
+  document.getElementById('btnPerInst').addEventListener('click', async () => {
+    const btn = document.getElementById('btnPerInst');
+    btn.disabled = true;
+    btn.textContent = '归一化中…';
+    try {
+      const r = await fetch('/api/coverage/instances');
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+      perInst = d.instances;
+      perInstAt = new Date(d.collectedAt).toLocaleTimeString();
+      btn.textContent = '重新加载各实例覆盖';
+      await refresh();
+    } catch (e) {
+      document.getElementById('banner').innerHTML =
+        '<div class="err">各实例覆盖取数失败：' + esc(e.message) + '</div>';
+      btn.textContent = '加载各实例覆盖';
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   document.querySelectorAll('.tabs button').forEach(b =>
     b.addEventListener('click', () => switchView(b.dataset.view)));

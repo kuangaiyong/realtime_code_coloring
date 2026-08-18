@@ -261,6 +261,81 @@ public class CoverageService {
         return m == null || m.isBlank() ? e.getClass().getSimpleName() : m;
     }
 
+    /**
+     * 按实例分别归一化，供「实例对比」视图按需调用。
+     *
+     * 为什么不放进 3 秒一轮的热路径：doCollect 是「先在原生数据层合并、再归一化」，
+     * 这里是反过来的「先按实例归一化」。两者不能互相替代 ——
+     * 两台各覆盖同一行的不同分支时，前者得到 COVERED，后者两边都是 PARTIAL。
+     * 所以**各实例的行状态不能拿来当聚合用**，聚合值仍以 /summary 为准；
+     * 这个接口只回答「哪台实例跑到了什么」。
+     *
+     * 取数走的是与 doCollect 同一批非破坏性接口（Java 的 dump 传 reset=false、
+     * Go 读 counters、C++/Rust 的 dump 是累计语义），多取这一次不会把覆盖弄丢。
+     * 但它对每个实例各调一次外部工具（gcov / llvm-cov / covdata），
+     * 开销与实例数成正比 —— 这正是它按需触发、而不进热路径的原因。
+     */
+    public Map<String, Object> perInstance() {
+        synchronized (collectLock) {
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (ProbeEndpoint ep : endpoints()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("endpoint", ep.toString());
+                row.put("language", ep.language());
+                try {
+                    Map<String, FileCoverage> files;
+                    BuildVersion v;
+                    if (ProbeEndpoint.GO.equals(ep.language())) {
+                        v = BuildVersion.parseId(goProbe.buildId(ep));
+                        // 显式类型见证：List.of 的可变参数会把 byte[][] 拆成 List<byte[]>
+                        files = goAnalyzer.analyze(List.<byte[][]>of(
+                                new byte[][]{goProbe.meta(ep), goProbe.counters(ep)}));
+                    } else if (ProbeEndpoint.CPP.equals(ep.language())) {
+                        v = BuildVersion.parseId(cppProbe.buildId(ep));
+                        files = cppAnalyzer.analyze(List.of(cppProbe.dump(ep)));
+                    } else if (ProbeEndpoint.RUST.equals(ep.language())) {
+                        v = BuildVersion.parseId(rustProbe.buildId(ep));
+                        files = rustAnalyzer.analyze(List.of(rustProbe.dump(ep)));
+                    } else {
+                        ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
+                        v = BuildVersion.parse(dump.sessions());
+                        files = analyzer.analyze(dump.exec(), new File(props.getClassesDir()),
+                                props.getJavaSourceRoot());
+                    }
+                    int covered = 0, missed = 0;
+                    for (FileCoverage f : files.values()) {
+                        covered += f.coveredLines();
+                        missed += f.missedLines();
+                    }
+                    row.put("status", "CONNECTED");
+                    row.put("buildCommit", v == null ? null : v.commit());
+                    row.put("dirty", v != null && v.dirty());
+                    row.put("overallRatio", round(overallRatio(files)));
+                    row.put("coveredLines", covered);
+                    row.put("missedLines", missed);
+                    row.put("fileCount", files.size());
+                    row.put("error", null);
+                } catch (Exception e) {
+                    // 一台取不到不该让整张对比表失败：其余实例的数据仍然是真的。
+                    // 但这一行必须显式标成取不到，不能留空让人读成「这台什么都没跑」
+                    row.put("status", "DISCONNECTED");
+                    row.put("buildCommit", null);
+                    row.put("dirty", false);
+                    row.put("overallRatio", null);
+                    row.put("coveredLines", null);
+                    row.put("missedLines", null);
+                    row.put("fileCount", null);
+                    row.put("error", describe(e));
+                }
+                rows.add(row);
+            }
+            Map<String, Object> res = new LinkedHashMap<>();
+            res.put("instances", rows);
+            res.put("collectedAt", Instant.now().toString());
+            return res;
+        }
+    }
+
     private List<ProbeEndpoint> endpoints() {
         return props.getInstances().stream().map(ProbeEndpoint::parse).toList();
     }

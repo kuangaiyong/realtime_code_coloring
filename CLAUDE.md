@@ -45,7 +45,7 @@
 | 5 | 实时推送与染色渲染 | `scripts/e2e_verify.py`、`scripts/ws_verify.js` | 端到端延迟 **≤ 5s** |
 | 6 | 场景边界归因 + 并发场景拒绝 | `scripts/e2e_scenario.py` | 两场景覆盖行集合互不越界；并发 start、进行中清零均返回 409 |
 | 7 | 产物与源码版本一致性校验 | `scripts/e2e_incremental.py` | 源码漂移时返回 409 而非 200 |
-| 8 | 多实例聚合 + 实例间版本校验 | `e2e_multi_instance.py`（Java）、`e2e_go.py`（Go）、`e2e_cpp.py`（C++）、`e2e_rust.py`（Rust） | 各实例覆盖取并集；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
+| 8 | 多实例聚合 + 实例间版本校验 | `e2e_multi_instance.py`（Java）、`e2e_go.py`（Go）、`e2e_cpp.py`（C++）、`e2e_rust.py`（Rust） | 各实例覆盖取并集（`/api/coverage/instances` 按实例分别归一化，断言 单实例最大 ≤ 聚合 ≤ 相加 且 ≠ 相加）；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
 | 9 | Go 采集与归一化（多语言共存） | `scripts/e2e_go.py` | Go 行级染色与 Java 同等质量；清零生效；路径以仓库根为基准；跨语言场景归因互不越界 |
 | 10 | C++ 采集与归一化（多语言共存） | `scripts/e2e_cpp.py` | C++ 行级染色达到与 Java 同级的**四态**；清零生效（含删 .gcda）；三种语言共存于同一套口径；跨语言场景归因互不越界 |
 | 11 | Rust 采集与归一化（多语言共存） | `scripts/e2e_rust.py` | Rust 行级染色成立；清零生效（含删 .profraw）；四种语言共存于同一套口径；跨语言场景归因互不越界 |

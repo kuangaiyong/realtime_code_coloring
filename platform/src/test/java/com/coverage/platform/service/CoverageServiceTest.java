@@ -79,6 +79,22 @@ class CoverageServiceTest {
     }
 
     @Test
+    void 某台实例取不到时对比表仍出其余行而不是整体失败() {
+        // 一台够不到就抛异常的话，对比视图会整张空掉 —— 其余实例的数据明明是真的。
+        // 但那一行必须显式标成 DISCONNECTED 并带原因，留空会被读成「这台什么都没跑」
+        java.util.Map<String, Object> res = service.perInstance();
+        @SuppressWarnings("unchecked")
+        java.util.List<java.util.Map<String, Object>> rows =
+                (java.util.List<java.util.Map<String, Object>>) res.get("instances");
+
+        assertEquals(1, rows.size());
+        assertEquals("DISCONNECTED", rows.get(0).get("status"));
+        assertNotNull(rows.get(0).get("error"), "取不到必须说明原因");
+        assertNull(rows.get(0).get("overallRatio"), "取不到时不能给出覆盖率，0% 会被当成真的跑了却没覆盖");
+        assertNotNull(res.get("collectedAt"));
+    }
+
+    @Test
     void 未指定场景时看的是实时数据() {
         assertNull(service.summary(CoverageService.MODE_FULL, null, null).get("scenarioId"));
         assertNull(service.summary(CoverageService.MODE_FULL, null, "").get("scenarioId"));
