@@ -6,7 +6,7 @@
 
   <groupId>com.coverage</groupId>
   <artifactId>realtime-code-coloring</artifactId>
-  <version>0.4.2</version>
+  <version>0.4.3</version>
   <packaging>pom</packaging>
   <name>realtime-code-coloring</name>
   <description>代码实时染色平台</description>
