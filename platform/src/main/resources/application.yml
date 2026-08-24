@@ -56,4 +56,4 @@ coverage:
 
 logging:
   level:
-    com.coverage.platform: INFO
+    com.rtcc.platform: INFO
