@@ -73,6 +73,7 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
   for (const marker of ['data-view="dash"', 'id="viewDash"', 'id="dashStats"',
                         'id="instBox"', 'id="rankBox"', 'data-rank="ratio"', 'data-rank="missed"',
                         'id="trendBox"', 'id="trendMeta"', 'id="btnPerInst"',
+                        'id="gateBox"', 'id="gateMeta"',
                         'data-trend="session"', 'data-trend="build"']) {
     if (!html.includes(marker)) fail(`看板视图缺少钩子: ${marker}`);
   }
@@ -141,6 +142,34 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
     // 记录的是峰值，所以任一构建的已覆盖行不该为 0（真跑过才会入库）
     console.log(`  [PASS] 跨构建趋势可用，${tr.builds.length} 个构建记录，commit 与数值均合法`);
   }
+
+  // 门禁卡片。渲染断言不了，但能断言卡片赖以显示的字段在不在 ——
+  // 少一个字段，卡片会安静地显示成 undefined，而它写的是「能不能合并」
+  const gateResp = await fetch(`${PLATFORM}/api/coverage/gate?mode=full`);
+  const gate = await gateResp.json();
+  // 先看状态码。拒判（409）时回的是 {ok,error}，直接去查字段会报「缺少字段 mode」——
+  // 正是这次改动要消除的那种混淆，不能在验收脚本里自己再犯一次
+  if (!gateResp.ok) fail(`门禁拒判（HTTP ${gateResp.status}）：${gate.error}`);
+  for (const k of ['mode', 'metric', 'threshold', 'passed', 'reason', 'actual',
+                   'coveredLines', 'missedLines']) {
+    if (!(k in gate)) fail(`门禁结果缺少字段 ${k}`);
+  }
+  if (typeof gate.passed !== 'boolean') fail(`passed 必须是布尔，CI 直接拿它做分支：${gate.passed}`);
+  // actual 为 null 是「没有可判定的可执行代码」，不是数值对不上：
+  // null - x 会算成 -x，不挡掉就成了一条假失败
+  if (gate.actual !== null && Math.abs(gate.actual - dash.overallRatio) > 0.001) {
+    fail(`门禁给出 ${gate.actual}%，页面显示 ${dash.overallRatio}% —— 两个数不一样，没人能自己想明白`);
+  }
+  console.log(`  [PASS] 门禁字段齐备且与页面同数：${gate.metric} ${gate.actual}%`
+    + ` 对阈值 ${gate.threshold}% → passed=${gate.passed}`);
+
+  // 「判不了」必须是 4xx。与「不通过」同为 200 的话，CI 那句 curl -f
+  // 会把平台自己出的问题当成覆盖不达标，开发被指去补测试
+  const bad = await fetch(`${PLATFORM}/api/coverage/gate?mode=incremental&baseline=no-such-ref`);
+  if (bad.status === 200) fail('基线不存在时门禁仍返回 200，判不了被当成了判定结果');
+  const badBody = await bad.json();
+  if (!badBody.error) fail('门禁拒判时没有说明原因');
+  console.log(`  [PASS] 判不了时返回 HTTP ${bad.status} 而非 200（${badBody.error}）`);
 
   ws.close();
   console.log('-'.repeat(70));

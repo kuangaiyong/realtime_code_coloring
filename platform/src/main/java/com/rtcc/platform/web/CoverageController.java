@@ -51,6 +51,27 @@ public class CoverageController {
         return service.trend(Math.max(1, Math.min(limit, 500)));
     }
 
+    /**
+     * 门禁判定：CI 在合并前调它，据 passed 决定放行还是阻断。
+     *
+     * 不达标返回 200 + passed=false，而不是 4xx —— 4xx 留给「判不了」。
+     * CI 那边一句 curl -f 分不出「代码覆盖不够」和「平台自己挂了」，
+     * 而这两件事一个该补测试、一个该找人看，处置完全不同。
+     *
+     * 默认口径是增量而非全量（与 /summary 不同）：门禁要回答的是
+     * 「这次改动的代码测了没」，拿存量代码的总覆盖率去挡合并没有意义。
+     *
+     * 已知边界：全量口径不校验产物版本 —— 增量口径要对齐行号，必然会发现
+     * 「产物是旧的」；全量口径不需要对齐，被测实例跑着上一版产物时照样给得出比例。
+     * buildCommit 如实回给调用方，若把 overall-threshold 设成大于 0 并据此挡合并，
+     * 请自行比对它与本次要合并的 commit。
+     */
+    @GetMapping("/gate")
+    public Map<String, Object> gate(@RequestParam(defaultValue = CoverageService.MODE_INCREMENTAL) String mode,
+                                    @RequestParam(required = false) String baseline) {
+        return service.gate(mode, baseline);
+    }
+
     /** 单文件源码与逐行染色状态 */
     @GetMapping("/file")
     public Map<String, Object> file(@RequestParam String path,

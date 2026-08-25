@@ -146,6 +146,19 @@
   .stat .v { font-size: 21px; font-family: var(--mono); color: var(--el-text-color-primary); margin-top: 5px; }
   .stat .v small { font-size: 13px; color: var(--el-text-color-secondary); }
 
+  /* 门禁结论是三态而非两态：「判不了」必须与「不通过」分开显示 ——
+     前者该找人看平台，后者该补测试，混成同一个红色就会把人指去错误的方向 */
+  .gate { display: flex; align-items: center; gap: 14px; padding: 16px 18px; flex-wrap: wrap; }
+  .gate .verdict { font-size: 18px; font-weight: 600; padding: 3px 14px; border-radius: var(--radius); border: 1px solid; }
+  .gate.pass .verdict { color: var(--el-color-success); border-color: var(--el-color-success); background: var(--el-color-success-light-9); }
+  .gate.block .verdict { color: var(--el-color-danger); border-color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
+  .gate.undecided .verdict { color: var(--el-color-warning); border-color: var(--el-color-warning); background: var(--el-color-warning-light-9); }
+  .gate .why { font-size: 13px; color: var(--el-text-color-primary); }
+  .gate .num { font-family: var(--mono); font-size: 21px; color: var(--el-text-color-primary); margin-left: auto; }
+  .gate .num small { font-size: 13px; color: var(--el-text-color-secondary); }
+  .gate-ci { padding: 0 18px 15px; font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.7; }
+  .gate-ci code { font-family: var(--mono); background: var(--el-fill-color-light); padding: 1px 5px; border-radius: 4px; word-break: break-all; }
+
   /* 表格比容器宽时必须自己横向滚动：.card 是 overflow:hidden，
      不给滚动容器的话右边几列会被直接裁掉 —— 既看不见，也没法滚过去看 */
   .tbl-wrap { overflow-x: auto; }
@@ -234,6 +247,14 @@
 
 <section id="viewDash" style="display:none">
   <div class="stats" id="dashStats"></div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>覆盖率门禁</h2>
+      <span class="sub" id="gateMeta"></span>
+    </div>
+    <div id="gateBox"><div class="empty">等待判定…</div></div>
+  </div>
 
   <div class="card">
     <div class="card-head">
@@ -326,6 +347,9 @@
     trend = [];
     document.getElementById('trendMeta').textContent = '';
     document.getElementById('trendBox').innerHTML = '<div class="empty">—</div>';
+    // 门禁结论比其它数字更像「结论」，留着上一次的会被直接拿去决定合不合并
+    document.getElementById('gateMeta').textContent = '';
+    document.getElementById('gateBox').innerHTML = '<div class="empty">—</div>';
   }
 
   async function loadSummary() {
@@ -343,6 +367,49 @@
     const d = await loadSummary();
     if (d && current) await openFile(current);
     return d;
+  }
+
+  // 门禁与 summary 分开取：summary 拿不到判定所需的阈值与「判不了」的原因，
+  // 而门禁的 409 不该把整个视图清空 —— 判不了门禁，染色仍然是好的。
+  // 代价是两次请求可能落在不同轮采集上，卡片的比例会比同屏的数字差一轮，
+  // 下一次推送即自愈；换口径时的乱序则必须挡掉，见 gateSeq
+  let gateSeq = 0;
+  async function loadGate() {
+    const seq = ++gateSeq;
+    const meta = document.getElementById('gateMeta');
+    const box = document.getElementById('gateBox');
+    if (viewScenario) {
+      // 场景快照是过去某一轮的独占覆盖，不是当前构建的整体情况；
+      // 拿它判门禁，得出的结论与「这次能不能合并」无关
+      meta.textContent = '';
+      box.innerHTML = '<div class="empty">场景快照不参与门禁判定</div>';
+      return;
+    }
+    const q = params();
+    let r, d;
+    try {
+      r = await fetch('/api/coverage/gate?' + q);
+      d = await r.json();
+    } catch (e) {
+      d = { error: String(e) };
+    }
+    // 换口径时前一次请求可能后到，用它的结论覆盖新口径的，卡片会停在错的答案上
+    if (seq !== gateSeq) return;
+    if (!r || !r.ok) {
+      // 409 是「判不了」，与「不通过」分开显示：前者要找人看平台，后者要补测试
+      meta.textContent = '';
+      box.innerHTML = '<div class="gate undecided"><span class="verdict">无法判定</span>' +
+        '<span class="why">' + esc(d.error || ('HTTP ' + r.status)) + '</span></div>';
+      return;
+    }
+    meta.textContent = d.metric + ' · 阈值 ' + d.threshold + '%';
+    box.innerHTML = '<div class="gate ' + (d.passed ? 'pass' : 'block') + '">' +
+      '<span class="verdict">' + (d.passed ? '通过' : '不通过') + '</span>' +
+      '<span class="why">' + esc(d.reason) + '</span>' +
+      '<span class="num">' + (d.actual === null ? '—' : d.actual + '<small>%</small>') + '</span>' +
+      '</div>' +
+      '<div class="gate-ci">CI 合并前调 <code>GET /api/coverage/gate?' + esc(q) + '</code>，' +
+      '按 <code>passed</code> 放行或阻断；判不了时返回 409，别把它当成不通过。</div>';
   }
 
   function render(d) {
@@ -392,6 +459,8 @@
     // 看板与染色共用这一份 summary，不另发请求：多取一次不只是浪费，
     // 两份数据还可能来自不同轮采集，两个视图的数字就会对不上
     renderDash(d);
+    // 不 await：门禁要跑一次 git diff，让它挡在染色前面会拖慢整屏刷新
+    loadGate();
 
     document.getElementById('fileCount').textContent = d.files.length + ' 个';
     const box = document.getElementById('files');

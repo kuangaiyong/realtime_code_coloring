@@ -53,6 +53,9 @@ public class CoverageProperties {
     /** Rust：把 profdata 导成 LCOV 的工具 */
     private String llvmCovTool = "llvm-cov";
 
+    /** 覆盖率门禁的阈值。CI 在合并前调 /api/coverage/gate，据此决定放行还是阻断 */
+    private Gate gate = new Gate();
+
     private long intervalMs = 3000;
     private int timeoutMs = 3000;
 
@@ -73,6 +76,9 @@ public class CoverageProperties {
         }
         return roots;
     }
+
+    public Gate getGate() { return gate; }
+    public void setGate(Gate gate) { this.gate = gate; }
 
     public List<String> getInstances() { return instances; }
     public void setInstances(List<String> instances) { this.instances = instances; }
@@ -130,4 +136,21 @@ public class CoverageProperties {
 
     public int getTimeoutMs() { return timeoutMs; }
     public void setTimeoutMs(int timeoutMs) { this.timeoutMs = timeoutMs; }
+
+    /**
+     * 门禁阈值。只有两个数字，不做原型上那套多规则 + 优先级 —— 一个平台实例盯的就是
+     * 一个服务，「哪条规则优先」在这里没有对应的现实。
+     */
+    public static class Gate {
+        /** 增量行覆盖率下限（%）。这次改动的代码测没测到，是门禁最主要的用途 */
+        private double incrementalThreshold = 80d;
+        /** 全量行覆盖率下限（%）。0 表示不设门槛 —— 存量代码的覆盖率一时提不上来是常态 */
+        private double overallThreshold = 0d;
+
+        public double getIncrementalThreshold() { return incrementalThreshold; }
+        public void setIncrementalThreshold(double incrementalThreshold) { this.incrementalThreshold = incrementalThreshold; }
+
+        public double getOverallThreshold() { return overallThreshold; }
+        public void setOverallThreshold(double overallThreshold) { this.overallThreshold = overallThreshold; }
+    }
 }

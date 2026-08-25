@@ -135,6 +135,11 @@ def main():
                         what="场景进行中再开一个场景")
     ok &= expect_reject(*http(f"{PLATFORM}/api/coverage/reset", "POST"),
                         what="场景进行中清零计数器")
+    # start 已经把计数器清零，此刻的比例只是这个场景窗口内的覆盖。
+    # 门禁若照常判，会回「不通过 · 还需覆盖 N 行」，把人指去补测试，
+    # 而真正的原因是有人正在录场景
+    ok &= expect_reject(*http(f"{PLATFORM}/api/coverage/gate?mode=full"),
+                        what="场景进行中做门禁判定")
     # 进行中的场景不在归档表里，若不先看 active 就会被报成「不存在」，
     # 把用户引去排查场景 ID 是不是拼错了
     ok &= expect_reject(*http(f"{PLATFORM}/api/coverage/summary?scenarioId={s_query}"),

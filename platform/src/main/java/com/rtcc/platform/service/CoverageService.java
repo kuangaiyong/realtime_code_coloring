@@ -358,6 +358,111 @@ public class CoverageService {
         return history.recent(limit);
     }
 
+    /**
+     * 门禁判定：当前口径的覆盖率够不够阈值。CI 在合并前调它，据此放行或阻断。
+     *
+     * 判不了的时候一律抛 GateUndecidableException（409），绝不返回「通过」或「不通过」。
+     * 对 CI 来说 409 与 200 是两条处置路径：前者是平台侧有问题、该找人看，
+     * 后者才是覆盖不达标、该补测试。混成一个，两件事都会被误处理。
+     */
+    public Map<String, Object> gate(String mode, String baseline) {
+        // 别的接口把认不出的 mode 当 full 处理，页面上还看得见回的是哪个口径；
+        // 门禁的结论没人看，`?mode=incremantal` 拼错一个字母就会落到 full，
+        // 而 full 阈值默认 0 —— 门禁被整个旁路，还回 200 说「未设门槛」
+        boolean incremental = MODE_INCREMENTAL.equals(mode);
+        if (!incremental && !MODE_FULL.equals(mode)) {
+            throw new GateUndecidableException("认不出的口径 mode=" + mode
+                    + "，只接受 " + MODE_INCREMENTAL + " 或 " + MODE_FULL);
+        }
+        Scenario running = active;
+        if (running != null) {
+            // 场景 start 会清零全部实例的计数器，此后的比例只是这个场景窗口内的覆盖。
+            // 拿它判门禁会得出「不通过 · 还需覆盖 N 行」，把人指去补测试，
+            // 而真正的原因是有人正在录场景
+            throw new GateUndecidableException("场景 " + running.id()
+                    + " 正在进行中，计数器已被清零，当前覆盖数据不代表这个构建的整体情况，门禁不予判定");
+        }
+        if (!"CONNECTED".equals(probeStatus)) {
+            // PARTIAL 同样拒判：掉线那台跑过的行会被算成没覆盖，比例被压低，
+            // 判出来是「不通过」，而真正的原因一个字都没出现在结论里
+            throw new GateUndecidableException("探针状态为 " + probeStatus
+                    + "，覆盖数据不完整，门禁不予判定"
+                    + (lastError == null ? "" : "（" + lastError + "）"));
+        }
+        Snapshot s = state.get();
+        if (s.versionError() != null) {
+            throw new GateUndecidableException(s.versionError());
+        }
+
+        String metric = incremental ? "增量行覆盖率" : "全量行覆盖率";
+        Map<String, FileCoverage> snap = s.files();
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("mode", incremental ? MODE_INCREMENTAL : MODE_FULL);
+        res.put("metric", metric);
+        res.put("buildCommit", s.version() == null ? null : s.version().commit());
+        if (incremental) {
+            String ref = baseline == null || baseline.isBlank() ? props.getBaseline() : baseline;
+            Scope scope = incrementalScope(s, ref);   // 行号对不齐会在这里回绝
+            res.put("baseline", ref);
+            res.put("baselineCommit", scope.baselineCommit());
+            res.put("changedFiles", scope.lines().size());
+            snap = restrict(snap, scope.lines());
+        }
+
+        int covered = 0, missed = 0;
+        for (FileCoverage f : snap.values()) {
+            covered += f.coveredLines();
+            missed += f.missedLines();
+        }
+        int total = covered + missed;
+        double threshold = incremental
+                ? props.getGate().getIncrementalThreshold()
+                : props.getGate().getOverallThreshold();
+        res.put("threshold", threshold);
+        res.put("coveredLines", covered);
+        res.put("missedLines", missed);
+
+        if (total == 0) {
+            // 分母为 0 时 overallRatio() 返回 0，直接拿去比阈值就成了「不通过」——
+            // 把「这次没改任何可执行代码」说成「改了却一行没测」。这里该放行
+            res.put("actual", null);
+            res.put("passed", true);
+            // 但「没有变更」和「变更的文件都不在插桩范围内」是两回事：
+            // 后者也放行（平台无从分辨改的是文档还是一个漏配了 includes 的新包），
+            // 但必须把 changedFiles 说出来，否则响应里 changedFiles=14 配一句
+            // 「没有变更的可执行代码」，看的人无从判断这个绿是不是假的
+            int changed = incremental ? (int) res.get("changedFiles") : 0;
+            res.put("reason", !incremental ? "统计范围内没有可执行代码"
+                    : changed == 0 ? "基线之后没有变更的可执行代码，无可判定的增量"
+                    : "基线之后变更的 " + changed + " 个文件都不在插桩范围内（或只改了空行与注释），"
+                      + "无可判定的增量。若其中有本该统计的代码，请检查探针的 includes 配置");
+            return res;
+        }
+
+        // 用四舍五入后的值比较：界面显示 80.0% 却判不通过，是没人能自己想明白的事。
+        // 舍入对称，79.94 照样落到 79.9 判不通过
+        double actual = round(covered * 100d / total);
+        boolean passed = actual >= threshold;
+        res.put("actual", actual);
+        res.put("passed", passed);
+        if (passed) {
+            res.put("reason", threshold <= 0
+                    ? metric + " " + actual + "%，该口径未设门槛"
+                    : metric + " " + actual + "% 不低于阈值 " + threshold + "%");
+        } else {
+            // need 必须按 passed 用的同一个舍入口径算。按原始比例算的话，
+            // 阈值带两位小数时会算出「还需覆盖 0 行」—— 照着做也过不了。
+            // 先按未舍入值估一个下界，再补到舍入后真能过阈值为止（至多几次）
+            int need = Math.max(1, (int) Math.ceil(total * threshold / 100d) - covered);
+            while (covered + need < total && round((covered + need) * 100d / total) < threshold) {
+                need++;
+            }
+            res.put("reason", metric + " " + actual + "% 低于阈值 " + threshold
+                    + "%，还需覆盖 " + need + " 行");
+        }
+        return res;
+    }
+
     private List<ProbeEndpoint> endpoints() {
         return props.getInstances().stream().map(ProbeEndpoint::parse).toList();
     }

@@ -195,6 +195,15 @@ def main():
             print(f"  [FAIL] 错误提示没有点明是哪台实例缺席")
             ok = False
 
+        # PARTIAL 下门禁必须拒判：掉线那台跑过的行会被算成没覆盖，比例被压低，
+        # 判出来是「不通过」，而真正的原因（有实例缺席）一个字都不会出现在结论里
+        g_status, g_body = http(f"{PLATFORM}/api/coverage/gate?mode=full")
+        if g_status == 409 and "PARTIAL" in g_body.get("error", ""):
+            print(f"  [PASS] PARTIAL 时门禁拒判（HTTP 409）而非判「不通过」：{g_body['error'][:60]}…")
+        else:
+            print(f"  [FAIL] PARTIAL 时门禁应返回 409，实际 {g_status}：{g_body}")
+            ok = False
+
     # 归档数据是 stop 那一刻定格的，事后掉线与它无关。
     # 若照搬实时状态，这里会给一份本就完整的数据扣上「不完整」的警告
     arch = must(*http(f"{PLATFORM}/api/coverage/summary?scenarioId={urllib.parse.quote(snap_id)}"),

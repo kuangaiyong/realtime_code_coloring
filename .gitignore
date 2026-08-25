@@ -10,3 +10,6 @@ target/
 
 # 本机数据库凭据，绝不入库（见 CLAUDE.md 工具链依赖一节）
 .env.local
+
+# CodeGraph 的本地索引，随代码重建即可，不入库
+.codegraph/

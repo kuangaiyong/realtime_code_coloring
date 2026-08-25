@@ -20,7 +20,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * 场景归因中「必须拒绝」的那些路径。
+ * 场景归因与覆盖率门禁中「必须拒绝」的那些路径。
  *
  * 这些分支不需要探针也不需要覆盖数据，正好在单测里守住；
  * 真正跑通一个场景（清零→执行→定格→归因隔离）依赖真实被测服务，
@@ -97,6 +97,34 @@ class CoverageServiceTest {
         assertNotNull(rows.get(0).get("error"), "取不到必须说明原因");
         assertNull(rows.get(0).get("overallRatio"), "取不到时不能给出覆盖率，0% 会被当成真的跑了却没覆盖");
         assertNotNull(res.get("collectedAt"));
+    }
+
+    @Test
+    void 门禁在探针够不到时拒绝判定而不是判不通过() {
+        // 采集失败 → 覆盖数据是空的 → 比例算出来是 0% → 判「不通过」。
+        // 那条结论会让人去补测试，而真正的原因（探针连不上）一个字都不会出现在结论里。
+        // 所以这里必须抛（HTTP 409），让 CI 走「平台有问题」那条处置路径
+        service.collect();
+
+        for (String mode : new String[]{CoverageService.MODE_FULL, CoverageService.MODE_INCREMENTAL}) {
+            GateUndecidableException e = assertThrows(GateUndecidableException.class,
+                    () -> service.gate(mode, null));
+            assertTrue(e.getMessage().contains("DISCONNECTED"),
+                    "结论里必须点出探针状态，否则看的人无从下手：" + e.getMessage());
+        }
+    }
+
+    @Test
+    void 认不出的门禁口径拒判而不是默默按全量放行() {
+        // 别的接口把认不出的 mode 当 full 处理，页面上还看得见回的是哪个口径。
+        // 门禁的结论没人看：`?mode=incremantal` 拼错一个字母就落到 full，
+        // 而 full 阈值默认 0 —— 门禁被整个旁路，还回 200 说「未设门槛」
+        for (String bad : new String[]{"incremantal", "INCREMENTAL", "", "diff"}) {
+            GateUndecidableException e = assertThrows(GateUndecidableException.class,
+                    () -> service.gate(bad, null),
+                    "mode=" + bad + " 必须拒判");
+            assertTrue(e.getMessage().contains("认不出的口径"), e.getMessage());
+        }
     }
 
     @Test

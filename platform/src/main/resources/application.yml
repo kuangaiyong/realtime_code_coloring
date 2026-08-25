@@ -53,6 +53,13 @@ coverage:
   rust-binary: ../demo-service-rust/target/x86_64-pc-windows-msvc/release/demo-service-rust.exe
   interval-ms: 3000
   timeout-ms: 3000
+  # 覆盖率门禁：CI 合并前调 /api/coverage/gate，据 passed 放行或阻断。
+  # 只有两个数字，不做原型上那套多规则 + 优先级 —— 一个平台实例盯的就是一个服务。
+  # 全量阈值默认 0 即不设门槛：存量代码的覆盖率一时提不上来是常态，
+  # 拿它去挡合并只会逼人索性关掉门禁，连增量那道也一并失效
+  gate:
+    incremental-threshold: 80
+    overall-threshold: 0
 
 logging:
   level:

@@ -66,6 +66,7 @@
 | 9 | Go 采集与归一化（多语言共存） | `scripts/e2e_go.py` | Go 行级染色与 Java 同等质量；清零生效；路径以仓库根为基准；跨语言场景归因互不越界 |
 | 10 | C++ 采集与归一化（多语言共存） | `scripts/e2e_cpp.py` | C++ 行级染色达到与 Java 同级的**四态**；清零生效（含删 .gcda）；三种语言共存于同一套口径；跨语言场景归因互不越界 |
 | 11 | Rust 采集与归一化（多语言共存） | `scripts/e2e_rust.py` | Rust 行级染色成立；清零生效（含删 .profraw）；四种语言共存于同一套口径；跨语言场景归因互不越界 |
+| 12 | 覆盖率门禁（判定与「判不了」分离） | `scripts/e2e_incremental.py`、`scripts/ws_verify.js` | 门禁给的数字与页面同一个四舍五入结果；空 diff 放行且 `actual` 为 null；源码漂移 / 基线不存在一律 409，绝不返回 200+`passed:false` |
 
 > **四种语言的多实例聚合走的是四条代码路径**，因此 #8 需要四个脚本各测一次：
 > Java 在 exec 层按探针取或，Go 把多份 meta/counters 交给 `covdata` 按块求和，
@@ -73,6 +74,15 @@
 > 四者都是在语言自己的原生数据层面合并 ——
 > 提前退化成行状态再合并会掉精度。合并出错的表现是「几行没变绿」，
 > 静默少算，界面上看不出是 bug，只能靠用例守。
+>
+> **门禁（#12）算核心功能，是因为它的结论会被 CI 直接拿去挡合并。**
+> 判定有三态而非两态：通过 / 不通过 / **判不了**。判不了走 409，
+> 不通过走 200 + `passed:false` —— CI 那句 `curl -f` 分不出「覆盖不够」
+> 和「平台自己挂了」，而这两件事一个该补测试、一个该找人看。
+> 两个特别容易写错的边界：探针 PARTIAL 时必须拒判（掉线那台跑过的行会被算成没覆盖，
+> 比例被压低，判出「不通过」而真正的原因一个字都不出现），
+> 分母为 0 时必须放行（`overallRatio()` 此时返回 0，直接比阈值就把
+> 「这次没改任何可执行代码」说成了「改了却一行没测」）。
 
 新增/修改上述任一功能，必须同步新增或调整对应 E2E 用例，并在 commit 描述里
 贴出可观察证据。
@@ -187,6 +197,12 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 **别把某台机器的绝对路径写死进 application.yml。** 本机的 MinGW-w64 装在
 `~/devtools/mingw64`，rustup 在 `~/devtools/rustup`，
 由 `run_local.sh` 的 `MINGW_HOME` / `RUSTUP_HOME` 放进 PATH。
+
+**数据库凭据只在本机的 `.env.local` 里，该文件不入库**（见 `.gitignore`）。
+`application.yml` 写的是 `${COVERAGE_DB_URL:…}` / `${COVERAGE_DB_USER:root}` /
+`${COVERAGE_DB_PASSWORD:}` 三个占位符，由 `run_local.sh` 读 `.env.local` 注入。
+**换机器部署时要照着重建这个文件**，否则跨构建趋势（`/api/coverage/trend`）
+会以 `available:false` + 原因返回 —— 采集与染色不受影响，只是历史存不进去。
 
 ### 三个反复踩到的坑
 

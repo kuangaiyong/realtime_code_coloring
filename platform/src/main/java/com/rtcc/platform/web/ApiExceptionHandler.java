@@ -1,5 +1,6 @@
 package com.rtcc.platform.web;
 
+import com.rtcc.platform.service.GateUndecidableException;
 import com.rtcc.platform.service.IncrementalUnavailableException;
 import com.rtcc.platform.service.ScenarioConflictException;
 import com.rtcc.platform.service.ScenarioNotFoundException;
@@ -25,6 +26,13 @@ public class ApiExceptionHandler {
     @ExceptionHandler(IncrementalUnavailableException.class)
     @ResponseStatus(HttpStatus.CONFLICT)
     public Map<String, Object> onIncrementalUnavailable(IncrementalUnavailableException e) {
+        return error(e);
+    }
+
+    /** 门禁的判定前提被破坏（探针数据不完整、实例间版本不一致等） */
+    @ExceptionHandler(GateUndecidableException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public Map<String, Object> onGateUndecidable(GateUndecidableException e) {
         return error(e);
     }
 
