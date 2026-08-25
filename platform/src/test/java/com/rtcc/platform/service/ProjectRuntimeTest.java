@@ -34,6 +34,7 @@ class ProjectRuntimeTest {
     @BeforeEach
     void setUp() throws Exception {
         ProjectConfig props = new ProjectConfig();
+        props.setId("test");
         // 工具链路径与项目无关，取平台默认值即可：这些用例在够不到探针时就返回了，
         // 根本走不到调 covdata / gcov / llvm-cov 那一步
         CoverageProperties platform = new CoverageProperties();

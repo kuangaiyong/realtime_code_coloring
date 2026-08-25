@@ -27,11 +27,25 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
     ws.onerror = (e) => { clearTimeout(timer); reject(new Error('WebSocket 错误')); };
   });
 
+  // 另开一个订阅了别的项目的会话。推送若不分项目，它会收到本项目的数据 ——
+  // 页面拿着别人的覆盖率重绘，界面上看不出这是串台，只会觉得数字莫名跳变
+  const OTHER = '__no_such_project__';
+  const wsOther = new WebSocket(`ws://localhost:18090/ws/coverage?project=${OTHER}`);
+  let leaked = null;
+  wsOther.onmessage = (ev) => { leaked = leaked || ev.data; };
+  // 两个连接的 onopen 都要在创建后立刻挂上：等完前一个再挂后一个的话，
+  // 后一个可能已经 open 过了，事件早已过去，处理器再挂上去永远不触发
+  const otherOpen = new Promise((r, j) => {
+    wsOther.onopen = r;
+    setTimeout(() => j(new Error('WebSocket 连接超时（跨项目会话）')), 5000);
+  });
+
   await new Promise((r, j) => {
     ws.onopen = r;
     setTimeout(() => j(new Error('WebSocket 连接超时')), 5000);
   });
-  console.log('  WebSocket 已连接');
+  await otherOpen;
+  console.log(`  WebSocket 已连接（本项目 1 个会话，项目 ${OTHER} 1 个会话）`);
 
   // 触发一次新的覆盖：先让订单回到可退款状态，再调用退款接口
   await fetch(`${DEMO}/api/order/callback?bizNo=A1002&status=SUCCESS`, { method: 'POST' });
@@ -57,6 +71,13 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
   console.log(`  [PASS] 覆盖率由 ${beforeRatio}% 上升至 ${payload.overallRatio}%`);
   if (latency > 6000) fail(`推送延迟 ${latency}ms 过高`);
   console.log(`  [PASS] 推送延迟 ${latency}ms 在可接受范围`);
+
+  // 本项目已经收到推送了，再宽限一会儿：过滤若失效，跨项目会话是同一轮循环里发的，
+  // 不会比这更晚。宽限只是排除调度抖动，不是等它慢慢来
+  await new Promise((r) => setTimeout(r, 1000));
+  if (leaked) fail(`推送串到了项目 ${OTHER} 的会话上：${String(leaked).slice(0, 120)}`);
+  console.log(`  [PASS] 推送未串到项目 ${OTHER} 的会话（该项目不存在，本就不该收到任何数据）`);
+  wsOther.close();
 
   // 静态染色页面可访问
   const page = await fetch(`${PLATFORM}/`);

@@ -1,5 +1,7 @@
 package com.rtcc.platform.config;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -20,6 +22,12 @@ import java.util.List;
  * 使采集与归一化各类的改造只是换一个持有者，读取配置的写法一字不动。
  */
 public class ProjectConfig {
+
+    /**
+     * 不带项目参数的旧接口（{@code /api/coverage/*}、{@code /ws/coverage}）
+     * 落到哪个项目上。它同时是首次启动时由 application.yml 种出的那个项目的 id。
+     */
+    public static final String DEFAULT_ID = "default";
 
     /** 项目标识，同时是 API 路径与历史表里的分区键 */
     private String id;
@@ -64,10 +72,17 @@ public class ProjectConfig {
     /** 覆盖率门禁的阈值。CI 在合并前调 /api/coverage/gate，据此决定放行还是阻断 */
     private Gate gate = new Gate();
 
+    /**
+     * 轮询间隔（毫秒）。<b>目前不生效</b> —— 调度是一个 {@code @Scheduled} 驱动全部项目
+     * （见 {@code ProjectRegistry#collectAll}），读的仍是平台级的 {@code coverage.interval-ms}。
+     * 要让它按项目走得先把调度改成线程池，那是多项目真正落地时的事。
+     */
     private long intervalMs = 3000;
+    /** 探针读取超时（毫秒）。这个是真按项目生效的，四种语言的探针客户端都读它 */
     private int timeoutMs = 3000;
 
-    /** 各语言的源码根，用于界定 git diff 的范围 */
+    /** 各语言的源码根，用于界定 git diff 的范围。由其余字段算出，不入库 */
+    @JsonIgnore
     public List<String> getSourceRoots() {
         List<String> roots = new ArrayList<>();
         if (javaSourceRoot != null && !javaSourceRoot.isBlank()) {

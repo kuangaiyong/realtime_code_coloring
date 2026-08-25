@@ -1,21 +1,21 @@
 package com.rtcc.platform.service;
 
 import com.rtcc.platform.config.ProjectConfig;
+import com.rtcc.platform.config.ProjectStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 平台上所有被测项目的注册表：持有各项目的 {@link ProjectRuntime}，并驱动它们采集。
  *
- * <p>目前只有一个项目，配置来自 application.yml 的种子（见
- * {@code PlatformApplication#defaultProjectConfig}）。项目的增删改与配置落库是
- * 下一步的事，本类先把「谁来持有运行时、谁来调度采集」这两件事从服务里分出来。
+ * <p>配置来自 {@link ProjectStore}；库里没有任何项目时，用 application.yml 的那份
+ * 种一个出来（见 {@code PlatformApplication#defaultProjectConfig}）。项目的增删改
+ * 是下一步的事，本类先把「谁来持有运行时、谁来调度采集」这两件事从服务里分出来。
  */
 @Service
 public class ProjectRegistry {
@@ -26,11 +26,28 @@ public class ProjectRegistry {
     /** 旧版 API（/api/coverage/*、/api/scenario/*）不带项目参数，落到这个项目上 */
     private final String defaultId;
 
-    public ProjectRegistry(ProjectConfig seed, ProjectRuntimeFactory factory) {
+    public ProjectRegistry(ProjectConfig seed, ProjectStore store, ProjectRuntimeFactory factory) {
         this.defaultId = seed.getId();
-        runtimes.put(seed.getId(), factory.create(seed));
-        log.info("已装载项目 {}（{}），被测实例 {} 个",
-                seed.getId(), seed.getName(), seed.getInstances().size());
+        for (ProjectConfig cfg : store.loadAll(seed)) {
+            // 没有 id 的配置直接跳过。不跳的话 ConcurrentHashMap 会因 null key 抛 NPE，
+            // Spring 上下文起不来 —— 一个项目的配置有问题不该让整个平台开不了机，
+            // 这与 ProjectStore 里「解析失败就点名跳过」是同一条原则
+            if (cfg.getId() == null || cfg.getId().isBlank()) {
+                log.error("有一份项目配置没有 id，已跳过（name={}）", cfg.getName());
+                continue;
+            }
+            runtimes.put(cfg.getId(), factory.create(cfg));
+            log.info("已装载项目 {}（{}），被测实例 {} 个",
+                    cfg.getId(), cfg.getName(), cfg.getInstances().size());
+        }
+        // 不在这里退到「第一个装载成功的项目」：CI 的门禁打的就是不带项目参数的旧地址，
+        // 悄悄换一个项目去判，等于拿另一份代码的覆盖率决定这次能不能合并。
+        // 宁可让旧地址明确报错，也不给一个静默错误的结论
+        if (!runtimes.containsKey(defaultId)) {
+            log.error("默认项目 {} 没有装载上，不带项目参数的旧接口（/api/coverage/*、"
+                    + "/api/scenario/*、/ws/coverage）将全部报错。已装载的项目：{}",
+                    defaultId, runtimes.keySet());
+        }
     }
 
     /** 不指定项目时用的那一个 */
@@ -44,10 +61,6 @@ public class ProjectRegistry {
             throw new IllegalArgumentException("没有这个项目：" + id);
         }
         return rt;
-    }
-
-    public List<ProjectConfig> configs() {
-        return runtimes.values().stream().map(ProjectRuntime::config).toList();
     }
 
     /**

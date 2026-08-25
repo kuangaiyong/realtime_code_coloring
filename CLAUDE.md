@@ -204,6 +204,20 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 **换机器部署时要照着重建这个文件**，否则跨构建趋势（`/api/coverage/trend`）
 会以 `available:false` + 原因返回 —— 采集与染色不受影响，只是历史存不进去。
 
+### 项目配置的权威来源是数据库，不是 application.yml
+
+首次启动时平台会把 `application.yml` 里的 `coverage.*` 种进 `project` 表（id 为
+`default`）；**此后每次启动都从库里读，yml 的项目级配置不再生效**。改探针地址、
+产物目录、门禁阈值要改库里那份 JSON（页面上改是下一步的事）。
+
+只有**平台级**配置例外：`go-tool` / `gcov-tool` / `gcov-merge-tool` /
+`llvm-profdata-tool` / `llvm-cov-tool` 这五个工具链路径始终读 yml —— 它们是部署
+机器的属性，与项目无关。
+
+数据库连不上时退回 yml 的那份在内存里跑：采集、染色、门禁照常，只有趋势不可用
+（已实测：库不可用时 `probeStatus=CONNECTED`、8 实例、门禁 200，趋势
+`available:false`）。**配置是核心能力的前提，不能随附加设施一起挂。**
+
 ### 三个反复踩到的坑
 
 1. **业务状态无法靠清零复位**。覆盖率计数器能清零，订单状态不能——订单进入终态后

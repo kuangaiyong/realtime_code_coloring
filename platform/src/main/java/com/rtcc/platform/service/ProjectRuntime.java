@@ -132,11 +132,6 @@ public class ProjectRuntime {
         this.history = history;
     }
 
-    /** 这个项目当前生效的配置。配置变更走「造一个新的 ProjectRuntime 顶替」，所以它是只读的 */
-    public ProjectConfig config() {
-        return props;
-    }
-
     /**
      * 采集一轮。由 {@link ProjectRegistry} 按轮询周期调度，也被「立即采集」接口直接调用。
      */
@@ -267,13 +262,13 @@ public class ProjectRuntime {
                     covered += f.coveredLines();
                     missed += f.missedLines();
                 }
-                history.record(v.commit(), round(overallRatio(fresh)), covered, missed, fresh.size());
+                history.record(props.getId(), v.commit(), round(overallRatio(fresh)), covered, missed, fresh.size());
             }
 
             if (changed(previous, fresh)) {
                 log.info("覆盖率发生变化，已推送：{} 个文件，整体 {}%",
                         fresh.size(), String.format("%.1f", overallRatio(fresh)));
-                publisher.broadcast(summary());
+                publisher.broadcast(props.getId(), summary());
             }
         } catch (Exception e) {
             if (!"ANALYZE_ERROR".equals(probeStatus)) {
@@ -372,7 +367,7 @@ public class ProjectRuntime {
 
     /** 跨构建趋势。数据来自历史表，与实时采集无关 */
     public Map<String, Object> trend(int limit) {
-        return history.recent(limit);
+        return history.recent(props.getId(), limit);
     }
 
     /**

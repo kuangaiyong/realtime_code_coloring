@@ -23,12 +23,12 @@ public class PlatformApplication {
     }
 
     /**
-     * 平台当前盯的那一个项目。配置暂时仍来自 application.yml ——
-     * 多项目落地后改由 ProjectRegistry 从数据库装配，yml 退化为首次启动的种子。
+     * 首次启动时种进数据库的那个项目。库里已经有项目之后，这份配置就只是
+     * 数据库读不到时的兜底 —— 见 {@code ProjectStore#loadAll}。
      */
     @Bean
     public ProjectConfig defaultProjectConfig(CoverageProperties props) {
-        return props.toProjectConfig("default", "默认项目");
+        return props.toProjectConfig(ProjectConfig.DEFAULT_ID, "默认项目");
     }
 
     @Configuration
