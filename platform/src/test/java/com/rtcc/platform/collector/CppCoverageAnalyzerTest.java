@@ -1,6 +1,7 @@
 package com.rtcc.platform.collector;
 
 import com.rtcc.platform.config.CoverageProperties;
+import com.rtcc.platform.config.ProjectConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -23,8 +24,8 @@ class CppCoverageAnalyzerTest {
 
     private static final List<byte[]> ONE_DUMP = List.of(new byte[]{1, 2, 3});
 
-    private CoverageProperties props(Path objects) {
-        CoverageProperties p = new CoverageProperties();
+    private ProjectConfig props(Path objects) {
+        ProjectConfig p = new ProjectConfig();
         p.setCppSourceRoot("demo-service-cpp");
         if (objects != null) {
             p.setCppObjectsDir(objects.toString());
@@ -34,23 +35,23 @@ class CppCoverageAnalyzerTest {
 
     @Test
     void 没有C加加实例时不做任何事() throws Exception {
-        assertEquals(0, new CppCoverageAnalyzer(new CoverageProperties()).analyze(List.of()).size());
+        assertEquals(0, new CppCoverageAnalyzer(new ProjectConfig(), new CoverageProperties()).analyze(List.of()).size());
     }
 
     @Test
     void 未配置源码根时拒绝出报告() {
-        CoverageProperties p = new CoverageProperties();
+        ProjectConfig p = new ProjectConfig();
         p.setCppObjectsDir("whatever");
 
         IOException e = assertThrows(IOException.class,
-                () -> new CppCoverageAnalyzer(p).analyze(ONE_DUMP));
+                () -> new CppCoverageAnalyzer(p, new CoverageProperties()).analyze(ONE_DUMP));
         assertTrue(e.getMessage().contains("cpp-source-root"), e.getMessage());
     }
 
     @Test
     void 未配置对象目录时拒绝出报告() {
         IOException e = assertThrows(IOException.class,
-                () -> new CppCoverageAnalyzer(props(null)).analyze(ONE_DUMP));
+                () -> new CppCoverageAnalyzer(props(null), new CoverageProperties()).analyze(ONE_DUMP));
         assertTrue(e.getMessage().contains("cpp-objects-dir"), e.getMessage());
     }
 
@@ -61,7 +62,7 @@ class CppCoverageAnalyzerTest {
     @Test
     void 对象目录里没有gcno时拒绝出报告(@TempDir Path empty) {
         IOException e = assertThrows(IOException.class,
-                () -> new CppCoverageAnalyzer(props(empty)).analyze(ONE_DUMP));
+                () -> new CppCoverageAnalyzer(props(empty), new CoverageProperties()).analyze(ONE_DUMP));
         assertTrue(e.getMessage().contains(".gcno"), e.getMessage());
     }
 
@@ -74,14 +75,14 @@ class CppCoverageAnalyzerTest {
         Files.writeString(objects.resolve("order.gcno"), "占位：本用例走不到 gcov 那一步");
 
         IOException e = assertThrows(IOException.class,
-                () -> new CppCoverageAnalyzer(props(objects)).analyze(ONE_DUMP));
+                () -> new CppCoverageAnalyzer(props(objects), new CoverageProperties()).analyze(ONE_DUMP));
         assertTrue(e.getMessage().contains("截断"), e.getMessage());
     }
 
     /** gcov 的四种计数标记决定了四种染色，映射错了整张图就是错的 */
     @Test
     void gcov计数标记映射到四态染色() {
-        CppCoverageAnalyzer a = new CppCoverageAnalyzer(new CoverageProperties());
+        CppCoverageAnalyzer a = new CppCoverageAnalyzer(new ProjectConfig(), new CoverageProperties());
         assertEquals("MISSED", a.status("#####"), "从未执行");
         assertEquals("MISSED", a.status("====="), "只能由异常路径到达，同样没跑过");
         assertEquals("PARTIAL", a.status("3*"), "跑过，但行内还有块没跑到");

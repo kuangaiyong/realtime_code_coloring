@@ -1,12 +1,30 @@
 package com.rtcc.platform.config;
 
-import org.springframework.boot.context.properties.ConfigurationProperties;
-
 import java.util.ArrayList;
 import java.util.List;
 
-@ConfigurationProperties(prefix = "coverage")
-public class CoverageProperties {
+/**
+ * 一个被测项目的配置：探针地址、代码仓库、各语言的产物与源码根、门禁阈值。
+ *
+ * <p>与 {@link CoverageProperties} 的分界是「这项配置跟着项目走，还是跟着机器走」：
+ * <ul>
+ *   <li><b>项目级</b>（在这里）：换一个被测服务就要改的东西 —— 探针地址、仓库、产物目录、阈值。
+ *       它们将来存进数据库、在页面上编辑，改完热生效。</li>
+ *   <li><b>平台级</b>（留在 {@code CoverageProperties}）：{@code go-tool}、{@code gcov-tool}、
+ *       {@code llvm-profdata-tool} 这些<b>工具链可执行文件的路径</b>。它们是部署机器的属性，
+ *       换机器才改，与项目无关。做成页面可改反而危险：改错一个所有项目一起挂，
+ *       而且 llvm 的两个工具版本必须与 rustc 匹配，这种约束不该交给表单。</li>
+ * </ul>
+ *
+ * <p>字段名与 {@code CoverageProperties} 中对应项刻意保持一致，
+ * 使采集与归一化各类的改造只是换一个持有者，读取配置的写法一字不动。
+ */
+public class ProjectConfig {
+
+    /** 项目标识，同时是 API 路径与历史表里的分区键 */
+    private String id;
+    /** 项目显示名 */
+    private String name;
 
     /**
      * 被测实例的探针地址，形如 [语言://]host:port，可配多个（不写语言默认 java）。
@@ -14,7 +32,7 @@ public class CoverageProperties {
      * 同一服务的多个实例各自持有一份计数器，只有把它们并起来才是这个服务的真实覆盖：
      * 负载均衡会把请求分到任意一个实例，只看其中一个必然少算。
      */
-    private List<String> instances = new ArrayList<>(List.of("localhost:6300"));
+    private List<String> instances = new ArrayList<>();
 
     /** 源码所在的 git 仓库根目录。IR 里的文件路径一律以它为基准 */
     private String repoDir = "..";
@@ -30,8 +48,6 @@ public class CoverageProperties {
     private String goSourceRoot;
     /** Go：模块的 import path，覆盖数据里的文件名以它为前缀，需剥掉后换成仓库相对路径 */
     private String goModulePath;
-    /** Go：go 可执行文件。归一化要调 `go tool covdata`，二进制格式没有稳定契约可自行解析 */
-    private String goTool = "go";
     /** Go：不参与统计的文件后缀，默认排除探针自身 —— 它测的是自己，不是被测代码 */
     private List<String> goExclude = new ArrayList<>(List.of("coverage_agent.go"));
 
@@ -39,19 +55,11 @@ public class CoverageProperties {
     private String cppSourceRoot;
     /** C++：对象文件目录，.gcno 在这里。它是编译期产物，与探针交回的 .gcda 配套才解得出行号 */
     private String cppObjectsDir;
-    /** C++：gcov 可执行文件。二进制格式没有稳定契约可自行解析，与 Go 调 covdata 同理 */
-    private String gcovTool = "gcov";
-    /** C++：多实例在 .gcda 层面合并所用的工具 */
-    private String gcovMergeTool = "gcov-tool";
 
     /** Rust：源码根相对仓库根的位置，如 demo-service-rust */
     private String rustSourceRoot;
     /** Rust：被测产物。行号信息在它的 coverage mapping 里，相当于 Java 的 classes-dir */
     private String rustBinary;
-    /** Rust：合并多实例 .profraw 并转成 profdata 的工具，版本须与 rustc 匹配 */
-    private String llvmProfdataTool = "llvm-profdata";
-    /** Rust：把 profdata 导成 LCOV 的工具 */
-    private String llvmCovTool = "llvm-cov";
 
     /** 覆盖率门禁的阈值。CI 在合并前调 /api/coverage/gate，据此决定放行还是阻断 */
     private Gate gate = new Gate();
@@ -77,39 +85,11 @@ public class CoverageProperties {
         return roots;
     }
 
-    /**
-     * 把 yml 里这份配置转成一个项目配置。
-     *
-     * 多项目落地前，平台跑的就是它；落地后它是首次启动时写进 project 表的那条<b>种子</b>记录，
-     * 使现有部署升级后行为完全不变 —— 否则升级即等于把所有配置清空。
-     *
-     * 工具链路径（go-tool / gcov-tool / llvm-*）刻意不搬过去：那是部署机器的属性，
-     * 不跟着项目走。见 {@link ProjectConfig} 的类注释。
-     */
-    public ProjectConfig toProjectConfig(String id, String name) {
-        ProjectConfig c = new ProjectConfig();
-        c.setId(id);
-        c.setName(name);
-        c.setInstances(new ArrayList<>(instances));
-        c.setRepoDir(repoDir);
-        c.setBaseline(baseline);
-        c.setClassesDir(classesDir);
-        c.setJavaSourceRoot(javaSourceRoot);
-        c.setGoSourceRoot(goSourceRoot);
-        c.setGoModulePath(goModulePath);
-        c.setGoExclude(new ArrayList<>(goExclude));
-        c.setCppSourceRoot(cppSourceRoot);
-        c.setCppObjectsDir(cppObjectsDir);
-        c.setRustSourceRoot(rustSourceRoot);
-        c.setRustBinary(rustBinary);
-        c.setIntervalMs(intervalMs);
-        c.setTimeoutMs(timeoutMs);
-        ProjectConfig.Gate g = new ProjectConfig.Gate();
-        g.setIncrementalThreshold(gate.getIncrementalThreshold());
-        g.setOverallThreshold(gate.getOverallThreshold());
-        c.setGate(g);
-        return c;
-    }
+    public String getId() { return id; }
+    public void setId(String id) { this.id = id; }
+
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
 
     public Gate getGate() { return gate; }
     public void setGate(Gate gate) { this.gate = gate; }
@@ -129,9 +109,6 @@ public class CoverageProperties {
     public String getGoModulePath() { return goModulePath; }
     public void setGoModulePath(String goModulePath) { this.goModulePath = goModulePath; }
 
-    public String getGoTool() { return goTool; }
-    public void setGoTool(String goTool) { this.goTool = goTool; }
-
     public List<String> getGoExclude() { return goExclude; }
     public void setGoExclude(List<String> goExclude) { this.goExclude = goExclude; }
 
@@ -141,23 +118,11 @@ public class CoverageProperties {
     public String getCppObjectsDir() { return cppObjectsDir; }
     public void setCppObjectsDir(String cppObjectsDir) { this.cppObjectsDir = cppObjectsDir; }
 
-    public String getGcovTool() { return gcovTool; }
-    public void setGcovTool(String gcovTool) { this.gcovTool = gcovTool; }
-
-    public String getGcovMergeTool() { return gcovMergeTool; }
-    public void setGcovMergeTool(String gcovMergeTool) { this.gcovMergeTool = gcovMergeTool; }
-
     public String getRustSourceRoot() { return rustSourceRoot; }
     public void setRustSourceRoot(String rustSourceRoot) { this.rustSourceRoot = rustSourceRoot; }
 
     public String getRustBinary() { return rustBinary; }
     public void setRustBinary(String rustBinary) { this.rustBinary = rustBinary; }
-
-    public String getLlvmProfdataTool() { return llvmProfdataTool; }
-    public void setLlvmProfdataTool(String llvmProfdataTool) { this.llvmProfdataTool = llvmProfdataTool; }
-
-    public String getLlvmCovTool() { return llvmCovTool; }
-    public void setLlvmCovTool(String llvmCovTool) { this.llvmCovTool = llvmCovTool; }
 
     public String getRepoDir() { return repoDir; }
     public void setRepoDir(String repoDir) { this.repoDir = repoDir; }
@@ -172,7 +137,7 @@ public class CoverageProperties {
     public void setTimeoutMs(int timeoutMs) { this.timeoutMs = timeoutMs; }
 
     /**
-     * 门禁阈值。只有两个数字，不做原型上那套多规则 + 优先级 —— 一个平台实例盯的就是
+     * 门禁阈值。只有两个数字，不做原型上那套多规则 + 优先级 —— 一个项目盯的就是
      * 一个服务，「哪条规则优先」在这里没有对应的现实。
      */
     public static class Gate {

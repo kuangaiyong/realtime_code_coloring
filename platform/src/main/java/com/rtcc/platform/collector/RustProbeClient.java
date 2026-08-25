@@ -1,6 +1,6 @@
 package com.rtcc.platform.collector;
 
-import com.rtcc.platform.config.CoverageProperties;
+import com.rtcc.platform.config.ProjectConfig;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -24,10 +24,10 @@ import java.time.Duration;
 @Component
 public class RustProbeClient {
 
-    private final CoverageProperties props;
+    private final ProjectConfig props;
     private final HttpClient http;
 
-    public RustProbeClient(CoverageProperties props) {
+    public RustProbeClient(ProjectConfig props) {
         this.props = props;
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(props.getTimeoutMs()))

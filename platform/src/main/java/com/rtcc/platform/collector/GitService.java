@@ -1,6 +1,6 @@
 package com.rtcc.platform.collector;
 
-import com.rtcc.platform.config.CoverageProperties;
+import com.rtcc.platform.config.ProjectConfig;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -23,9 +23,9 @@ public class GitService {
     private static final Pattern SAFE_REF = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._/~^-]{0,99}");
     private static final Pattern HUNK = Pattern.compile("^@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,(\\d+))? @@");
 
-    private final CoverageProperties props;
+    private final ProjectConfig props;
 
-    public GitService(CoverageProperties props) {
+    public GitService(ProjectConfig props) {
         this.props = props;
     }
 

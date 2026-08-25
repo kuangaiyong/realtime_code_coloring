@@ -1,6 +1,7 @@
 package com.rtcc.platform.collector;
 
 import com.rtcc.platform.config.CoverageProperties;
+import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.model.FileCoverage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,10 +33,13 @@ public class GoCoverageAnalyzer {
     private static final Pattern BLOCK = Pattern.compile(
             "^(.+):(\\d+)\\.\\d+,(\\d+)\\.\\d+ \\d+ (\\d+)$");
 
-    private final CoverageProperties props;
+    private final ProjectConfig props;
+    /** 工具链可执行文件的路径是部署机器的属性，换机器才改，与项目无关，因此仍从平台配置取 */
+    private final CoverageProperties platform;
 
-    public GoCoverageAnalyzer(CoverageProperties props) {
+    public GoCoverageAnalyzer(ProjectConfig props, CoverageProperties platform) {
         this.props = props;
+        this.platform = platform;
     }
 
     /**
@@ -76,7 +80,7 @@ public class GoCoverageAnalyzer {
     }
 
     private void runCovdata(Path in, Path out) throws IOException {
-        List<String> cmd = List.of(props.getGoTool(), "tool", "covdata", "textfmt",
+        List<String> cmd = List.of(platform.getGoTool(), "tool", "covdata", "textfmt",
                 "-i=" + in.toAbsolutePath(), "-o=" + out.toAbsolutePath());
         // profile 走 -o 落文件，stdout 本该是空的；但只要它写了东西而没人读，
         // 管道写满就会双方对着阻塞，直到 30 秒超时才被强杀。丢弃即可

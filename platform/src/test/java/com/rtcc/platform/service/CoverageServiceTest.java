@@ -10,6 +10,7 @@ import com.rtcc.platform.collector.ProbeClient;
 import com.rtcc.platform.collector.RustCoverageAnalyzer;
 import com.rtcc.platform.collector.RustProbeClient;
 import com.rtcc.platform.config.CoverageProperties;
+import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.history.CoverageHistory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,7 +33,10 @@ class CoverageServiceTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        CoverageProperties props = new CoverageProperties();
+        ProjectConfig props = new ProjectConfig();
+        // 工具链路径与项目无关，取平台默认值即可：这些用例在够不到探针时就返回了，
+        // 根本走不到调 covdata / gcov / llvm-cov 那一步
+        CoverageProperties platform = new CoverageProperties();
         // 取一个刚释放、确定没人监听的端口：本测试只关心够不到探针时的行为
         int dead;
         try (ServerSocket free = new ServerSocket(0)) {
@@ -41,9 +45,9 @@ class CoverageServiceTest {
         props.setInstances(List.of("localhost:" + dead));
         props.setTimeoutMs(300);
         service = new CoverageService(new ProbeClient(), new CoverageAnalyzer(),
-                new GoProbeClient(props), new GoCoverageAnalyzer(props),
-                new CppProbeClient(props), new CppCoverageAnalyzer(props),
-                new RustProbeClient(props), new RustCoverageAnalyzer(props),
+                new GoProbeClient(props), new GoCoverageAnalyzer(props, platform),
+                new CppProbeClient(props), new CppCoverageAnalyzer(props, platform),
+                new RustProbeClient(props), new RustCoverageAnalyzer(props, platform),
                 new GitService(props), props, new CoveragePublisher(),
                 // 数据源指向一个必然连不上的地址：这些用例要证明的正是
                 // 「历史写不进去也不影响其余行为」

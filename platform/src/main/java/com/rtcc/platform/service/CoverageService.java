@@ -11,7 +11,7 @@ import com.rtcc.platform.collector.GoCoverageAnalyzer;
 import com.rtcc.platform.collector.GoProbeClient;
 import com.rtcc.platform.collector.RustCoverageAnalyzer;
 import com.rtcc.platform.collector.RustProbeClient;
-import com.rtcc.platform.config.CoverageProperties;
+import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.history.CoverageHistory;
 import com.rtcc.platform.model.BuildVersion;
 import com.rtcc.platform.model.FileCoverage;
@@ -50,7 +50,7 @@ public class CoverageService {
     private final RustProbeClient rustProbe;
     private final RustCoverageAnalyzer rustAnalyzer;
     private final GitService git;
-    private final CoverageProperties props;
+    private final ProjectConfig props;
     private final CoveragePublisher publisher;
     private final CoverageHistory history;
 
@@ -106,7 +106,7 @@ public class CoverageService {
                            GoProbeClient goProbe, GoCoverageAnalyzer goAnalyzer,
                            CppProbeClient cppProbe, CppCoverageAnalyzer cppAnalyzer,
                            RustProbeClient rustProbe, RustCoverageAnalyzer rustAnalyzer, GitService git,
-                           CoverageProperties props, CoveragePublisher publisher,
+                           ProjectConfig props, CoveragePublisher publisher,
                            CoverageHistory history) {
         this.probeClient = probeClient;
         this.analyzer = analyzer;
