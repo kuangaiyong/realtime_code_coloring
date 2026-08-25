@@ -4,6 +4,20 @@ server:
 spring:
   application:
     name: coverage-platform
+  # 覆盖率历史（跨构建趋势）。凭据一律走环境变量，不写进仓库；
+  # 本机由 run_local.sh 从 gitignore 掉的 .env.local 里读出来注入。
+  #
+  # initialization-fail-timeout: -1 是刻意的：数据库连不上时平台必须照常启动、
+  # 照常采集覆盖 —— 历史只是附加能力，不能让它把核心功能拖死。
+  # 连不上的后果是趋势接口明确报错，而不是平台起不来
+  datasource:
+    url: ${COVERAGE_DB_URL:jdbc:mysql://127.0.0.1:3306/code_coloring?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8}
+    username: ${COVERAGE_DB_USER:root}
+    password: ${COVERAGE_DB_PASSWORD:}
+    hikari:
+      initialization-fail-timeout: -1
+      connection-timeout: 3000
+      maximum-pool-size: 4
 
 coverage:
   # 被测实例的探针地址，形如 [语言://]host:port，不写语言默认 java。
@@ -39,7 +53,14 @@ coverage:
   rust-binary: ../demo-service-rust/target/x86_64-pc-windows-msvc/release/demo-service-rust.exe
   interval-ms: 3000
   timeout-ms: 3000
+  # 覆盖率门禁：CI 合并前调 /api/coverage/gate，据 passed 放行或阻断。
+  # 只有两个数字，不做原型上那套多规则 + 优先级 —— 一个平台实例盯的就是一个服务。
+  # 全量阈值默认 0 即不设门槛：存量代码的覆盖率一时提不上来是常态，
+  # 拿它去挡合并只会逼人索性关掉门禁，连增量那道也一并失效
+  gate:
+    incremental-threshold: 80
+    overall-threshold: 0
 
 logging:
   level:
-    com.coverage.platform: INFO
+    com.rtcc.platform: INFO

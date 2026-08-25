@@ -1,0 +1,108 @@
+package com.rtcc.platform.web;
+
+import com.rtcc.platform.service.CoverageService;
+import com.rtcc.platform.service.ScenarioConflictException;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/coverage")
+public class CoverageController {
+
+    private final CoverageService service;
+
+    public CoverageController(CoverageService service) {
+        this.service = service;
+    }
+
+    /**
+     * 覆盖率总览：探针状态 + 各文件覆盖摘要。
+     * mode=incremental 只统计基线之后变动的行；scenarioId 指定时看该场景的独占覆盖。
+     */
+    @GetMapping("/summary")
+    public Map<String, Object> summary(@RequestParam(defaultValue = CoverageService.MODE_FULL) String mode,
+                                       @RequestParam(required = false) String baseline,
+                                       @RequestParam(required = false) String scenarioId) {
+        return service.summary(mode, baseline, scenarioId);
+    }
+
+    /**
+     * 各实例分别的覆盖情况，用于「哪台实例跑到了什么」的对比。
+     *
+     * 按需触发而非随轮询返回：它要对每个实例各调一次外部归一化工具，开销与实例数成正比。
+     * 注意各实例的行状态不可相加当聚合用（见 CoverageService#perInstance），
+     * 聚合值请取 /summary。
+     */
+    @GetMapping("/instances")
+    public Map<String, Object> instances() {
+        return service.perInstance();
+    }
+
+    /**
+     * 跨构建覆盖率趋势：每个构建一个点，取该构建观测到的峰值。
+     *
+     * available=false 时必须把 error 一并显示出来 —— 回一张空图会被读成
+     * 「这个项目一直没有覆盖」，而真实原因可能只是数据库没起。
+     */
+    @GetMapping("/trend")
+    public Map<String, Object> trend(@RequestParam(defaultValue = "50") int limit) {
+        return service.trend(Math.max(1, Math.min(limit, 500)));
+    }
+
+    /**
+     * 门禁判定：CI 在合并前调它，据 passed 决定放行还是阻断。
+     *
+     * 不达标返回 200 + passed=false，而不是 4xx —— 4xx 留给「判不了」。
+     * CI 那边一句 curl -f 分不出「代码覆盖不够」和「平台自己挂了」，
+     * 而这两件事一个该补测试、一个该找人看，处置完全不同。
+     *
+     * 默认口径是增量而非全量（与 /summary 不同）：门禁要回答的是
+     * 「这次改动的代码测了没」，拿存量代码的总覆盖率去挡合并没有意义。
+     *
+     * 已知边界：全量口径不校验产物版本 —— 增量口径要对齐行号，必然会发现
+     * 「产物是旧的」；全量口径不需要对齐，被测实例跑着上一版产物时照样给得出比例。
+     * buildCommit 如实回给调用方，若把 overall-threshold 设成大于 0 并据此挡合并，
+     * 请自行比对它与本次要合并的 commit。
+     */
+    @GetMapping("/gate")
+    public Map<String, Object> gate(@RequestParam(defaultValue = CoverageService.MODE_INCREMENTAL) String mode,
+                                    @RequestParam(required = false) String baseline) {
+        return service.gate(mode, baseline);
+    }
+
+    /** 单文件源码与逐行染色状态 */
+    @GetMapping("/file")
+    public Map<String, Object> file(@RequestParam String path,
+                                    @RequestParam(defaultValue = CoverageService.MODE_FULL) String mode,
+                                    @RequestParam(required = false) String baseline,
+                                    @RequestParam(required = false) String scenarioId) {
+        return service.fileDetail(path, mode, baseline, scenarioId);
+    }
+
+    /** 立即采集一次，不等待轮询周期 */
+    @PostMapping("/collect")
+    public Map<String, Object> collect() {
+        service.collect();
+        return service.summary();
+    }
+
+    /** 清零计数器：之后采到的即为「这一轮测试新覆盖的代码」 */
+    @PostMapping("/reset")
+    public Map<String, Object> reset() {
+        Map<String, Object> res = new LinkedHashMap<>();
+        try {
+            service.reset();
+            res.put("ok", true);
+        } catch (ScenarioConflictException e) {
+            // 场景进行中被清零，归因数据就废了。这种错误必须走 409 让调用方停下来，
+            // 塞进 200 的响应体里，脚本里一句 http(...) 不看 body 就漏过去了
+            throw e;
+        } catch (Exception e) {
+            res.put("ok", false);
+            res.put("error", e.getMessage());
+        }
+        return res;
+    }
+}

@@ -10,6 +10,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 
+# 版本号在本脚本里只出现这一处。原先两处 jar 路径各写一遍，改 pom 版本号漏改一处
+# 只会报「文件不存在」，看不出根因是版本没跟上（CLAUDE.md 第二个坑）
+VERSION=0.5.0
+
 JAVA_HOME="${JAVA_HOME:-/c/Users/Administrator/devtools/jdk-17.0.20+8}"
 MVN_HOME="${MVN_HOME:-/c/Users/Administrator/devtools/apache-maven-3.9.16}"
 GO_HOME="${GO_HOME:-/c/Users/Administrator/devtools/go}"
@@ -27,6 +31,12 @@ RUST_LLVM_BIN="$RUST_TOOLCHAIN/lib/rustlib/x86_64-pc-windows-gnu/bin"
 XWIN_HOME="${XWIN_HOME:-/c/Users/Administrator/devtools/xwin}"
 export JAVA_HOME RUSTUP_HOME CARGO_HOME
 export PATH="$JAVA_HOME/bin:$MVN_HOME/bin:$GO_HOME/bin:$MINGW_HOME/bin:$RUST_LLVM_BIN:$CARGO_HOME/bin:$PATH"
+
+# 数据库凭据从 .env.local 读（已 gitignore）。没有这个文件也要能跑：
+# 覆盖率历史连不上就退化成「趋势不可用」，采集与染色不受影响
+if [ -f "$ROOT/.env.local" ]; then
+  set -a; . "$ROOT/.env.local"; set +a
+fi
 
 LOG_DIR="$ROOT/.run"
 mkdir -p "$LOG_DIR"
@@ -83,7 +93,7 @@ start_demo() {
   # 注意：java.exe 是 Windows 程序，认不得 Git Bash 的 /c/... 路径，
   # 传给它的路径必须是相对路径或 Windows 路径。
   java -javaagent:platform/target/agent/jacocoagent.jar=includes=com.shop.*,output=tcpserver,address=localhost,port=$probe,sessionid=$sid \
-       -jar demo-service/target/demo-service-0.4.2.jar --server.port=$http > "$LOG_DIR/$name.log" 2>&1 &
+       -jar "demo-service/target/demo-service-$VERSION.jar" --server.port=$http > "$LOG_DIR/$name.log" 2>&1 &
   echo $! > "$LOG_DIR/$name.pid"
   wait_ready "$LOG_DIR/$name.log" "Started DemoServiceApplication" "$name"
 }
@@ -226,7 +236,7 @@ start() {
   echo "    demo-service-rust#2 http://localhost:18051  探针 http://localhost:6601"
 
   echo "==> 启动染色平台"
-  ( cd "$ROOT/platform" && exec java -jar target/platform-0.4.2.jar ) > "$LOG_DIR/platform.log" 2>&1 &
+  ( cd "$ROOT/platform" && exec java -jar "target/platform-$VERSION.jar" ) > "$LOG_DIR/platform.log" 2>&1 &
   echo $! > "$LOG_DIR/platform.pid"
   wait_ready "$LOG_DIR/platform.log" "Started PlatformApplication" "platform"
   echo "    platform      http://localhost:18090   ← 打开这个看染色"
@@ -253,7 +263,26 @@ stop() {
   echo "已停止（$ALL_PORTS 均已释放）"
 }
 
+# python 要固定成一个具体路径。PATH 里排在前面的
+# %LOCALAPPDATA%/Microsoft/WindowsApps/python 是个 0 字节的 Store 别名，
+# 执行时报 Permission denied；bash 有时跳过它、有时不跳。撞上的那一次，
+# verify 会在中途被 set -e 掐断，后面几套用例根本没跑，输出看上去却像正常收尾。
+# 逐行读而不是 for ... in $(...)：后者按空格分词，
+# 装在 "/c/Program Files/..." 下的 python 会被拆成 /c/Program
+resolve_python() {
+  [ -n "${PY:-}" ] && return 0
+  while IFS= read -r cand; do
+    case "$cand" in */WindowsApps/*) continue ;; esac
+    PY="$cand"; return 0
+  done < <(type -ap python python3 2>/dev/null || true)
+  echo "!! 找不到可用的 python（Store 别名不算）"
+  return 1
+}
+
 verify() {
+  # 只有 verify 用得上 python。放在顶层的话，没装 python 的机器连 stop 都跑不了
+  resolve_python
+
   # 订单一旦进入终态就回不到 CREATED，业务状态只能靠重启被测实例复位。
   # 少了这一步，P0 用例第二次跑就会走进「重复回调」分支而失败。
   echo "==> 重启全部被测实例，复位业务状态"
@@ -263,22 +292,22 @@ verify() {
   start_all_demos
   echo
 
-  python scripts/e2e_verify.py
+  "$PY" scripts/e2e_verify.py
   echo
   node scripts/ws_verify.js
   echo
-  python scripts/e2e_incremental.py
+  "$PY" scripts/e2e_incremental.py
   echo
   # 放最后：场景 start 会清零计数器，跑在其他用例之前会把它们的覆盖数据洗掉
-  python scripts/e2e_scenario.py
+  "$PY" scripts/e2e_scenario.py
   echo
-  python scripts/e2e_multi_instance.py
+  "$PY" scripts/e2e_multi_instance.py
   echo
-  python scripts/e2e_go.py
+  "$PY" scripts/e2e_go.py
   echo
-  python scripts/e2e_cpp.py
+  "$PY" scripts/e2e_cpp.py
   echo
-  python scripts/e2e_rust.py
+  "$PY" scripts/e2e_rust.py
 }
 
 case "${1:-start}" in

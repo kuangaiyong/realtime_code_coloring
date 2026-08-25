@@ -6,10 +6,13 @@ P1 端到端验收：增量覆盖率口径 + 产物版本一致性校验。真�
   2. 增量分母只含基线之后变动的可执行行，与全量分母显著不同；
   3. 只调用新接口的一部分分支时，新代码里没测到的行仍然是红的
      —— 增量染色的价值就在于此：告诉你「这次改的代码还差哪几行没测」；
-  4. 渲染中的源码一旦与被测产物不是同一版本，平台拒绝出报告（HTTP 409），
+  4. 门禁给出的判定与页面上的数字一致（同一份四舍五入），且「判不了」返回 409、
+     不与「不通过」共用 200 —— CI 那边这两件事一个该找人看、一个该补测试；
+  5. 渲染中的源码一旦与被测产物不是同一版本，平台拒绝出报告（HTTP 409），
      而不是返回一份行号错位、看上去却很正常的结果。
 """
 import json
+import math
 import re
 import subprocess
 import sys
@@ -59,6 +62,13 @@ def must(status, body, url):
 
 def summary(mode="full", baseline=None):
     url = f"{PLATFORM}/api/coverage/summary?mode={mode}"
+    if baseline:
+        url += "&baseline=" + urllib.parse.quote(baseline)
+    return http(url)
+
+
+def gate(mode="incremental", baseline=None):
+    url = f"{PLATFORM}/api/coverage/gate?mode={mode}"
     if baseline:
         url += "&baseline=" + urllib.parse.quote(baseline)
     return http(url)
@@ -235,7 +245,67 @@ def main():
         print("  [FAIL] 调用新接口后增量覆盖率仍为 0")
         ok = False
 
-    # ---- 4. 源码与产物不是同一版本时必须拒绝出报告 ----
+    # ---- 4. 门禁判定 ----
+    print("\n  >> 门禁：CI 合并前据此放行或阻断")
+    g_full = must(*gate("full"), url="/api/coverage/gate?mode=full")
+    # 页面显示 80.0% 却判不通过，是没人能自己想明白的事：两处必须是同一个数
+    if g_full["actual"] == full2["overallRatio"]:
+        print(f"  [PASS] 全量门禁给出的 {g_full['actual']}% 与页面显示的全量覆盖率一致")
+    else:
+        print(f"  [FAIL] 门禁 {g_full['actual']}% 与页面 {full2['overallRatio']}% 对不上")
+        ok = False
+    if g_full["threshold"] == 0 and g_full["passed"]:
+        print(f"  [PASS] 全量阈值 0 即不设门槛，放行：{g_full['reason']}")
+    else:
+        print(f"  [FAIL] 全量阈值 {g_full['threshold']}，判定 {g_full['passed']}：{g_full['reason']}")
+        ok = False
+
+    g_inc = must(*gate("incremental", baseline), url="/api/coverage/gate?mode=incremental")
+    total = g_inc["coveredLines"] + g_inc["missedLines"]
+    if total <= 0:
+        print(f"  [FAIL] 增量门禁分母为 0，与前面算出的 {len(expected)} 个变更文件矛盾")
+        ok = False
+    else:
+        # 照抄平台的舍入方式（Math.round 是 floor(x+0.5)），
+        # 用 Python 的 round 会在 .05 上按「四舍六入五成双」得出另一个数，判成假失败
+        want = math.floor(g_inc["coveredLines"] * 1000.0 / total + 0.5) / 10.0
+        if g_inc["actual"] == want and g_inc["passed"] == (want >= g_inc["threshold"]):
+            print(f"  [PASS] 增量门禁 {g_inc['coveredLines']}/{total} = {g_inc['actual']}%"
+                  f" 对阈值 {g_inc['threshold']}% → passed={g_inc['passed']}")
+        else:
+            print(f"  [FAIL] 增量门禁自相矛盾：{g_inc['coveredLines']}/{total} 应为 {want}%，"
+                  f"实际 {g_inc['actual']}%，passed={g_inc['passed']}")
+            ok = False
+        if not g_inc["passed"]:
+            # 「还差几行」要验的是性质而不是公式：补上这几行之后，
+            # 按门禁自己那套四舍五入真能过阈值；少补一行则不能。
+            # 照抄公式的话，平台改了舍入口径这条断言会跟着一起错
+            m = re.search(r"还需覆盖 (\d+) 行", g_inc["reason"])
+            if not m:
+                print(f"  [FAIL] 不通过时没有给出「还需覆盖 N 行」：{g_inc['reason']}")
+                ok = False
+            else:
+                n = int(m.group(1))
+                after = math.floor((g_inc["coveredLines"] + n) * 1000.0 / total + 0.5) / 10.0
+                before = math.floor((g_inc["coveredLines"] + n - 1) * 1000.0 / total + 0.5) / 10.0
+                if n >= 1 and after >= g_inc["threshold"] and before < g_inc["threshold"]:
+                    print(f"  [PASS] 不通过时给出可执行的下一步：{g_inc['reason']}"
+                          f"（补满 {n} 行到 {after}%，少一行只有 {before}%）")
+                else:
+                    print(f"  [FAIL] 「还需覆盖 {n} 行」不成立：补满得 {after}%，"
+                          f"少一行得 {before}%，阈值 {g_inc['threshold']}%")
+                    ok = False
+
+    # 分母为 0 必须放行：overallRatio() 在这种情况下返回 0，直接拿去比阈值
+    # 就把「这次没改任何可执行代码」说成了「改了却一行没测」
+    status, g_empty = gate("incremental", build)
+    if status == 200 and g_empty["passed"] and g_empty["actual"] is None:
+        print(f"  [PASS] 基线取产物自身（diff 为空）时放行且不给比例：{g_empty['reason']}")
+    else:
+        print(f"  [FAIL] 空 diff 的门禁应放行且 actual 为 null，实际 {status} {g_empty}")
+        ok = False
+
+    # ---- 5. 源码与产物不是同一版本时必须拒绝出报告 ----
     print("\n  >> 模拟「产物是旧的、源码已经改了」：直接改动被测源码文件")
     target = ROOT / SERVICE
     original = target.read_bytes()
@@ -246,6 +316,14 @@ def main():
             print(f"  [PASS] 平台拒绝出增量报告（HTTP 409）：{body['error']}")
         else:
             print(f"  [FAIL] 源码已漂移，平台却返回 {status}：{body}")
+            ok = False
+        status, body = gate("incremental", baseline)
+        if status == 409:
+            # 门禁若在这里返回 200+passed=false，CI 会把「平台判不了」当成「覆盖不达标」，
+            # 开发照着去补测试，而真正的原因是产物与源码不是同一版本
+            print(f"  [PASS] 门禁同样拒判（HTTP 409），未把判不了说成不通过：{body['error']}")
+        else:
+            print(f"  [FAIL] 源码已漂移，门禁却返回 {status}：{body}")
             ok = False
         status, body = summary()
         if status == 200:

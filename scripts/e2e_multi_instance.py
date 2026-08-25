@@ -195,6 +195,15 @@ def main():
             print(f"  [FAIL] 错误提示没有点明是哪台实例缺席")
             ok = False
 
+        # PARTIAL 下门禁必须拒判：掉线那台跑过的行会被算成没覆盖，比例被压低，
+        # 判出来是「不通过」，而真正的原因（有实例缺席）一个字都不会出现在结论里
+        g_status, g_body = http(f"{PLATFORM}/api/coverage/gate?mode=full")
+        if g_status == 409 and "PARTIAL" in g_body.get("error", ""):
+            print(f"  [PASS] PARTIAL 时门禁拒判（HTTP 409）而非判「不通过」：{g_body['error'][:60]}…")
+        else:
+            print(f"  [FAIL] PARTIAL 时门禁应返回 409，实际 {g_status}：{g_body}")
+            ok = False
+
     # 归档数据是 stop 那一刻定格的，事后掉线与它无关。
     # 若照搬实时状态，这里会给一份本就完整的数据扣上「不完整」的警告
     arch = must(*http(f"{PLATFORM}/api/coverage/summary?scenarioId={urllib.parse.quote(snap_id)}"),
@@ -273,6 +282,44 @@ def main():
             ok = False
 
     print("\n" + "-" * 78)
+    # ---- 按实例分别归一化（实例对比视图的数据源） ----
+    print()
+    print("  >> 各实例分别归一化：GET /api/coverage/instances")
+    agg_before = sum(f["coveredLines"] for f in must(*summary(), what="summary")["files"])
+    st, per = http(f"{PLATFORM}/api/coverage/instances")
+    if st != 200:
+        print(f"  [FAIL] 取各实例覆盖失败：{st} {per}")
+        ok = False
+    else:
+        rows = [r for r in per["instances"] if r["coveredLines"] is not None]
+        for r in per["instances"]:
+            print(f"    {r['endpoint']:<24s} {r['status']:<12s} "
+                  f"{r['overallRatio']}%  已覆盖 {r['coveredLines']}")
+        if len(per["instances"]) < 2 or not rows:
+            print("  [FAIL] 至少应有两个实例分别给出覆盖")
+            ok = False
+        else:
+            # 聚合是并集：不会比任何单台少（否则多实例白做），
+            # 也不会等于简单相加（同一行被多台覆盖只能算一次）
+            mx = max(r["coveredLines"] for r in rows)
+            sm = sum(r["coveredLines"] for r in rows)
+            if mx <= agg_before <= sm and agg_before != sm:
+                print(f"  [PASS] 聚合 {agg_before} 行落在并集区间内"
+                      f"（单实例最大 {mx} ≤ 聚合 ≤ 相加 {sm}，且不等于相加）")
+            else:
+                print(f"  [FAIL] 聚合 {agg_before} 不符合并集语义：最大 {mx} / 相加 {sm}")
+                ok = False
+
+        # 按实例取数走的是非破坏性接口，多取这一次不能把热路径的累计弄丢
+        time.sleep(8)
+        agg_after = sum(f["coveredLines"] for f in must(*summary(), what="summary")["files"])
+        if agg_after >= agg_before:
+            print(f"  [PASS] 额外取数未损坏聚合累计（{agg_before} → {agg_after}）")
+        else:
+            print(f"  [FAIL] 按实例取数把聚合弄丢了 {agg_before - agg_after} 行")
+            ok = False
+
+    print()
     print("  验收结论：" + ("全部通过" if ok else "存在失败项"))
     sys.exit(0 if ok else 1)
 
