@@ -133,6 +133,46 @@ public class ProjectRuntime {
     }
 
     /**
+     * 这个实例是否已被顶替。配置变更会造一个新实例替掉旧的，旧的从此不该再影响任何东西。
+     *
+     * <p>不加这个标记的话有两条静默的错路：正在跑的那次采集完成后，仍会顶着同一个项目 id
+     * 把<b>旧配置</b>算出的结果推给页面、写进趋势表；以及旧实例上的清零 / 开场景
+     * 仍会真的去清被测实例的计数器 —— 新实例采到的覆盖率会莫名其妙掉到接近 0。
+     */
+    private volatile boolean retired;
+
+    /**
+     * 在场景锁内原子地完成「确认没有进行中的场景」+「作废这个实例」。
+     *
+     * <p>分成两步做会有空档：查完还没作废的那一瞬间，另一个请求正好开始场景 ——
+     * 计数器已被清零，场景却挂在即将被丢弃的旧实例上，
+     * 表现是覆盖率掉到 0、而 {@code /scenario} 里 active 是 null，永远 stop 不掉。
+     * {@code startScenario} / {@code reset} 拿的是同一把锁，因此这里能挡住。
+     */
+    void retireIfIdle() {
+        synchronized (scenarioLock) {
+            if (active != null) {
+                throw new ScenarioConflictException(
+                        "场景 " + active.id() + " 正在进行中，此时改配置会让该场景的归因跨两套配置。"
+                                + "请先结束场景（/api/scenario/stop）再保存");
+            }
+            retired = true;
+        }
+    }
+
+    /**
+     * 把旧实例已归档的场景接过来。配置变更走「造一个新实例顶替旧的」，
+     * 不接的话人一改配置，此前跑过的场景归因就凭空消失了 —— 那是测试过程的记录，
+     * 与配置改没改无关。
+     *
+     * <p>只接归档的：进行中的场景在 {@link ProjectRegistry#update} 那里已经拒绝掉了，
+     * 它的计数器窗口横跨两套配置，接过来也不是一份能用的归因。
+     */
+    void adoptScenariosFrom(ProjectRuntime old) {
+        scenarios.putAll(old.scenarios);
+    }
+
+    /**
      * 采集一轮。由 {@link ProjectRegistry} 按轮询周期调度，也被「立即采集」接口直接调用。
      */
     public void collect() {
@@ -255,6 +295,12 @@ public class ProjectRuntime {
             // 记进历史，供跨构建趋势。只记「全部实例版本一致且工作树干净」的构建：
             // 版本对不齐时这份聚合本身就不该被当成某个 commit 的成绩，
             // 脏工作树则根本无法用 commit 标识这份代码
+            // 这一轮可能是在配置更新之前就开始的：此刻这份结果是用旧的 classes-dir /
+            // source-root 算出来的，顶着同一个项目 id 入库或推送，页面会在「配置已生效」
+            // 之后立刻被旧口径的数字重绘，而且看不出这是旧的
+            if (retired) {
+                return;
+            }
             BuildVersion v = state.get().version();
             if (v != null && !v.dirty() && state.get().versionError() == null) {
                 int covered = 0, missed = 0;
@@ -649,6 +695,7 @@ public class ProjectRuntime {
     /** 清零被测服务的计数器，用于「只看这一轮测试覆盖了什么」 */
     public void reset() throws Exception {
         synchronized (scenarioLock) {
+            checkNotRetired();
             Scenario s = active;
             if (s != null) {
                 // 场景进行中清零，会让 stop 抓到的数据只剩清零之后那一段，
@@ -657,6 +704,14 @@ public class ProjectRuntime {
                         "场景 " + s.id() + " 正在进行中，此时清零会让它的归因数据只剩清零之后的部分。请先结束该场景");
             }
             resetCounters();
+        }
+    }
+
+    /** 拿着旧引用的请求要明确失败，而不是安静地把新配置下的计数器清掉 */
+    private void checkNotRetired() {
+        if (retired) {
+            throw new ScenarioConflictException(
+                    "项目配置刚刚更新，这个操作用的是更新前的旧状态，已拒绝。请重试");
         }
     }
 
@@ -695,6 +750,7 @@ public class ProjectRuntime {
             throw new ScenarioConflictException("scenarioId 不能为空");
         }
         synchronized (scenarioLock) {
+            checkNotRetired();
             if (active != null) {
                 throw new ScenarioConflictException(
                         "场景 " + active.id() + " 正在进行中，同一被测实例同时只允许一个活跃场景。请先调用 /api/scenario/stop");

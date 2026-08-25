@@ -30,10 +30,10 @@ CONTROLLER = "demo-service/src/main/java/com/shop/order/controller/OrderControll
 POLL_SEC = 20
 
 
-def http(url, method="GET"):
+def http(url, method="GET", timeout=15):
     req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.load(r)
     except urllib.error.HTTPError as e:
         return e.code, json.load(e)
@@ -297,7 +297,12 @@ def main():
     time.sleep(8)
 
     agg_before = sum(f["coveredLines"] for f in must(*summary(), what="summary")["files"])
-    st, per = http(f"{PLATFORM}/api/coverage/instances")
+    # 这一个接口要给它比别处宽的超时：它与轮询采集抢同一把 collectLock，
+    # 排在一次采集后面时要先等那次采完，而采集对每个不可达的实例都要耗满 timeout-ms
+    # （8 个实例最坏 24 秒），之后才轮到它自己对 8 个实例各跑一遍外部归一化工具。
+    # 写 15 秒时实例还少，如今偶尔会顶破 —— 顶破时报出来的是一串 Python 栈，
+    # 看着像平台崩了，而实际上只是没等够
+    st, per = http(f"{PLATFORM}/api/coverage/instances", timeout=90)
     if st != 200:
         print(f"  [FAIL] 取各实例覆盖失败：{st} {per}")
         ok = False

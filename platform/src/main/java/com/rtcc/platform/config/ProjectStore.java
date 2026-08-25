@@ -77,6 +77,35 @@ public class ProjectStore {
         }
     }
 
+    /**
+     * 写入一个项目的配置（有则覆盖）。
+     *
+     * <p>与 {@code loadAll} 相反，这里<b>失败必须抛出去</b>：读不到还能用 yml 兜底，
+     * 写不进去却回一句「保存成功」，人改完配置关掉页面，下次启动全变回去
+     * —— 这正是本项目最忌讳的静默失效。
+     */
+    public void save(ProjectConfig cfg) {
+        try {
+            jdbc.update("""
+                    INSERT INTO project (id, name, config_json, created_at, updated_at)
+                    VALUES (?, ?, ?, NOW(3), NOW(3))
+                    ON DUPLICATE KEY UPDATE
+                      name = VALUES(name), config_json = VALUES(config_json), updated_at = NOW(3)
+                    """, cfg.getId(), cfg.getName(), mapper.writeValueAsString(cfg));
+        } catch (Exception e) {
+            throw new IllegalStateException("项目配置写入数据库失败：" + describe(e), e);
+        }
+    }
+
+    /** 删除一个项目的配置。同样失败即抛 —— 理由同 {@link #save} */
+    public void delete(String id) {
+        try {
+            jdbc.update("DELETE FROM project WHERE id = ?", id);
+        } catch (Exception e) {
+            throw new IllegalStateException("项目配置删除失败：" + describe(e), e);
+        }
+    }
+
     /** 一个项目的配置坏了不该连累其余项目：点名跳过它，而不是整个平台起不来 */
     private ProjectConfig parse(String id, String json) {
         try {

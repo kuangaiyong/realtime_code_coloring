@@ -2,9 +2,11 @@ package com.rtcc.platform.web;
 
 import com.rtcc.platform.service.GateUndecidableException;
 import com.rtcc.platform.service.IncrementalUnavailableException;
+import com.rtcc.platform.service.ProjectOperationException;
 import com.rtcc.platform.service.ScenarioConflictException;
 import com.rtcc.platform.service.ScenarioNotFoundException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -47,6 +49,15 @@ public class ApiExceptionHandler {
     @ResponseStatus(HttpStatus.NOT_FOUND)
     public Map<String, Object> onScenarioNotFound(ScenarioNotFoundException e) {
         return error(e);
+    }
+
+    /**
+     * 项目的增删改做不了。状态码由异常自己带 ——「你填错了」（400）、「现在不能做」（409）、
+     * 「平台自己的依赖挂了」（503）三件事页面上的处置完全不同，混成一个码就得去猜。
+     */
+    @ExceptionHandler(ProjectOperationException.class)
+    public ResponseEntity<Map<String, Object>> onProjectOperation(ProjectOperationException e) {
+        return ResponseEntity.status(e.status()).body(error(e));
     }
 
     private Map<String, Object> error(Exception e) {

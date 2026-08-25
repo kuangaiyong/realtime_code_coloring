@@ -13,3 +13,6 @@ target/
 
 # CodeGraph 的本地索引，随代码重建即可，不入库
 .codegraph/
+
+# E2E 脚本用 py_compile 做语法检查时留下的字节码
+__pycache__/
