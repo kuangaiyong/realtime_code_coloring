@@ -74,6 +74,9 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
                         'id="instBox"', 'id="rankBox"', 'data-rank="ratio"', 'data-rank="missed"',
                         'id="trendBox"', 'id="trendMeta"', 'id="btnPerInst"',
                         'id="gateBox"', 'id="gateMeta"',
+                        'data-view="onboard"', 'id="viewOnboard"', 'id="langTabs"',
+                        'id="obPane"', 'id="obCheckBox"', 'id="obCheckMeta"',
+                        'data-lang="java"', 'data-lang="go"', 'data-lang="cpp"', 'data-lang="rust"',
                         'data-trend="session"', 'data-trend="build"']) {
     if (!html.includes(marker)) fail(`看板视图缺少钩子: ${marker}`);
   }
@@ -91,6 +94,13 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
       if (!(k in i)) fail(`实例 ${i.endpoint} 缺少字段 ${k}`);
     }
     if (!/^(java|go|cpp|rust):\/\//.test(i.endpoint)) fail(`看板按 endpoint 前缀判定语言，但取到 ${i.endpoint}`);
+    // 接入向导要把这个端口填进它给出的启动命令里。解析不出来的话命令是错的，
+    // 而照着错命令起的服务连不上，人只会以为是自己配错了
+    const hp = String(i.endpoint).split('://')[1] || '';
+    const at = hp.lastIndexOf(':');
+    if (at <= 0 || !/^\d+$/.test(hp.substring(at + 1))) {
+      fail(`接入向导要从 ${i.endpoint} 里取出 host:port 填进启动命令，但解析不出端口`);
+    }
   }
   console.log(`  [PASS] 实例表字段齐备，${dash.instances.length} 个实例的语言前缀均可识别`);
 

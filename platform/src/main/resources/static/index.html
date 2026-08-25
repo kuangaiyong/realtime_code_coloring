@@ -159,6 +159,42 @@
   .gate-ci { padding: 0 18px 15px; font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.7; }
   .gate-ci code { font-family: var(--mono); background: var(--el-fill-color-light); padding: 1px 5px; border-radius: 4px; word-break: break-all; }
 
+  #viewOnboard { padding: 14px; display: grid; gap: 14px; }
+  .steps { display: flex; flex-wrap: wrap; gap: 8px 4px; padding: 16px 18px 4px; }
+  .steps .step { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--el-text-color-secondary); }
+  .steps .step::after { content: ''; width: 26px; height: 1px; background: var(--el-border-color); margin: 0 8px; }
+  .steps .step:last-child::after { display: none; }
+  .steps .num { width: 20px; height: 20px; flex: none; border-radius: 50%; border: 1px solid var(--el-border-color);
+                display: flex; align-items: center; justify-content: center; font-size: 12px; font-family: var(--mono); }
+  /* 四步里只有最后一步是平台能自己判定的，前三步在被测方那边做完平台无从得知，
+     所以不做「已完成」态 —— 打勾会变成一句没有依据的断言 */
+  .steps .step.live { color: var(--el-color-primary); }
+  .steps .step.live .num { border-color: var(--el-color-primary); color: var(--el-color-primary); }
+
+  .lang-tabs { display: flex; gap: 4px; padding: 10px 18px 0; flex-wrap: wrap; }
+  .lang-tabs button { height: 28px; padding: 0 13px; font-size: 13px; border: 1px solid var(--el-border-color-lighter);
+                      background: var(--el-bg-color); border-radius: var(--radius); }
+  .lang-tabs button.on { border-color: var(--el-color-primary); color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
+
+  .ob { padding: 14px 18px 18px; font-size: 13px; line-height: 1.75; color: var(--el-text-color-regular); }
+  .ob h3 { font-size: 13px; margin: 18px 0 6px; color: var(--el-text-color-primary); font-weight: 600; }
+  .ob h3:first-child { margin-top: 0; }
+  .ob ul { margin: 4px 0; padding-left: 20px; }
+  .ob code { font-family: var(--mono); background: var(--el-fill-color-light); padding: 1px 5px; border-radius: 4px; }
+  .snip-wrap { position: relative; }
+  .snip-wrap .copy { position: absolute; top: 14px; right: 10px; height: 24px; padding: 0 9px; font-size: 12px;
+                     background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius); }
+  .snippet { margin: 8px 0 0; padding: 12px 14px; background: var(--el-fill-color-light);
+             border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius);
+             font-family: var(--mono); font-size: 12px; line-height: 1.85; white-space: pre; overflow-x: auto;
+             color: var(--el-text-color-primary); }
+  .snippet .cm { color: var(--el-text-color-secondary); }
+  .snippet .val { color: var(--el-color-primary); }
+  .note { margin: 0 0 12px; padding: 10px 14px; border-radius: var(--radius); font-size: 13px; line-height: 1.75; }
+  .note.info { background: var(--el-color-primary-light-9); color: var(--el-text-color-regular); }
+  .note.risk { background: var(--el-color-warning-light-9); color: var(--el-text-color-regular); }
+  .note b { color: var(--el-text-color-primary); }
+
   /* 表格比容器宽时必须自己横向滚动：.card 是 overflow:hidden，
      不给滚动容器的话右边几列会被直接裁掉 —— 既看不见，也没法滚过去看 */
   .tbl-wrap { overflow-x: auto; }
@@ -219,6 +255,7 @@
 <div class="tabs">
   <button data-view="color" class="on">代码染色</button>
   <button data-view="dash">总览看板</button>
+  <button data-view="onboard">服务接入</button>
 </div>
 
 <div id="banner"></div>
@@ -289,6 +326,36 @@
   </div>
 </section>
 
+<section id="viewOnboard" style="display:none">
+  <div class="card">
+    <div class="card-head">
+      <h2>接入向导</h2>
+      <span class="sub">源码零改动，只调启动参数或构建参数</span>
+    </div>
+    <div class="steps">
+      <div class="step"><span class="num">1</span>选择语言</div>
+      <div class="step"><span class="num">2</span>改启动 / 构建参数</div>
+      <div class="step"><span class="num">3</span>重启被测服务</div>
+      <div class="step live"><span class="num">4</span>回这一页看探针连上没有</div>
+    </div>
+    <div class="lang-tabs" id="langTabs">
+      <button data-lang="java" class="on">Java</button>
+      <button data-lang="go">Go</button>
+      <button data-lang="cpp">C++</button>
+      <button data-lang="rust">Rust</button>
+    </div>
+    <div class="ob" id="obPane"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>接入自检</h2>
+      <span class="sub" id="obCheckMeta"></span>
+    </div>
+    <div id="obCheckBox"><div class="empty">等待采集…</div></div>
+  </div>
+</section>
+
 <script>
   let current = null;
   let prevStatus = {};
@@ -350,6 +417,9 @@
     // 门禁结论比其它数字更像「结论」，留着上一次的会被直接拿去决定合不合并
     document.getElementById('gateMeta').textContent = '';
     document.getElementById('gateBox').innerHTML = '<div class="empty">—</div>';
+    // 接入自检表故意不清：触发本函数的典型原因就是增量返回 409（某台实例脏了、
+    // 或实例间版本不一致），而这张表正是唯一能点名「是哪一台」的地方。
+    // 探针连没连上与增量算不算得出来是两件事，清掉等于把诊断信息一起收走
   }
 
   async function loadSummary() {
@@ -459,6 +529,7 @@
     // 看板与染色共用这一份 summary，不另发请求：多取一次不只是浪费，
     // 两份数据还可能来自不同轮采集，两个视图的数字就会对不上
     renderDash(d);
+    renderOnboard(d);
     // 不 await：门禁要跑一次 git diff，让它挡在染色前面会拖慢整屏刷新
     loadGate();
 
@@ -663,6 +734,7 @@
     document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
     document.getElementById('viewColor').style.display = view === 'color' ? '' : 'none';
     document.getElementById('viewDash').style.display = view === 'dash' ? '' : 'none';
+    document.getElementById('viewOnboard').style.display = view === 'onboard' ? '' : 'none';
   }
 
   async function openFile(path) {
@@ -785,6 +857,294 @@
       btn.disabled = false;
     }
   });
+
+  // 同事多半是从 http://内网IP:18090 打开这个平台的，而非 localhost 的 http 源上
+  // navigator.clipboard 压根不存在 —— 只用它的话，复制按钮对多数人是废的。
+  // 所以退回 execCommand：它早已废弃，但不挑安全上下文，正是这里需要的
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) { /* 落到下面的兜底 */ }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+    document.body.appendChild(ta);
+    ta.select();
+    let done = false;
+    try { done = document.execCommand('copy'); } catch (e) { done = false; }
+    document.body.removeChild(ta);
+    return done;
+  }
+
+  // ---------- 服务接入向导 ----------
+  // 向导的价值不在于复述文档，而在于命令里的端口就是本平台实际配置的那个，
+  // 以及最后一步「连上没有」由平台自己回答。所以正文按 summary 里的 instances 现算，
+  // 不写死任何端口
+  const OB = {
+    java: {
+      name: 'Java', port: 6300,
+      note: ['info', '<b>无需重新编译，也无需改动源码。</b>JaCoCo 在类加载时做字节码插桩。' +
+        '但探针必须随 JVM 一起启动 —— JaCoCo 官方明确不支持对已运行的进程动态挂载' +
+        '（插桩会给类添加静态字段，违反 JVM 类重定义的约束）。'],
+      cmd: hp => [
+        ['cm', '# 工作树脏时必须带 -dirty：少了它，实例会自报一个干净的 commit，'],
+        ['cm', '# 平台的版本一致性校验被绕过，算出来的是一份行号错位却看不出异常的增量报告'],
+        ['', 'BUILD_ID=$(git rev-parse HEAD)$(git status --porcelain | grep -q . && echo -dirty)'],
+        ['', ''],
+        ['cm', '# includes 只填你自己的包，范围越小开销越小'],
+        ['cm', '# sessionid 是实例自报的构建版本，不配它增量口径不可用'],
+        ['cm', '# 参数串不折行：中间断开会被 shell 当成两条命令'],
+        ['', 'java -javaagent:/path/to/jacocoagent.jar=includes=com.example.*,output=tcpserver,' +
+             '@@address=' + hp.host + ',port=' + hp.port + '@@,sessionid=$BUILD_ID' +
+             ' -jar your-service.jar']
+      ],
+      cfg: [
+        ['coverage.classes-dir', '被测服务的 .class 产物。缺了它解不出任何行号'],
+        ['coverage.java-source-root', '源码根，用于渲染染色视图']
+      ],
+      tips: []
+    },
+    go: {
+      name: 'Go', port: 6400,
+      note: ['risk', '<b>必须带插桩重新编译一次，但业务源码一行不改。</b>' +
+        'Go 编译为原生机器码，运行期没有可改写的中间表示。探针 <code>coverage_agent.go</code> 与 main 同包、' +
+        '由 build tag 守卫，<code>init()</code> 自动执行；不带 tag 的生产构建里它根本不参与编译。'],
+      cmd: hp => [
+        ['cm', '# 工作树脏时必须带 -dirty：少了它，实例会自报一个干净的 commit，'],
+        ['cm', '# 平台的版本一致性校验被绕过，算出来的是一份行号错位却看不出异常的增量报告'],
+        ['', 'BUILD_ID=$(git rev-parse HEAD)$(git status --porcelain | grep -q . && echo -dirty)'],
+        ['', ''],
+        ['cm', '# -covermode=atomic 是硬要求：场景清零用的 ClearCounters() 只在 atomic 模式下可用'],
+        ['', 'go build -cover -covermode=atomic -tags=goverage -o your-service .'],
+        ['', ''],
+        ['cm', '# COVERAGE_ADDR 默认只绑回环。写成 :' + hp.port + ' 会绑到所有网卡，'],
+        ['cm', '# 而 /coverage/clear 能清零计数器 —— 等于把正在录的场景交给同网段任何人随手作废'],
+        ['', 'COVERAGE_ADDR=@@' + hp.host + ':' + hp.port + '@@ COVERAGE_BUILD_ID=$BUILD_ID ./your-service']
+      ],
+      cfg: [
+        ['coverage.go-source-root', 'Go 源码根'],
+        ['coverage.go-module-path', 'go.mod 里的 module 路径，用于把 profile 的包名映射回文件'],
+        ['coverage.go-tool', '平台自己要调 <code>go tool covdata textfmt</code> 做归一化，默认取 PATH']
+      ],
+      tips: ['Go 是块模型而非探针模型：块尾的 <code>}</code> 与块内注释会计入行数，' +
+        '同一份代码的行数分母比 Java 口径略大。空行已剔除，不会挤进增量分母。']
+    },
+    cpp: {
+      name: 'C++', port: 6500,
+      note: ['risk', '<b>必须重新编译；业务源码同样一行不改。</b>' +
+        '探针 <code>coverage_agent.cpp</code> 是独立编译单元，靠全局对象的构造函数（早于 main 执行）自动启动，' +
+        '业务代码不 include 也不调用它任何东西。不依赖 LD_PRELOAD，也不用 SIGUSR1，Windows 上同样可用。'],
+      cmd: hp => [
+        ['cm', '# 工作树脏时必须带 -dirty：少了它，实例会自报一个干净的 commit，'],
+        ['cm', '# 平台的版本一致性校验被绕过，算出来的是一份行号错位却看不出异常的增量报告'],
+        ['', 'BUILD_ID=$(git rev-parse HEAD)$(git status --porcelain | grep -q . && echo -dirty)'],
+        ['', ''],
+        ['cm', '# 业务代码插桩、探针不插桩。编译的工作目录必须是源码根（.gcno 记的是相对源码名），'],
+        ['cm', '# 对象文件必须用绝对路径 —— .gcda 的落点是编译期写死进产物的'],
+        ['', 'g++ -std=c++17 --coverage -c order.cpp -o /build/obj/order.o'],
+        ['', 'g++ -std=c++17            -c coverage_agent.cpp -o /build/obj/coverage_agent.o'],
+        ['cm', '# 探针要开 socket：Windows 上需显式链 -lws2_32，Linux 上不用'],
+        ['', 'g++ -o your-service /build/obj/*.o --coverage -lws2_32'],
+        ['', ''],
+        ['cm', '# GCOV_PREFIX 每实例一个目录，否则两个实例往同一个 .gcda 互相覆盖，'],
+        ['cm', '# 聚合出来的是「最后写的那一份」'],
+        ['', 'GCOV_PREFIX=/var/cover/svc-1 GCOV_PREFIX_STRIP=99 COVERAGE_DATA_DIR=/var/cover/svc-1 \\'],
+        ['', '  COVERAGE_ADDR=@@' + hp.host + ':' + hp.port + '@@ COVERAGE_BUILD_ID=$BUILD_ID ./your-service']
+      ],
+      cfg: [
+        ['coverage.cpp-objects-dir', '.gcno 所在目录（编译期产物）。相当于 Java 的 classes-dir，缺了它解不出行号'],
+        ['coverage.cpp-source-root', '源码根，平台侧的 gcov 要在这个目录下才找得到源码'],
+        ['coverage.gcov-tool / gcov-merge-tool', '平台要调 <code>gcov -t -r</code> 与 <code>gcov-tool merge</code>，默认取 PATH']
+      ],
+      tips: ['<code>GCOV_PREFIX_STRIP=99</code> 把目录层级剥光，不同目录下的同名 .cpp 会撞车。' +
+        '接大型工程时要改成保留目录结构，并相应改 <code>gcov -o</code> 的调用方式。']
+    },
+    rust: {
+      name: 'Rust', port: 6600,
+      note: ['risk', '<b>必须重新编译；源码零改动做得比 Go / C++ 还彻底 —— 连 Cargo.toml 都不用动。</b>' +
+        '探针是单独用 gcc 编译的 <code>.o</code>，构建时经 <code>-C link-arg</code> 注入，' +
+        '靠 <code>.CRT$XCU</code> 段里的函数指针在 main 之前自动执行。既没走连续同步模式（%c），也没引入 minicov 依赖。'],
+      cmd: hp => [
+        ['cm', '# 工作树脏时必须带 -dirty：少了它，实例会自报一个干净的 commit，'],
+        ['cm', '# 平台的版本一致性校验被绕过，算出来的是一份行号错位却看不出异常的增量报告'],
+        ['', 'BUILD_ID=$(git rev-parse HEAD)$(git status --porcelain | grep -q . && echo -dirty)'],
+        ['', ''],
+        ['cm', '# 探针单独编成 .o 经 link-arg 注入；Cargo.toml 一行不动'],
+        ['', 'gcc -c coverage_agent.c -o /build/obj/coverage_agent.o -mno-stack-arg-probe -O1'],
+        ['cm', '# Windows 必须编成 msvc 目标（gnu 目标上 -C instrument-coverage 直接 E0463），'],
+        ['cm', '# 因此还要 -L native= 指向 xwin 拉来的 CRT/SDK 导入库并换用 lld-link。'],
+        ['cm', '# Linux 上把 --target 与 -L / -C linker 那几项去掉即可，其余不变'],
+        ['', 'RUSTFLAGS="-C instrument-coverage -C link-arg=/build/obj/coverage_agent.o \\'],
+        ['', '  -C link-arg=ws2_32.lib \\'],
+        ['', '  -L native=<xwin>/crt/lib/x86_64 -L native=<xwin>/sdk/lib/um/x86_64 \\'],
+        ['', '  -L native=<xwin>/sdk/lib/ucrt/x86_64 \\'],
+        ['', '  -C linker=<toolchain>/lib/rustlib/x86_64-pc-windows-gnu/bin/rust-lld.exe \\'],
+        ['', '  -C linker-flavor=lld-link" \\'],
+        ['', '  cargo build --release --target x86_64-pc-windows-msvc'],
+        ['', ''],
+        ['cm', '# LLVM_PROFILE_FILE 每实例一个文件，且必须是字面路径 —— %p / %m 之类的模式由 LLVM 展开，'],
+        ['cm', '# 探针按同一个字符串删不掉旧文件，交回的就成了历次累计的叠加，界面上看不出异样'],
+        ['', 'LLVM_PROFILE_FILE=/var/cover/svc-1.profraw \\'],
+        ['', '  COVERAGE_ADDR=@@' + hp.host + ':' + hp.port + '@@ COVERAGE_BUILD_ID=$BUILD_ID ./target/release/your-service']
+      ],
+      cfg: [
+        ['coverage.rust-binary', '指向产物本身 —— 行号信息在它自带的 coverage mapping 里'],
+        ['coverage.rust-source-root', 'Rust 源码根'],
+        ['coverage.llvm-profdata-tool / llvm-cov-tool', '版本必须与 rustc 匹配，' +
+          '系统上随便一个 LLVM 往往对不上，会以「不认识的 profraw 版本」失败。取 rustup 的 llvm-tools 组件最稳']
+      ],
+      tips: ['Windows 上必须编成 <code>x86_64-pc-windows-msvc</code>：官方只给 msvc 目标发 profiler_builtins，' +
+        'gnu 目标上 <code>-C instrument-coverage</code> 直接 E0463。',
+        'Rust 是三态（无 PARTIAL）：<code>llvm-cov export</code> 不输出 BRDA 分支记录。']
+    }
+  };
+
+  let obLang = 'java';
+  // 只在实例列表真的有内容时才更新。场景快照与配置报错时 instances 是空的，
+  // 那不代表「没配这门语言」—— 跟着清空的话，向导会把真实端口换成默认端口，
+  // 照抄下去连不上，而页面上看不出任何异样
+  let lastLiveInstances = [];
+  // 命令块只跟语言和端点有关。每次 WS 推送都重建的话，
+  // 用户正在选中的命令文本、横向滚动位置、以及「已复制」提示会被一起抹掉
+  let obPaneKey = null;
+
+  /** 从最近一份非空实例列表里挑出该语言实际配置的地址，没有就给个占位 */
+  function obEndpoints(lang) {
+    return lastLiveInstances
+      .filter(i => String(i.endpoint).split('://')[0] === lang)
+      .map(i => {
+        const hp = String(i.endpoint).split('://')[1] || '';
+        const at = hp.lastIndexOf(':');
+        return { host: hp.substring(0, at), port: hp.substring(at + 1), status: i.status };
+      });
+  }
+
+  function renderObPane() {
+    const o = OB[obLang];
+    const eps = obEndpoints(obLang);
+    const key = obLang + '|' + eps.map(e => e.host + ':' + e.port).join(',');
+    if (key === obPaneKey) return;
+    obPaneKey = key;
+    // 端口取本平台实际配置的那个。没配这门语言时用默认端口，并说明这是默认值，
+    // 免得照抄之后发现平台根本没在听这个端口
+    const hp = eps.length ? eps[0] : { host: '127.0.0.1', port: String(o.port) };
+
+    let html = '<div class="note ' + o.note[0] + '">' + o.note[1] + '</div>';
+
+    html += '<h3>1 · 改启动 / 构建参数</h3>';
+    const raw = o.cmd(hp).map(([, t]) => t.replace(/@@/g, '')).join('\n');
+    html += '<div class="snip-wrap"><button class="copy" data-copy="1">复制</button><pre class="snippet">' +
+      o.cmd(hp).map(([cls, t]) => {
+        const parts = esc(t).split('@@');
+        // 奇数段是从平台配置里取出来的实际值，标出来让人知道哪里是真的、哪里是占位
+        const body = parts.map((x, n) => n % 2 ? '<span class="val">' + x + '</span>' : x).join('');
+        return cls ? '<span class="' + cls + '">' + body + '</span>' : body;
+      }).join('\n') + '</pre></div>';
+    html += '<div style="font-size:12px;color:var(--el-text-color-secondary);margin-top:6px">' +
+      (eps.length
+        ? '蓝色部分取自本平台的 <code>coverage.instances</code> 配置，是实际在监听的地址。' +
+          (eps.length > 1 ? '本平台还配了 ' + esc(eps.slice(1).map(e => e.host + ':' + e.port).join('、')) +
+            '，第二个实例把地址换成它。' : '')
+        : '本平台目前没有配置 ' + o.name + ' 实例，上面用的是默认端口。' +
+          '实际接入时端口由你定，填进平台配置即可。') + '</div>';
+
+    html += '<h3>2 · 把地址填进平台配置</h3>';
+    html += '<div class="note info">平台<b>没有注册中心</b>，实例不会自己上报 —— 地址写在平台的 ' +
+      '<code>coverage.instances</code> 里，<b>改完要重启平台</b>。' +
+      '不写语言前缀默认按 <code>java</code> 解析。</div>';
+    html += '<div class="snip-wrap"><pre class="snippet">' +
+      esc('coverage:\n  instances:\n    - "' + (obLang === 'java' ? '' : obLang + '://') +
+        hp.host + ':' + hp.port + '"') + '</pre></div>';
+    html += '<h3>3 · 平台侧还要配这几项</h3><ul>' +
+      o.cfg.map(([k, v]) => '<li><code>' + k + '</code> —— ' + v + '</li>').join('') + '</ul>';
+
+    html += '<h3>4 · 这门语言特有的坑</h3><ul>' +
+      (o.tips.length ? o.tips.map(t => '<li>' + t + '</li>').join('')
+        : '<li>没有额外的坑 —— Java 是四种语言里唯一产物也不用动的。</li>') +
+      '<li><b>各实例的构建版本必须完全一致（含 <code>-dirty</code> 后缀）。</b>' +
+      'commit 相同但一台脏一台净，加载的是两份不同的字节码，平台会判为版本冲突并拒绝出增量报告。' +
+      '脏标记要按全部被测源码根一起判定，各语言各算各的会把人引去核对版本。</li>' +
+      '<li><b>探针端口没有任何鉴权。</b>只绑内网地址，靠网络策略限制来源；本平台只面向测试环境。</li>' +
+      '</ul>';
+
+    const pane = document.getElementById('obPane');
+    pane.innerHTML = html;
+    const btn = pane.querySelector('.copy');
+    if (btn) {
+      btn.addEventListener('click', async () => {
+        btn.textContent = await copyText(raw) ? '已复制' : '复制失败，请手动选中';
+        setTimeout(() => { btn.textContent = '复制'; }, 1600);
+      });
+    }
+  }
+
+  const OB_HINT = {
+    java: '确认启动参数带了 <code>-javaagent:...=output=tcpserver</code> 且端口一致，探针随 JVM 启动、不能事后挂载',
+    go: '确认服务是用 <code>-cover -covermode=atomic -tags=goverage</code> 重新编译并重启过的',
+    cpp: '确认服务是用 <code>--coverage</code> 重新编译、且链接了 coverage_agent 的那个产物',
+    rust: '确认服务是用 <code>-C instrument-coverage</code> 重新编译、且注入了探针 .o 的那个产物'
+  };
+
+  function renderOnboard(d) {
+    const inst = d.instances || [];
+    if (inst.length) lastLiveInstances = inst;
+    renderObPane();
+
+    const box = document.getElementById('obCheckBox');
+    document.getElementById('obCheckMeta').textContent =
+      inst.length ? inst.filter(i => i.status === 'CONNECTED').length + '/' + inst.length + ' 已连上' : '';
+    if (!inst.length) {
+      box.innerHTML = d.probeStatus === 'CONFIG_ERROR'
+        ? '<div class="warn" style="margin:14px">平台配置有误，实例一个都没解析出来：<br>' +
+          '<span class="mono">' + esc(d.lastError || '（平台未给出原因）') + '</span></div>'
+        : '<div class="empty">' +
+          (d.probeStatus === 'ARCHIVED' ? '场景快照不含实例信息（数据已定格）'
+            : '平台的 coverage.instances 里没有配置任何实例') + '</div>';
+      return;
+    }
+    // 版本不一致要单独说：它不是「没连上」，恰恰是全连上了才会出现，
+    // 而后果比掉一台更严重 —— 聚合会静默丢弃对不上的那部分
+    const banner = d.versionError
+      ? '<div class="warn" style="margin:14px 14px 0">' + esc(d.versionError) + '</div>' : '';
+    box.innerHTML = banner + '<div class="tbl-wrap"><table class="tbl"><thead><tr>' +
+      '<th>探针地址</th><th>语言</th><th>接上没有</th><th>自报构建版本</th><th>下一步</th>' +
+      '</tr></thead><tbody>' + inst.map(i => {
+        const lang = String(i.endpoint).split('://')[0];
+        const on = i.status === 'CONNECTED';
+        const sha = i.buildCommit ? i.buildCommit.substring(0, 8) : '—';
+        let todo;
+        if (!on) {
+          todo = '没连上（' + esc(i.status) + '）。' + (OB_HINT[lang] || '') +
+            (i.error ? '<br><span class="mono">' + esc(i.error) + '</span>' : '');
+        } else if (!i.buildCommit) {
+          todo = '已接入，但没上报构建版本 —— 补上 ' +
+            (lang === 'java' ? '<code>sessionid</code>' : '<code>COVERAGE_BUILD_ID</code>') +
+            '，否则增量口径不可用';
+        } else if (i.dirty) {
+          todo = '已接入，但被测源码有未提交的改动（<code>-dirty</code>）。' +
+            '产物对不上任何一个提交，平台会拒绝出增量报告 —— 提交后重新构建并重启';
+        } else {
+          todo = '<span style="color:var(--el-color-success)">已接入，无需再做什么</span>';
+        }
+        return '<tr>' +
+          '<td class="mono">' + esc(i.endpoint) + '</td>' +
+          '<td>' + esc(LANG[lang] || lang) + '</td>' +
+          '<td><span class="tag ' + (on ? 'ok' : 'err') + '">' + (on ? '已连上' : '未连上') + '</span></td>' +
+          '<td class="mono">' + esc(sha) + (i.dirty ? ' <span class="tag err">dirty</span>' : '') + '</td>' +
+          '<td>' + todo + '</td>' +
+          '</tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  document.querySelectorAll('#langTabs button').forEach(b =>
+    b.addEventListener('click', () => {
+      obLang = b.dataset.lang;
+      document.querySelectorAll('#langTabs button').forEach(x => x.classList.toggle('on', x.dataset.lang === obLang));
+      renderObPane();
+    }));
 
   document.querySelectorAll('.tabs button').forEach(b =>
     b.addEventListener('click', () => switchView(b.dataset.view)));
