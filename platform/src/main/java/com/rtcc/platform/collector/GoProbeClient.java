@@ -1,7 +1,6 @@
 package com.rtcc.platform.collector;
 
 import com.rtcc.platform.config.ProjectConfig;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.net.URI;
@@ -19,7 +18,6 @@ import java.time.Duration;
  * 但「既有源码一行不改」仍然做得到：探针文件用 build tag 守卫、与 main 同包，
  * init() 自动执行，业务代码不需要 import 或调用任何东西。
  */
-@Component
 public class GoProbeClient {
 
     private final ProjectConfig props;

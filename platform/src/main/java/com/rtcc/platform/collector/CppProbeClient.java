@@ -1,7 +1,6 @@
 package com.rtcc.platform.collector;
 
 import com.rtcc.platform.config.ProjectConfig;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.net.URI;
@@ -22,7 +21,6 @@ import java.time.Duration;
  * 而不是交给一个 writer。所以探针要先落盘，再把文件读出来带上文件名交回，
  * 一个 C++ 服务通常有多个编译单元，就有多份 .gcda。
  */
-@Component
 public class CppProbeClient {
 
     private final ProjectConfig props;

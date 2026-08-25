@@ -5,7 +5,6 @@ import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.model.FileCoverage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -28,7 +27,6 @@ import java.util.regex.Pattern;
  * 探针交回的字节流格式（大端）：重复 { u32 名字长度 | 名字 | u32 内容长度 | 内容 }。
  * 一个 C++ 服务通常有多个编译单元，就有多份 .gcda，所以要带文件名传多份。
  */
-@Component
 public class CppCoverageAnalyzer {
 
     private static final Logger log = LoggerFactory.getLogger(CppCoverageAnalyzer.class);

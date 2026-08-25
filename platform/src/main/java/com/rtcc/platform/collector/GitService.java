@@ -1,7 +1,6 @@
 package com.rtcc.platform.collector;
 
 import com.rtcc.platform.config.ProjectConfig;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -16,7 +15,6 @@ import java.util.regex.Pattern;
  * 对外暴露的路径一律是「相对源码根目录」的形式（如 com/shop/order/Foo.java），
  * 与覆盖率数据的 key 保持一致，调用方不必关心仓库里的实际布局。
  */
-@Component
 public class GitService {
 
     /** 只允许常规 ref 字面量，把用户输入挡在被 git 当作选项解析的可能性之外 */

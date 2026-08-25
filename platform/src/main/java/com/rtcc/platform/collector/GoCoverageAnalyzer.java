@@ -5,7 +5,6 @@ import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.model.FileCoverage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -24,7 +23,6 @@ import java.util.regex.Pattern;
  *
  * profile 每行形如：{@code 导入路径/文件.go:起行.起列,止行.止列 语句数 执行次数}
  */
-@Component
 public class GoCoverageAnalyzer {
 
     private static final Logger log = LoggerFactory.getLogger(GoCoverageAnalyzer.class);

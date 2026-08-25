@@ -1,7 +1,6 @@
 package com.rtcc.platform.collector;
 
 import com.rtcc.platform.config.ProjectConfig;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.net.URI;
@@ -21,7 +20,6 @@ import java.time.Duration;
  * 交回的是一份 .profraw（LLVM 的原始计数器快照），一个进程一份，
  * 比 C++ 的多份 .gcda 简单。
  */
-@Component
 public class RustProbeClient {
 
     private final ProjectConfig props;
