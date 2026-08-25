@@ -285,6 +285,17 @@ def main():
     # ---- 按实例分别归一化（实例对比视图的数据源） ----
     print()
     print("  >> 各实例分别归一化：GET /api/coverage/instances")
+    # 先让两台都跑一遍同一个接口，制造出必然存在的共享行。
+    # 下面「聚合 ≠ 相加」的前提是两台有共同覆盖到的行，而此刻实例 #2 刚重启完、
+    # 计数器从零开始，与实例 #1 的覆盖本就可能毫无交集 —— 前提不成立时这条断言会随机
+    # 失败，报出来的却是「并集语义不对」，把人引向一个根本不存在的聚合 bug
+    http(f"{DEMO1}/api/order/query?bizNo=A1002")
+    http(f"{DEMO2}/api/order/query?bizNo=A1002")
+    # 等轮询把这两次调用并进聚合快照、数据不再变动：/summary 给的是 3 秒轮询留下的快照，
+    # /instances 却是实时重新拉一遍探针。数据还在变的时候取这两个数去比，
+    # 比的是两个不同时刻的状态，结论时对时错
+    time.sleep(8)
+
     agg_before = sum(f["coveredLines"] for f in must(*summary(), what="summary")["files"])
     st, per = http(f"{PLATFORM}/api/coverage/instances")
     if st != 200:
