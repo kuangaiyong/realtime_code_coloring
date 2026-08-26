@@ -17,27 +17,34 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>客户端上唯一跟项目走的配置是<b>连接超时</b>（请求整体超时是逐个请求设的，
  * 见各客户端的 {@code HttpRequest.timeout()}），所以按它做键就够了。
- * 键先归到 100ms 一档：超时值可以来自 {@code /check} 的请求体，取值空间无界，
- * 不归档的话这个池本身就成了泄漏源 —— 归档之后条目数被 {@link #MAX_BUCKET} 钉死。
+ * 键归到 1s 一档、最多 10 档：超时值可以来自 {@code /check} 的请求体，取值空间无界，
+ * 不归档的话这个池本身就成了泄漏源。
  */
 final class SharedHttpClients {
 
-    /** 连接超时最长按 30s 算，再长也没有意义：探针不通就是不通 */
-    private static final int MAX_BUCKET = 300;
+    /**
+     * 归档粒度 1s、最多 10 档，也就是连接超时上限 10s。
+     *
+     * <p>粒度和上限都要收紧：每个 {@code HttpClient} 自带一个 selector 线程和一个执行器，
+     * 而桶键来自项目配置里的 {@code timeoutMs}，取值空间大就等于把「无界泄漏」换成
+     * 「上界很大的泄漏」。10s 之外没有实际意义 —— TCP 连不上探针，等再久也是连不上。
+     */
+    private static final int BUCKET_MS = 1000;
+    private static final int MAX_BUCKET = 10;
 
     private static final Map<Integer, HttpClient> CACHE = new ConcurrentHashMap<>();
 
     private SharedHttpClients() {
     }
 
-    /** 取一个连接超时不短于 {@code timeoutMs} 的共享客户端。向上取整到 100ms 一档 */
+    /** 取一个共享客户端。连接超时向上取整到 1s 一档，上限 10s */
     static HttpClient forConnectTimeout(int timeoutMs) {
-        // 先钳再除：反过来写的话 timeoutMs 接近 Integer.MAX_VALUE 时 +99 会翻负，
-        // 最终落到最小的那一档 —— 配了个超大超时反而只等 100ms，而且一声不吭
-        int capped = Math.max(1, Math.min(MAX_BUCKET * 100, timeoutMs));
-        int bucket = (capped + 99) / 100;
+        // 先钳再除：反过来写的话 timeoutMs 接近 Integer.MAX_VALUE 时加上余数会翻负，
+        // 最终落到最小的那一档 —— 配了个超大超时反而只等 1s，而且一声不吭
+        int capped = Math.max(1, Math.min(MAX_BUCKET * BUCKET_MS, timeoutMs));
+        int bucket = (capped + BUCKET_MS - 1) / BUCKET_MS;
         return CACHE.computeIfAbsent(bucket, b -> HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(b * 100L))
+                .connectTimeout(Duration.ofMillis((long) b * BUCKET_MS))
                 .build());
     }
 }

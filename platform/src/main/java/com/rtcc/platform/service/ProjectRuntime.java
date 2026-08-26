@@ -156,14 +156,22 @@ public class ProjectRuntime {
                         "场景 " + active.id() + " 正在进行中，此时改配置会让该场景的归因跨两套配置。"
                                 + "请先结束场景（/api/scenario/stop）再保存");
             }
-            retired = true;
+            // 连 collectLock 一起拿：光置标记挡不住<b>已经在途</b>的那一轮采集 ——
+            // 它可能刚过了 doCollect 里的 retired 检查，等替换完成后才把<b>旧配置</b>
+            // 算出的结果顶着同一个项目 id 推给页面、写进趋势表，正是这个标记要防的事。
+            // 顺序仍是 scenarioLock → collectLock，与本类声明的一致，不构成反向路径
+            synchronized (collectLock) {
+                retired = true;
+            }
         }
     }
 
     /** 无条件作废。删项目时用：整个项目都要没了，进行中的场景没有理由拦住这件事 */
     void retire() {
         synchronized (scenarioLock) {
-            retired = true;
+            synchronized (collectLock) {
+                retired = true;
+            }
         }
     }
 
@@ -248,6 +256,32 @@ public class ProjectRuntime {
         }
     }
 
+    /** 一种语言的归一化。四种互不相干，因此可以并行跑 */
+    @FunctionalInterface
+    private interface Analyze {
+        Map<String, FileCoverage> run() throws Exception;
+    }
+
+    /** 带上语言名，好让耗时能按语言分开看 —— 并行之后总耗时取的是最慢的那个 */
+    private record AnalyzeJob(String lang, Analyze job) {
+    }
+
+    /**
+     * 跑一个归一化任务，<b>异常原样带回</b>而不是抛出去。
+     * 抛出去会被线程池包一层，而 ANALYZE_ERROR 那句话必须是原话 ——
+     * 「gcov 找不到源码」和「classes-dir 指错了」要让人一眼看出改哪里。
+     */
+    private static Object runAnalyze(AnalyzeJob job) {
+        long t0 = System.nanoTime();
+        try {
+            return job.job().run();
+        } catch (Exception e) {
+            return e;
+        } finally {
+            log.debug("  归一化 {} 用了 {}ms", job.lang(), (System.nanoTime() - t0) / 1_000_000);
+        }
+    }
+
     private void doCollect() {
         List<ProbeEndpoint> endpoints;
         try {
@@ -320,24 +354,40 @@ public class ProjectRuntime {
         }
 
         try {
-            Map<String, FileCoverage> fresh = new LinkedHashMap<>();
+            long tAna0 = System.nanoTime();
+            // 四种语言的归一化互不相干：各自建临时目录，产出的文件路径也不相交。
+            // 而其中三种要拉起外部进程（covdata / gcov / llvm-cov），串行做等于把四条
+            // CPU 密集的管道排成一队 —— 机器上但凡有别的东西在跑，这一段就从 2s 涨到 5s+，
+            // 端到端染色延迟随之越过 5s 那条核心断言线（实测过 8/8 全超）
+            List<AnalyzeJob> jobs = new ArrayList<>(4);
             if (anyJava) {
                 File classesDir = new File(props.getClassesDir());
                 if (!classesDir.isDirectory()) {
-                    // 探针是好的，问题出在平台侧配置。混同为「探针未连接」会让人去查被测服务，方向完全错
+                    // 探针是好的，问题出在平台侧配置。混同为「探针未连接」会让人去查被测服务，方向完全错。
+                    // 这一项放在并行之外先判：它是纯粹的配置错，没必要陪着跑一轮外部工具
                     throw new IllegalStateException("classes-dir 不是有效目录：" + classesDir.getAbsolutePath());
                 }
-                fresh.putAll(analyzer.analyze(javaMerged, classesDir, props.getJavaSourceRoot()));
+                jobs.add(new AnalyzeJob("java", () -> analyzer.analyze(javaMerged, classesDir, props.getJavaSourceRoot())));
             }
-            long tAna0 = System.nanoTime();
             if (!goDumps.isEmpty()) {
-                fresh.putAll(goAnalyzer.analyze(goDumps));
+                jobs.add(new AnalyzeJob("go", () -> goAnalyzer.analyze(goDumps)));
             }
             if (!cppDumps.isEmpty()) {
-                fresh.putAll(cppAnalyzer.analyze(cppDumps));
+                jobs.add(new AnalyzeJob("cpp", () -> cppAnalyzer.analyze(cppDumps)));
             }
             if (!rustDumps.isEmpty()) {
-                fresh.putAll(rustAnalyzer.analyze(rustDumps));
+                jobs.add(new AnalyzeJob("rust", () -> rustAnalyzer.analyze(rustDumps)));
+            }
+            Map<String, FileCoverage> fresh = new LinkedHashMap<>();
+            for (Object r : ParallelFetch.map(jobs, ProjectRuntime::runAnalyze)) {
+                if (r instanceof Exception ex) {
+                    // 用 describe 当消息：外层 catch 也是用它造 ANALYZE_ERROR 的那句话，
+                    // 而那句话必须点名是哪项配置错了。直接包一层会把原话埋掉
+                    throw new IllegalStateException(describe(ex), ex);
+                }
+                @SuppressWarnings("unchecked")
+                Map<String, FileCoverage> part = (Map<String, FileCoverage>) r;
+                fresh.putAll(part);
             }
             // 留一行 debug：端到端染色延迟是核心功能的断言之一（≤5s），而它等于
             // 「轮询间隔 + 这两段」。下次它又逼近阈值时，先看这两个数字是哪一段在涨，

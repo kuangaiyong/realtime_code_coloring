@@ -71,7 +71,12 @@ public class ProjectRegistry {
                         cfg.getId(), cfg.getName(),
                         cfg.getInstances() == null ? 0 : cfg.getInstances().size());
             } catch (Exception e) {
-                log.error("项目 {} 装载失败，已跳过（其余项目不受影响）：{}", cfg.getId(), e.toString());
+                // 配置仍要放进 configs：不放的话这个项目在 API 眼里根本不存在，
+                // 而库里那一行还在 —— 改不了也删不掉，每次启动刷同一条 ERROR。
+                // 放进去之后 list 能看见它（运行时缺席），PUT 能把配置改对、DELETE 能删掉它
+                configs.put(cfg.getId(), cfg);
+                log.error("项目 {} 装载失败，采集不会进行；配置仍可在页面上修改或删除：{}",
+                        cfg.getId(), e.toString());
             }
         }
         // 不在这里退到「第一个装载成功的项目」：CI 的门禁打的就是不带项目参数的旧地址，
@@ -156,16 +161,21 @@ public class ProjectRegistry {
         cfg.setId(id);
         validate(cfg);
         synchronized (writeLock) {
-            ProjectRuntime old = runtimes.get(id);
-            if (old == null) {
+            // 认 configs 而不是 runtimes：装载失败的项目没有运行时，但配置还在，
+            // 而「把配置改对」正是它唯一的出路
+            if (!configs.containsKey(id)) {
                 throw ProjectOperationException.notFound("没有这个项目：" + id);
             }
+            ProjectRuntime old = runtimes.get(id);
             // 先把新的造出来：造不出来就整个作罢，旧实例原样留着继续服务
             ProjectRuntime fresh = build(cfg);
             // 在场景锁内原子地「确认没有进行中的场景」+「作废旧实例」。
             // 分两步做会有空档，正好在空档里开始的场景会挂在被丢弃的旧实例上
             try {
-                old.retireIfIdle();
+                // 装载失败的项目没有旧运行时可作废，也就没有场景冲突可言
+                if (old != null) {
+                    old.retireIfIdle();
+                }
             } catch (ScenarioConflictException e) {
                 throw ProjectOperationException.conflict(e.getMessage());
             }
@@ -176,10 +186,14 @@ public class ProjectRegistry {
                 // 不撤的话这个项目从此不采集、不推送，页面上只是「数字不动了」，
                 // 而清零 / 开场景全部回 409「配置刚刚更新，请重试」——
                 // 真实原因是数据库挂了，那句提示把人引向完全相反的方向
-                old.unretire();
+                if (old != null) {
+                    old.unretire();
+                }
                 throw e;
             }
-            fresh.adoptScenariosFrom(old);
+            if (old != null) {
+                fresh.adoptScenariosFrom(old);
+            }
             runtimes.put(id, fresh);
             configs.put(id, cfg);
         }
@@ -191,7 +205,8 @@ public class ProjectRegistry {
     /** 删除一个项目 */
     public void delete(String id) {
         synchronized (writeLock) {
-            if (!runtimes.containsKey(id)) {
+            // 同 update：装载失败的项目只在 configs 里，也必须删得掉
+            if (!configs.containsKey(id)) {
                 throw ProjectOperationException.notFound("没有这个项目：" + id);
             }
             // 默认项目是 /api/coverage/*、/api/scenario/*、/ws/coverage 落脚的地方，
@@ -212,7 +227,10 @@ public class ProjectRegistry {
             // 与 update 同一条原则：正在跑的那一轮采集完成后，仍会顶着这个已删除的
             // 项目 id 写趋势表、往订阅该 id 的会话推数据。从注册表里摘掉拦不住它，
             // 因为调度那一轮拿的是摘掉之前取到的实例引用
-            runtimes.get(id).retire();
+            ProjectRuntime rt = runtimes.get(id);
+            if (rt != null) {
+                rt.retire();
+            }
             runtimes.remove(id);
             configs.remove(id);
         }

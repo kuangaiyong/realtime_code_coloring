@@ -45,7 +45,9 @@ public class ProjectController {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", cfg.getId());
             m.put("name", cfg.getName());
-            m.put("instanceCount", cfg.getInstances().size());
+            // 同构造函数里的写法：库里出现一行 instances 为 null 的配置（手工改库、
+            // 或版本升级留下的），不兜住的话整张列表 500，而不是只有那一个项目异常
+            m.put("instanceCount", cfg.getInstances() == null ? 0 : cfg.getInstances().size());
             m.put("isDefault", cfg.getId().equals(registry.defaultId()));
             // 用 find 而不是 get：另一个请求恰好在这中间删掉某个项目时，
             // get 会抛 404，整张列表一个项目都列不出来

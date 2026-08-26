@@ -110,7 +110,10 @@ def paths_of(summary):
 
 
 def cleanup():
-    for pid in (P1, P2):
+    # 必须把本脚本建过的每一个项目都删掉，包括中途用完就删的那两个。
+    # 漏一个的话，脚本中途失败退出后残留在库里，下一次跑到那一步会撞 409，
+    # 报出来的却是「gate 为空时建项目返回 409」这种与被测功能无关的失败
+    for pid in (P1, P2, "gate-null-test", "db-down-test"):
         http(f"{PLATFORM}/api/projects/{pid}", method="DELETE")
 
 

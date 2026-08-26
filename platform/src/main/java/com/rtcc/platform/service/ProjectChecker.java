@@ -55,7 +55,17 @@ public class ProjectChecker {
         List<CheckItem> items = new ArrayList<>();
         checkRepo(cfg, items);
         checkPaths(cfg, items);
-        checkInstances(cfg, items);
+        // timeoutMs 必须先判，而且判不过就不能去连实例：
+        // ProbeClient 把它同时用作 socket.connect 与 setSoTimeout 的超时，而这两处
+        // 0 的语义都是「无限等待」—— 对着一个连不上的地址打一次这个接口，
+        // 这个 Tomcat 工作线程就再也不回来了，而向导页每点一次「当场验」就打一次
+        if (cfg.getTimeoutMs() <= 0) {
+            items.add(new CheckItem("timeoutMs", "探针读取超时", false,
+                    "必须大于 0，当前是 " + cfg.getTimeoutMs()
+                            + "；0 在 socket 层的语义是「无限等待」，探针不可达时这次检查永远不会返回"));
+        } else {
+            checkInstances(cfg, items);
+        }
 
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("ok", items.stream().allMatch(CheckItem::ok));
