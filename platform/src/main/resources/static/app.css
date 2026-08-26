@@ -1,0 +1,244 @@
+/*
+ * 布局与业务样式。
+ *
+ * Element Plus 负责组件（菜单、按钮、输入框、消息），这里只做两件它管不了的事：
+ * 一是整体的「侧边栏 + 内容区」骨架，二是染色视图、覆盖率曲线、门禁结论这些
+ * 本平台特有的呈现 —— 它们的每一条取舍都写在注释里，换 UI 框架也不该丢。
+ *
+ * 颜色一律走 Element Plus 的 CSS 变量（--el-*），因此深色模式跟着它走，
+ * 不必自己再维护一套。
+ */
+
+:root {
+  --radius: 4px;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --sans: "Helvetica Neue", Helvetica, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  --aside-w: 208px;
+  --topbar-h: 56px;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; font-family: var(--sans); font-size: 14px;
+  color: var(--el-text-color-regular); background: var(--el-bg-color-page);
+}
+
+/* vendor 没加载出来时，页面会停在这一句上。写清楚比空白强 —— 空白页
+   最难排查：HTTP 200、什么都不显示 */
+.boot { padding: 60px 20px; text-align: center; color: var(--el-text-color-secondary); }
+.boot.fail { color: var(--el-color-danger); line-height: 1.9; }
+
+/* ---------------- 骨架：左菜单 + 右内容 ---------------- */
+
+.layout { display: flex; min-height: 100vh; }
+
+.aside {
+  width: var(--aside-w); flex: none; background: var(--el-bg-color);
+  border-right: 1px solid var(--el-border-color-lighter);
+  display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh;
+}
+.aside .brand {
+  height: var(--topbar-h); flex: none; display: flex; align-items: center; gap: 9px;
+  padding: 0 16px; border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.aside .brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--el-color-primary); flex: none; }
+.aside .brand .nm { font-size: 14px; font-weight: 600; color: var(--el-text-color-primary); }
+.aside .el-menu { border-right: none; flex: 1; }
+.aside .foot {
+  flex: none; padding: 10px 16px; font-size: 12px; line-height: 1.7;
+  color: var(--el-text-color-secondary); border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+/* 顶栏放「这一屏的口径」与几个动作。口径（全量/增量/场景）会改变下面每一个数字的
+   含义，所以它必须常驻可见，而不是藏进某个视图里 */
+.topbar {
+  height: var(--topbar-h); flex: none; background: var(--el-bg-color);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  display: flex; align-items: center; gap: 12px; padding: 0 18px;
+  position: sticky; top: 0; z-index: 10;
+}
+.topbar h1 { font-size: 15px; margin: 0; color: var(--el-text-color-primary); font-weight: 600; flex: none; }
+.topbar .overall { font-family: var(--mono); color: var(--el-text-color-primary); font-size: 13px; }
+.spacer { margin-left: auto; }
+
+/* 场景录制条独立一行：与实时视图分开，避免「正在录场景」这件事被淹没在工具栏里 */
+.scenariobar {
+  display: flex; align-items: center; gap: 10px; padding: 9px 18px; font-size: 13px;
+  background: var(--el-bg-color); border-bottom: 1px solid var(--el-border-color-lighter);
+  flex-wrap: wrap;
+}
+.scenariobar label { color: var(--el-text-color-secondary); }
+.rec { color: var(--el-color-danger); display: inline-flex; align-items: center; gap: 6px; }
+.rec i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
+  border-radius: 12px; font-size: 12px; border: 1px solid; flex: none;
+}
+.pill.ok { background: var(--el-color-success-light-9); border-color: var(--el-color-success); color: var(--el-color-success); }
+.pill.err { background: var(--el-color-danger-light-9); border-color: var(--el-color-danger); color: var(--el-color-danger); }
+.pill.warn { background: var(--el-color-warning-light-9); border-color: var(--el-color-warning); color: var(--el-color-warning); }
+.pill i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.pill.ok i { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .25 } }
+@media (prefers-reduced-motion: reduce) { .pill.ok i, .rec i { animation: none } }
+
+/* 分段按钮：Element Plus 的 el-radio-group + button 形态即是此物，
+   但这里的两组（口径、排序）尺寸更小，自绘更省事 */
+.seg { display: inline-flex; flex: none; }
+.seg button {
+  height: 30px; padding: 0 13px; font-family: inherit; font-size: 13px; cursor: pointer;
+  border: 1px solid var(--el-border-color); background: var(--el-bg-color);
+  color: var(--el-text-color-regular); border-radius: 0; margin-left: -1px;
+}
+.seg button:first-child { border-radius: var(--radius) 0 0 var(--radius); margin-left: 0; }
+.seg button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+.seg button:hover { color: var(--el-color-primary); border-color: var(--el-color-primary); }
+.seg button.on { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; z-index: 1; }
+
+/* ---------------- 视图容器 ---------------- */
+
+.view { padding: 14px; display: grid; gap: 14px; align-content: start; }
+/* 染色视图是两栏：左边文件列表、右边源码。源码是核心，不能被挤到折叠线以下 */
+.view.coloring { grid-template-columns: 300px minmax(0, 1fr); align-items: start; }
+@media (max-width: 900px) {
+  .view.coloring { grid-template-columns: minmax(0, 1fr); }
+  .aside { position: static; height: auto; }
+}
+
+.card { background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius); overflow: hidden; }
+.card-head { padding: 11px 14px; border-bottom: 1px solid var(--el-border-color-lighter); display: flex; align-items: center; gap: 8px; }
+.card-head h2 { font-size: 14px; margin: 0; color: var(--el-text-color-primary); font-weight: 600; flex: none; }
+/* 说明文字长短由数据决定（口径 + 采样数 + 变化量），卡片头是 flex 且不换行，
+   不设上限的话一条长说明就能把整张卡撑到容器之外 */
+.card-head .sub { font-size: 12px; color: var(--el-text-color-secondary); margin-left: auto; font-family: var(--mono); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.empty { padding: 40px 20px; text-align: center; color: var(--el-text-color-secondary); }
+.err { margin: 14px; padding: 10px 14px; background: var(--el-color-danger-light-9); color: var(--el-color-danger); border-radius: var(--radius); font-size: 13px; line-height: 1.7; }
+/* 数据不完整但可用：与「算不出结果」区分开，避免把降级当成故障 */
+.warn { margin: 14px; padding: 10px 14px; background: var(--el-color-warning-light-9); color: var(--el-color-warning); border-radius: var(--radius); font-size: 13px; line-height: 1.7; }
+.banner { padding: 0 14px; }
+.banner .err, .banner .warn { margin: 14px 0 0; }
+
+/* ---------------- 染色 ---------------- */
+
+.file { display: flex; align-items: center; gap: 8px; padding: 8px 14px; cursor: pointer; border: none; background: none; width: 100%; text-align: left; font-family: inherit; font-size: 13px; color: var(--el-text-color-regular); }
+.file:hover { background: var(--el-fill-color-light); }
+.file.on { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
+.file .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file .pc { margin-left: auto; font-family: var(--mono); font-size: 12px; flex: none; }
+.pc.s { color: var(--el-color-success); }
+.pc.w { color: var(--el-color-warning); }
+.pc.d { color: var(--el-color-danger); }
+
+.legend { display: flex; gap: 12px; padding: 9px 14px; background: var(--el-fill-color-light); border-bottom: 1px solid var(--el-border-color-lighter); font-size: 12px; color: var(--el-text-color-secondary); flex-wrap: wrap; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 10px; height: 10px; border-radius: 2px; }
+
+.src { font-family: var(--mono); font-size: 13px; line-height: 21px; overflow-x: auto; max-height: calc(100vh - 260px); overflow-y: auto; }
+.ln { display: flex; white-space: pre; border-left: 3px solid transparent; }
+.ln.COVERED { background: var(--el-color-success-light-9); border-left-color: var(--el-color-success); }
+.ln.MISSED { background: var(--el-color-danger-light-9); border-left-color: var(--el-color-danger); }
+.ln.PARTIAL { background: var(--el-color-warning-light-9); border-left-color: var(--el-color-warning); }
+.ln.flash { animation: flash 1s ease-out; }
+@keyframes flash { from { background: var(--el-color-success); } to { } }
+@media (prefers-reduced-motion: reduce) { .ln.flash { animation: none } }
+/* 增量视图：基线之后没动过的行仍要显示以保留上下文，但不参与染色 */
+.ln.out { background: none; border-left-color: transparent; opacity: .35; }
+.ln .no { width: 52px; flex: none; text-align: right; padding-right: 14px; color: var(--el-text-color-secondary); opacity: .7; user-select: none; font-size: 12px; }
+.ln .tx { color: var(--el-text-color-primary); padding-right: 16px; }
+
+/* ---------------- 看板 ---------------- */
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 14px; }
+.stat { background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius); padding: 13px 14px; }
+.stat .k { font-size: 12px; color: var(--el-text-color-secondary); }
+.stat .v { font-size: 21px; font-family: var(--mono); color: var(--el-text-color-primary); margin-top: 5px; }
+.stat .v small { font-size: 13px; color: var(--el-text-color-secondary); }
+
+/* 门禁结论是三态而非两态：「判不了」必须与「不通过」分开显示 ——
+   前者该找人看平台，后者该补测试，混成同一个红色就会把人指去错误的方向 */
+.gate { display: flex; align-items: center; gap: 14px; padding: 16px 18px; flex-wrap: wrap; }
+.gate .verdict { font-size: 18px; font-weight: 600; padding: 3px 14px; border-radius: var(--radius); border: 1px solid; }
+.gate.pass .verdict { color: var(--el-color-success); border-color: var(--el-color-success); background: var(--el-color-success-light-9); }
+.gate.block .verdict { color: var(--el-color-danger); border-color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
+.gate.undecided .verdict { color: var(--el-color-warning); border-color: var(--el-color-warning); background: var(--el-color-warning-light-9); }
+.gate .why { font-size: 13px; color: var(--el-text-color-primary); }
+.gate .num { font-family: var(--mono); font-size: 21px; color: var(--el-text-color-primary); margin-left: auto; }
+.gate .num small { font-size: 13px; color: var(--el-text-color-secondary); }
+.gate-ci { padding: 0 18px 15px; font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.7; }
+.gate-ci code { font-family: var(--mono); background: var(--el-fill-color-light); padding: 1px 5px; border-radius: 4px; word-break: break-all; }
+
+/* 纵轴钉死 0–100%：按数据范围自动缩放会把 0.2% 的抖动画成断崖 */
+.trend { padding: 14px; }
+.trend svg { display: block; width: 100%; height: 120px; }
+.trend .grid { stroke: var(--el-border-color-lighter); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.trend .area { fill: var(--el-color-primary-light-9); }
+.trend .line { fill: none; stroke: var(--el-color-primary); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.trend .dot { fill: var(--el-color-primary); }
+.trend-ax { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 11px; color: var(--el-text-color-secondary); margin-top: 6px; }
+
+/* 表格比容器宽时必须自己横向滚动：.card 是 overflow:hidden，
+   不给滚动容器的话右边几列会被直接裁掉 —— 既看不见，也没法滚过去看 */
+.tbl-wrap { overflow-x: auto; }
+table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.tbl th { text-align: left; font-size: 12px; font-weight: 600; color: var(--el-text-color-secondary); padding: 9px 14px; border-bottom: 1px solid var(--el-border-color-lighter); white-space: nowrap; }
+table.tbl td { padding: 9px 14px; border-bottom: 1px solid var(--el-border-color-lighter); }
+table.tbl tr:last-child td { border-bottom: none; }
+table.tbl td.mono, .mono { font-family: var(--mono); font-size: 12px; }
+
+.tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px; border: 1px solid; }
+.tag.ok { color: var(--el-color-success); border-color: var(--el-color-success); background: var(--el-color-success-light-9); }
+.tag.err { color: var(--el-color-danger); border-color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
+.tag.warn { color: var(--el-color-warning); border-color: var(--el-color-warning); background: var(--el-color-warning-light-9); }
+
+/* 条形图看差距更快，但数字仍要在 —— 只给条形图就没法核对 */
+.bar-track { height: 6px; min-width: 84px; flex: 1; border-radius: 3px; background: var(--el-fill-color-light); overflow: hidden; }
+.bar-fill { height: 100%; }
+.bar-fill.s { background: var(--el-color-success); }
+.bar-fill.w { background: var(--el-color-warning); }
+.bar-fill.d { background: var(--el-color-danger); }
+.rank-name { cursor: pointer; color: var(--el-color-primary); }
+.rank-name:hover { text-decoration: underline; }
+
+/* ---------------- 服务接入 ---------------- */
+
+.steps { display: flex; flex-wrap: wrap; gap: 8px 4px; padding: 16px 18px 4px; }
+.steps .step { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--el-text-color-secondary); }
+.steps .step::after { content: ''; width: 26px; height: 1px; background: var(--el-border-color); margin: 0 8px; }
+.steps .step:last-child::after { display: none; }
+.steps .num { width: 20px; height: 20px; flex: none; border-radius: 50%; border: 1px solid var(--el-border-color);
+              display: flex; align-items: center; justify-content: center; font-size: 12px; font-family: var(--mono); }
+/* 四步里只有最后一步是平台能自己判定的，前三步在被测方那边做完平台无从得知，
+   所以不做「已完成」态 —— 打勾会变成一句没有依据的断言 */
+.steps .step.live { color: var(--el-color-primary); }
+.steps .step.live .num { border-color: var(--el-color-primary); color: var(--el-color-primary); }
+
+.lang-tabs { display: flex; gap: 4px; padding: 10px 18px 0; flex-wrap: wrap; }
+.lang-tabs button { height: 28px; padding: 0 13px; font-size: 13px; cursor: pointer;
+                    border: 1px solid var(--el-border-color-lighter); color: var(--el-text-color-regular);
+                    background: var(--el-bg-color); border-radius: var(--radius); font-family: inherit; }
+.lang-tabs button.on { border-color: var(--el-color-primary); color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
+
+.ob { padding: 14px 18px 18px; font-size: 13px; line-height: 1.75; color: var(--el-text-color-regular); }
+.ob h3 { font-size: 13px; margin: 18px 0 6px; color: var(--el-text-color-primary); font-weight: 600; }
+.ob h3:first-child { margin-top: 0; }
+.ob ul { margin: 4px 0; padding-left: 20px; }
+.ob code { font-family: var(--mono); background: var(--el-fill-color-light); padding: 1px 5px; border-radius: 4px; }
+.snip-wrap { position: relative; }
+.snip-wrap .copy { position: absolute; top: 14px; right: 10px; height: 24px; padding: 0 9px; font-size: 12px; cursor: pointer;
+                   color: var(--el-text-color-regular); font-family: inherit;
+                   background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius); }
+/* white-space:pre + 自己横向滚动：命令一折行就成了两条命令，照抄必然出错 */
+.snippet { margin: 8px 0 0; padding: 12px 14px; background: var(--el-fill-color-light);
+           border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius);
+           font-family: var(--mono); font-size: 12px; line-height: 1.85; white-space: pre; overflow-x: auto;
+           color: var(--el-text-color-primary); }
+.snippet .cm { color: var(--el-text-color-secondary); }
+.snippet .val { color: var(--el-color-primary); }
+.note { margin: 0 0 12px; padding: 10px 14px; border-radius: var(--radius); font-size: 13px; line-height: 1.75; }
+.note.info { background: var(--el-color-primary-light-9); color: var(--el-text-color-regular); }
+.note.risk { background: var(--el-color-warning-light-9); color: var(--el-text-color-regular); }
+.note b { color: var(--el-text-color-primary); }

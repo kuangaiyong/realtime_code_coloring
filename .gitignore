@@ -16,3 +16,6 @@ target/
 
 # E2E 脚本用 py_compile 做语法检查时留下的字节码
 __pycache__/
+
+# UI 参考截图：只作设计参考，几十 MB 的 JPEG 不进仓库
+参考图片/
