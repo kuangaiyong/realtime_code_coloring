@@ -78,7 +78,9 @@ public class GoCoverageAnalyzer {
     }
 
     private void runCovdata(Path in, Path out) throws IOException {
-        List<String> cmd = List.of(platform.getGoTool(), "tool", "covdata", "textfmt",
+        // 走 CovdataTool 而不是直接拼 `go tool covdata`：那层包装每轮采集要花约 3 秒
+        // （见 CovdataTool 的说明），而它是端到端染色延迟里最大的一块
+        List<String> cmd = CovdataTool.command(platform.getGoTool(), "textfmt",
                 "-i=" + in.toAbsolutePath(), "-o=" + out.toAbsolutePath());
         // profile 走 -o 落文件，stdout 本该是空的；但只要它写了东西而没人读，
         // 管道写满就会双方对着阻塞，直到 30 秒超时才被强杀。丢弃即可
