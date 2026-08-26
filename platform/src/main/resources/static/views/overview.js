@@ -19,6 +19,36 @@ function svgPoints(values) {
   };
 }
 
+/** CSV 单元格。逗号、引号、换行都必须裹起来，否则一个包名里的逗号就把列错开了 */
+function cell(v) {
+  const t = String(v == null ? '' : v);
+  return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+}
+
+/** 文件名里的时间戳。用本地时间：导出的人是按自己的钟去找那份文件的 */
+function stamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
+}
+
+/**
+ * 横轴两端的刻度文字。
+ *
+ * 带不带日期由<b>整个区间</b>决定，不是每个刻度各判各的 —— 一端写「08/18 21:48」、
+ * 另一端写「07:27」，读起来像是两种量纲。区间跨天就两端都带日期，当天内就都只写时分。
+ */
+function axisLabels(from, to) {
+  const a = new Date(from), b = new Date(to);
+  if (isNaN(a.getTime()) || isNaN(b.getTime())) return { from: '', to: '' };
+  const hm = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (a.toDateString() === b.toDateString()) {
+    return { from: hm(a), to: hm(b) };
+  }
+  const md = (d) => d.toLocaleDateString([], { month: '2-digit', day: '2-digit' }) + ' ' + hm(d);
+  return { from: md(a), to: md(b) };
+}
+
 /** 总览看板：统计口径 → 门禁结论 → 覆盖率变化 → 被测实例 → 覆盖率排行 */
 export const Overview = {
   setup() {
@@ -35,6 +65,24 @@ export const Overview = {
         : s.mode === 'incremental' ? '增量口径' : '全量口径';
     });
 
+    /**
+     * 门禁结论跟着覆盖率那个数字走。
+     *
+     * 看的人要的是「这个数字够不够」，而不是先记住 3.6%、再滚到下面一张卡里找阈值。
+     * 三态照旧分开：判不了是黄的，与「不通过」的红分开 —— 前者该找人看平台，
+     * 后者该补测试。
+     */
+    const gateNote = computed(() => {
+      // 场景快照是过去某一轮的独占覆盖，本就不参与门禁，这里不能挂一句结论上去
+      if (store.viewScenario) return null;
+      if (store.gateError) return { text: '门禁判不了', level: 'w' };
+      const g = store.gate;
+      if (!g) return null;
+      return g.passed
+        ? { text: '门槛 ' + g.threshold + '% 已达标', level: 's' }
+        : { text: '门槛 ' + g.threshold + '% 未达标', level: 'd' };
+    });
+
     const stats = computed(() => {
       const s = d.value;
       // 探针够不到时顶栏显示「—」，看板这几个数字也必须一起变成「—」
@@ -44,7 +92,7 @@ export const Overview = {
       const live = inst.value.filter(i => i.status === 'CONNECTED').length;
       return [
         { k: '统计口径', v: scope.value },
-        { k: '行覆盖率', v: ok ? s.overallRatio : '—', unit: ok ? '%' : '' },
+        { k: '行覆盖率', v: ok ? s.overallRatio : '—', unit: ok ? '%' : '', note: gateNote.value },
         { k: '已覆盖行', v: ok ? covered : '—' },
         { k: '未覆盖行', v: ok ? missed : '—' },
         { k: '源文件', v: files.value.length, unit: ' 个' },
@@ -79,6 +127,9 @@ export const Overview = {
         return {
           svg: svgPoints(b.map(x => x.overallRatio)),
           note: buildNote,
+          // 横轴上只有 commit 短 sha 的话，看不出「这是上周的还是今天的」——
+          // 而跨构建趋势的用处恰恰是回答「最近在变好还是变差」
+          xAxis: { ...axisLabels(first.peakAt, last.peakAt), mid: b.length + ' 个构建' },
           meta: b.length + ' 个构建 · ' + first.buildCommit.substring(0, 8)
             + ' → ' + last.buildCommit.substring(0, 8)
             + '（' + (delta >= 0 ? '+' : '') + delta + '）'
@@ -94,6 +145,7 @@ export const Overview = {
       return {
         svg: svgPoints(t.map(p => p.r)),
         note: sessionNote,
+        xAxis: { ...axisLabels(first.t, last.t), mid: t.length + ' 个采样点' },
         meta: scope.value + ' · ' + t.length + ' 点 / ' + secs + 's · '
           + first.r + '% → ' + last.r + '%（' + (delta >= 0 ? '+' : '') + delta + '）'
       };
@@ -134,6 +186,31 @@ export const Overview = {
       ? (a, b) => b.missedLines - a.missedLines || a.ratio - b.ratio
       : (a, b) => a.ratio - b.ratio || b.missedLines - a.missedLines));
 
+    /**
+     * 导出当前排行为 CSV。覆盖率报告要给人看、要贴进周报，光在页面上看不够。
+     *
+     * <b>口径必须写进文件名</b>：增量口径下的 47 行未覆盖和全量口径下的 47 行
+     * 是完全不同的两件事，而导出的表格里看不出区别 —— 隔几天再打开就成了一份
+     * 说不清是什么的数字。
+     */
+    function exportCsv() {
+      const head = ['#', '文件', '包名', '路径', '行覆盖率(%)', '已覆盖行', '未覆盖行'];
+      const rows = ranked.value.map((f, n) =>
+        [n + 1, f.sourceFileName, f.packageName, f.path, f.ratio, f.coveredLines, f.missedLines]);
+      const csv = [head, ...rows].map(r => r.map(cell).join(',')).join('\r\n');
+      // BOM 不能省：没有它 Excel 会按本地代码页解，中文列名直接是乱码
+      const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = '覆盖率-' + scope.value.replace(/\s/g, '') + '-' + stamp() + '.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // 不撤销的话这块内存要挂到页面关掉为止；导几次就是几份文件的量
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+
     /** 排行的用处是「找到该补的文件、然后去看它」，所以点文件名直接跳进染色视图 */
     function jumpTo(path) {
       location.hash = '#/coloring';
@@ -143,7 +220,7 @@ export const Overview = {
     return {
       store, stats, collectedAt, gateCi, trendView, setTrendScope,
       inst, instEmpty, perInstMap, perInstOf, langOf, loadPerInstance,
-      ranked, jumpTo, pctClass
+      ranked, jumpTo, pctClass, exportCsv
     };
   },
   template: `
@@ -152,6 +229,7 @@ export const Overview = {
     <div class="stat" v-for="s in stats" :key="s.k">
       <div class="k">{{ s.k }}</div>
       <div class="v">{{ s.v }}<small v-if="s.unit">{{ s.unit }}</small></div>
+      <div v-if="s.note" class="note-line" :class="s.note.level" data-testid="stat-gate">{{ s.note.text }}</div>
     </div>
   </div>
 
@@ -207,6 +285,11 @@ export const Overview = {
         </svg>
         <div class="trend-ax">
           <span>0%</span><span>纵轴固定 0–100% · {{ trendView.note }}</span><span>100%</span>
+        </div>
+        <div v-if="trendView.xAxis" class="trend-ax" data-testid="trend-xaxis">
+          <span>{{ trendView.xAxis.from }}</span>
+          <span>{{ trendView.xAxis.mid }}</span>
+          <span>{{ trendView.xAxis.to }}</span>
         </div>
       </div>
     </div>
@@ -267,6 +350,8 @@ export const Overview = {
   <div class="card">
     <div class="card-head">
       <h2>覆盖率排行</h2>
+      <el-button size="small" :disabled="!ranked.length" data-testid="btn-export"
+                 title="导出当前口径下的全部文件；口径写在文件名里" @click="exportCsv">导出 CSV</el-button>
       <div class="seg" style="margin-left:auto">
         <button :class="{ on: store.rankBy === 'ratio' }"
                 data-testid="rank-ratio" @click="store.rankBy = 'ratio'">覆盖率最低</button>

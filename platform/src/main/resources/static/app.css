@@ -124,6 +124,9 @@ body {
 
 /* ---------------- 染色 ---------------- */
 
+/* 过滤框与文件列表之间要有分隔：贴在一起时输入框看着像列表的第一项 */
+.filter { padding: 9px 12px; border-bottom: 1px solid var(--el-border-color-lighter); }
+
 .file { display: flex; align-items: center; gap: 8px; padding: 8px 14px; cursor: pointer; border: none; background: none; width: 100%; text-align: left; font-family: inherit; font-size: 13px; color: var(--el-text-color-regular); }
 .file:hover { background: var(--el-fill-color-light); }
 .file.on { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
@@ -157,6 +160,12 @@ body {
 .stat .k { font-size: 12px; color: var(--el-text-color-secondary); }
 .stat .v { font-size: 21px; font-family: var(--mono); color: var(--el-text-color-primary); margin-top: 5px; }
 .stat .v small { font-size: 13px; color: var(--el-text-color-secondary); }
+/* 门禁结论跟着覆盖率那个数字走：看的人要的是「这个数字够不够」，
+   而不是先记住 3.6% 再滚到下面一张卡里找阈值 */
+.stat .note-line { font-size: 12px; margin-top: 4px; }
+.stat .note-line.s { color: var(--el-color-success); }
+.stat .note-line.w { color: var(--el-color-warning); }
+.stat .note-line.d { color: var(--el-color-danger); }
 
 /* 门禁结论是三态而非两态：「判不了」必须与「不通过」分开显示 ——
    前者该找人看平台，后者该补测试，混成同一个红色就会把人指去错误的方向 */

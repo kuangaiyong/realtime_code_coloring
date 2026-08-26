@@ -4,7 +4,7 @@ import { Coloring } from './views/coloring.js';
 import { Overview } from './views/overview.js';
 import { Onboard } from './views/onboard.js';
 
-const { createApp, computed, ref } = Vue;
+const { createApp, computed, ref, watchEffect } = Vue;
 
 /**
  * 菜单由这一份路由配置生成，不手写 <li>：加一个视图只在这里加一行，
@@ -32,6 +32,20 @@ const App = {
     const navigate = (k) => { location.hash = '#/' + k; };
     const currentView = computed(() =>
       (ROUTES.find(r => r.path === route.value) || ROUTES[0]).comp);
+
+    // ---------- 深色模式 ----------
+    // Element Plus 认 <html class="dark">，而本平台的 CSS 全走 --el-* 变量，跟着一起翻。
+    // 必须记住选择：每次打开又回到浅色的话，这个开关等于没有
+    const dark = ref(false);
+    try {
+      dark.value = localStorage.getItem('rtcc-theme') === 'dark';
+    } catch (e) { /* 隐私模式下读不到，按浅色走 */ }
+    watchEffect(() => {
+      document.documentElement.classList.toggle('dark', dark.value);
+      try {
+        localStorage.setItem('rtcc-theme', dark.value ? 'dark' : 'light');
+      } catch (e) { /* 存不进去也不影响这一次会话 */ }
+    });
 
     // ---------- 顶栏：探针状态 ----------
     // 探针不可达与平台配置错误是两回事，排查方向完全不同，界面上必须分开说
@@ -114,7 +128,7 @@ const App = {
     connectWs();
 
     return {
-      ROUTES, route, currentView, navigate, store, probe, overall,
+      ROUTES, route, currentView, navigate, store, probe, overall, dark,
       scenarioInput, running, onToggleScenario, onSelectScenario,
       setMode, onCollect, onReset
     };
@@ -154,6 +168,10 @@ const App = {
                  :disabled="running"
                  :title="running ? '场景进行中不能清零，否则该场景的归因数据会被截断' : ''"
                  @click="onReset">清零计数器</el-button>
+      <el-button size="small" circle data-testid="btn-theme"
+                 :title="dark ? '切回浅色' : '切到深色'" @click="dark = !dark">
+        <el-icon><component :is="dark ? 'Sunny' : 'Moon'" /></el-icon>
+      </el-button>
     </header>
 
     <div class="scenariobar">

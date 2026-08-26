@@ -12,6 +12,10 @@
  *
  * 机器相关的两个路径走环境变量，由 run_local.sh 注入，不写死在脚本里。
  */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
 const PLATFORM = 'http://localhost:18090';
 const DEMO = 'http://localhost:18080';
 
@@ -165,6 +169,52 @@ const countOf = (sel) => document.querySelectorAll(sel).length;
     if (switched < 0) fail(`点了 ${second.sourceFileName} 但源码区没换过去`);
     else pass(`点击切换文件生效（${second.sourceFileName}，${switched}ms）`);
 
+    // ---------- 3b · 文件过滤 ----------
+    // demo 只有 9 个文件，真接工程时这里是几百上千个类，没有过滤就只能靠滚动条找
+    await page.type('[data-testid="file-filter"]', 'order');
+    await sleep(500);
+    const filtered = await page.evaluate(countOf, '[data-testid="file-item"]');
+    const countText = await page.evaluate(textOf, '[data-testid="file-count"]');
+    if (!(filtered > 0 && filtered < fileCount)) {
+      fail(`过滤「order」后剩 ${filtered} 项，总数 ${fileCount} —— 过滤没起作用`);
+    } else if (countText !== filtered + ' / ' + fileCount + ' 个') {
+      // 只显示过滤后的数量会让人以为「这个口径下只有这些文件」
+      fail(`过滤时计数写「${countText}」，应写「${filtered} / ${fileCount} 个」`);
+    } else {
+      pass(`文件过滤生效：${fileCount} → ${filtered}，计数写明「${countText}」`);
+    }
+    // 清掉，后面的断言仍按全量来
+    await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="file-filter"]');
+      el.value = '';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await sleep(400);
+    if (await page.evaluate(countOf, '[data-testid="file-item"]') !== fileCount) {
+      fail('清空过滤词后文件列表没有恢复');
+    }
+
+    // ---------- 3c · 深色模式 ----------
+    // 页面的颜色全走 --el-* 变量，开关只是给 <html> 加个 class；
+    // 但必须记住选择 —— 每次打开又回到浅色的话，这个开关等于没有
+    await page.click('[data-testid="btn-theme"]');
+    await sleep(400);
+    const darkOn = await page.evaluate(() => ({
+      cls: document.documentElement.classList.contains('dark'),
+      stored: localStorage.getItem('rtcc-theme'),
+      bg: getComputedStyle(document.body).backgroundColor
+    }));
+    if (!darkOn.cls || darkOn.stored !== 'dark') {
+      fail(`点了深色开关但 html.dark=${darkOn.cls} / localStorage=${darkOn.stored}`);
+    } else {
+      pass(`深色模式生效并记住了选择（body 背景 ${darkOn.bg}）`);
+    }
+    await page.click('[data-testid="btn-theme"]');
+    await sleep(300);
+    if (await page.evaluate(() => document.documentElement.classList.contains('dark'))) {
+      fail('再点一次没能切回浅色');
+    }
+
     // ---------- 4 · 总览看板 ----------
     await page.click('[data-testid="nav-overview"]');
     const onDash = await waitFor(page, () => !!document.querySelector('[data-testid="view-overview"]'),
@@ -227,6 +277,79 @@ const countOf = (sel) => document.querySelectorAll(sel).length;
       colsBefore, 120000);
     if (grew < 0) fail('点了「加载各实例覆盖」但表格没有多出三列');
     else pass(`各实例覆盖已加载，表格由 ${colsBefore} 列增至 ${colsBefore + 3} 列（${(grew / 1000).toFixed(1)}s）`);
+
+    // ---------- 4b · 门禁结论与覆盖率数字同卡 ----------
+    // 看的人要的是「这个数字够不够」。这句话与下面那张门禁卡必须是同一个结论，
+    // 一张卡说达标、另一张说不通过的话，没人知道该信哪个
+    const gateResp2 = await fetch(`${PLATFORM}/api/coverage/gate?mode=full`);
+    const gate2 = await gateResp2.json();
+    const statGate = await page.evaluate(textOf, '[data-testid="stat-gate"]');
+    if (!gateResp2.ok) {
+      if (statGate !== '门禁判不了') fail(`接口拒判，覆盖率卡上却写着「${statGate}」`);
+      else pass('门禁判不了时，覆盖率卡上明确写「门禁判不了」');
+    } else {
+      const want = '门槛 ' + gate2.threshold + '% ' + (gate2.passed ? '已达标' : '未达标');
+      if (statGate !== want) fail(`覆盖率卡上写「${statGate}」，接口给的是「${want}」`);
+      else pass(`门禁结论与覆盖率数字同卡且一致：${statGate}`);
+    }
+
+    // ---------- 4c · 趋势横轴要有时间 ----------
+    // 只有 commit 短 sha 的话，看不出「这是上周的还是今天的」，而跨构建趋势
+    // 的用处恰恰是回答「最近在变好还是变差」
+    await page.click('[data-testid="trend-build"]');
+    await sleep(1500);
+    const xAxis = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="trend-xaxis"]');
+      return el ? [...el.children].map(c => c.innerText.trim()) : null;
+    });
+    if (!xAxis) {
+      // 只有 0/1 个构建时画不出曲线，也就没有横轴 —— 那是对的，不算失败
+      const t = await page.evaluate(textOf, '[data-testid="trend-box"]');
+      pass(`跨构建曲线还画不出来，横轴一并省略（${t.slice(0, 40)}）`);
+    } else {
+      // 先断言两端真的有字。peakAt 解析不出来时 axisLabels 返回两个空串，
+      // 只比「格式一不一致」的话，一条空白横轴会被报成通过
+      const [from, mid, to] = xAxis;
+      const dated = [from, to].filter(x => /^\d{2}\/\d{2}/.test(x)).length;
+      if (!from || !to) {
+        fail(`跨构建横轴两端是空的（「${from}」/「${to}」）—— 时间没渲染出来`);
+      } else if (dated === 1) {
+        fail(`横轴两端格式不一致：${from} / ${to} —— 一端带日期一端不带，读起来像两种量纲`);
+      } else {
+        pass(`跨构建横轴带上了时间：${from} → ${to}（${mid}）`);
+      }
+    }
+    await page.click('[data-testid="trend-session"]');
+
+    // ---------- 4d · 导出 CSV ----------
+    // 真的下载下来读一遍。只断言「按钮点得动」的话，导出一份空表或者串列的表
+    // 同样能通过，而这份表是要贴进周报的
+    const dlDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rtcc-csv-'));
+    const cdp = await browser.target().createCDPSession();
+    await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dlDir, eventsEnabled: true });
+    await page.click('[data-testid="btn-export"]');
+    let csvFile = null;
+    for (let n = 0; n < 60 && !csvFile; n++) {
+      csvFile = fs.readdirSync(dlDir).find(f => f.endsWith('.csv')) || null;
+      if (!csvFile) await sleep(100);
+    }
+    if (!csvFile) {
+      fail('点了「导出 CSV」但没有文件落盘');
+    } else {
+      const text = fs.readFileSync(path.join(dlDir, csvFile), 'utf8');
+      const lines = text.replace(/^\ufeff/, '').trim().split(/\r?\n/);
+      if (lines.length !== sum.files.length + 1) {
+        fail(`CSV 有 ${lines.length} 行，应为表头 1 行 + ${sum.files.length} 个文件`);
+      } else if (!/口径|全量|增量|场景/.test(csvFile)) {
+        // 口径不写进文件名的话，隔几天再打开就分不清这是增量还是全量的数字
+        fail(`CSV 文件名没有写明口径：${csvFile}`);
+      } else {
+        const cols = lines[1].split(',').length;
+        if (cols !== 7) fail(`CSV 数据行有 ${cols} 列，应为 7 列：${lines[1]}`);
+        else pass(`导出的 CSV 落盘可读：${csvFile}，${lines.length - 1} 行 × 7 列`);
+      }
+    }
+    fs.rmSync(dlDir, { recursive: true, force: true });
 
     // ---------- 5 · 服务接入 ----------
     await page.click('[data-testid="nav-onboard"]');

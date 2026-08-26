@@ -1,15 +1,29 @@
 import { store, openFile, hasData } from '../store.js';
 import { pctClass } from '../api.js';
 
-const { computed } = Vue;
+const { computed, ref } = Vue;
 
 /** 代码染色：左边文件列表，右边逐行染色的源码 */
 export const Coloring = {
   setup() {
-    const files = computed(() => (store.summary && store.summary.files) || []);
+    const all = computed(() => (store.summary && store.summary.files) || []);
+
+    // demo 只有 9 个文件，感觉不出必要性；真接工程时这里是几百上千个类，
+    // 没有过滤就只能靠滚动条找
+    const keyword = ref('');
+    const files = computed(() => {
+      const k = keyword.value.trim().toLowerCase();
+      if (!k) return all.value;
+      return all.value.filter(f =>
+        f.sourceFileName.toLowerCase().includes(k)
+        || String(f.packageName || '').toLowerCase().includes(k)
+        || f.path.toLowerCase().includes(k));
+    });
 
     const emptyHint = computed(() => {
       if (!store.summary) return '等待采集…';
+      // 过滤为空与「本来就没有」是两回事：不分开的话，搜错一个字会被读成「这个口径下没有代码」
+      if (keyword.value.trim() && all.value.length) return '没有匹配「' + keyword.value.trim() + '」的文件';
       // 文件列表来自产物分析，跑没跑过都在里面，所以空列表只可能是增量口径把范围筛空了，
       // 与看的是实时还是某个场景无关
       return store.summary.mode === 'incremental' ? '基线之后没有变更的可执行代码' : '尚无数据';
@@ -21,14 +35,19 @@ export const Coloring = {
       return f.ratio + '% · 已覆盖 ' + f.coveredLines + ' 行 / 未覆盖 ' + f.missedLines + ' 行';
     });
 
-    return { store, files, emptyHint, ratioText, openFile, pctClass, hasData };
+    return { store, all, files, keyword, emptyHint, ratioText, openFile, pctClass, hasData };
   },
   template: `
 <div class="view coloring" data-testid="view-coloring">
   <div class="card">
     <div class="card-head">
       <h2>源文件</h2>
-      <span class="sub" data-testid="file-count">{{ files.length }} 个</span>
+      <span class="sub" data-testid="file-count">{{ files.length === all.length ? files.length + ' 个'
+        : files.length + ' / ' + all.length + ' 个' }}</span>
+    </div>
+    <div class="filter">
+      <el-input v-model="keyword" size="small" clearable placeholder="按文件名 / 包名 / 路径过滤"
+                data-testid="file-filter" />
     </div>
     <div data-testid="file-list">
       <div v-if="!files.length" class="empty">{{ emptyHint }}</div>
