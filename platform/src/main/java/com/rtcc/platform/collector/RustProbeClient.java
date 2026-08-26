@@ -27,9 +27,7 @@ public class RustProbeClient {
 
     public RustProbeClient(ProjectConfig props) {
         this.props = props;
-        this.http = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(props.getTimeoutMs()))
-                .build();
+        this.http = SharedHttpClients.forConnectTimeout(props.getTimeoutMs());
     }
 
     /** 实例自报的构建版本，与 Java 侧的 sessionid 同一个约定 */

@@ -25,9 +25,7 @@ public class GoProbeClient {
 
     public GoProbeClient(ProjectConfig props) {
         this.props = props;
-        this.http = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(props.getTimeoutMs()))
-                .build();
+        this.http = SharedHttpClients.forConnectTimeout(props.getTimeoutMs());
     }
 
     /** 元数据（文件、函数、代码块位置），构建后不变 */

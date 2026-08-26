@@ -18,8 +18,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Function;
 
 /**
  * 拿一份项目配置去碰真实环境，逐项回答「这么填能不能跑起来」。
@@ -36,26 +34,9 @@ import java.util.function.Function;
 public class ProjectChecker {
 
     private final ProbeClient javaProbe;
-    /**
-     * 按「语言 + 超时」缓存探针客户端。
-     *
-     * <p>Go / C++ / Rust 的客户端各自持有一个 {@code HttpClient}，而 Java 17 的
-     * {@code HttpClient} 关不掉 —— 每造一个就多一个 selector 线程和一个线程池，
-     * 只能等 GC。向导「每一步都能当场验」会反复打这个接口，
-     * 不缓存的话线程数会按「实例数 × 调用次数」往上堆。
-     *
-     * <p>键里带上超时是因为客户端构造时就把它固定进去了；这三个客户端从项目配置里
-     * 也只读这一项，所以同超时的可以安全共用。
-     */
-    private final Map<String, Object> probeCache = new ConcurrentHashMap<>();
 
     public ProjectChecker(ProbeClient javaProbe) {
         this.javaProbe = javaProbe;
-    }
-
-    @SuppressWarnings("unchecked")
-    private <T> T probe(String lang, ProjectConfig cfg, Function<ProjectConfig, T> make) {
-        return (T) probeCache.computeIfAbsent(lang + ":" + cfg.getTimeoutMs(), k -> make.apply(cfg));
     }
 
     /** 一项检查的结果。name 供页面定位到具体表单项，detail 是给人看的那句话 */
@@ -231,14 +212,17 @@ public class ProjectChecker {
     }
 
     private String buildId(ProbeEndpoint ep, ProjectConfig cfg) throws Exception {
+        // 直接 new：这三个客户端已经不各持一个 HttpClient 了（共用连接池，见
+        // SharedHttpClients），造一个就只是建个对象，不必再为此缓存 ——
+        // 而那层缓存的键里带着来自请求体的 timeoutMs，取值空间无界，自己就是泄漏源
         if (ProbeEndpoint.GO.equals(ep.language())) {
-            return this.<GoProbeClient>probe("go", cfg, GoProbeClient::new).buildId(ep);
+            return new GoProbeClient(cfg).buildId(ep);
         }
         if (ProbeEndpoint.CPP.equals(ep.language())) {
-            return this.<CppProbeClient>probe("cpp", cfg, CppProbeClient::new).buildId(ep);
+            return new CppProbeClient(cfg).buildId(ep);
         }
         if (ProbeEndpoint.RUST.equals(ep.language())) {
-            return this.<RustProbeClient>probe("rust", cfg, RustProbeClient::new).buildId(ep);
+            return new RustProbeClient(cfg).buildId(ep);
         }
         // Java 侧的版本在 dump 的 session 信息里，没有单独的「只读版本」接口。
         // reset 传 false：检查不能把被测实例的计数器清掉

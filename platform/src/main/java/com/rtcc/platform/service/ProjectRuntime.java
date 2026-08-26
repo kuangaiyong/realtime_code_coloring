@@ -160,6 +160,27 @@ public class ProjectRuntime {
         }
     }
 
+    /** 无条件作废。删项目时用：整个项目都要没了，进行中的场景没有理由拦住这件事 */
+    void retire() {
+        synchronized (scenarioLock) {
+            retired = true;
+        }
+    }
+
+    /**
+     * 把作废撤回来。
+     *
+     * <p>只给 {@link ProjectRegistry#update} 的失败回滚用：那里是「先作废旧的、
+     * 再把新配置写库」，写库失败时旧实例还留在注册表里对外服务，不撤回的话这个项目
+     * 从此不再采集、不再推送（页面上只是「数字不动了」），而清零 / 开场景一律回
+     * 409「配置刚刚更新，请重试」—— 真实原因是数据库挂了，这句提示把人引向反方向。
+     */
+    void unretire() {
+        synchronized (scenarioLock) {
+            retired = false;
+        }
+    }
+
     /**
      * 把旧实例已归档的场景接过来。配置变更走「造一个新实例顶替旧的」，
      * 不接的话人一改配置，此前跑过的场景归因就凭空消失了 —— 那是测试过程的记录，
@@ -178,6 +199,52 @@ public class ProjectRuntime {
     public void collect() {
         synchronized (collectLock) {
             doCollect();
+        }
+    }
+
+    /**
+     * 一个实例这一轮抓到的东西。四种语言的载荷类型不同，成功的那一路只有一个字段非空；
+     * {@code error} 非空即这台没抓到 —— 它不参与聚合，但必须在实例表里点名。
+     */
+    private record Fetched(BuildVersion version, ProbeDump java, byte[][] go,
+                           byte[] cpp, byte[] rust, String error) {
+    }
+
+    /**
+     * 抓一个实例。<b>必须把所有异常都收成 {@code error} 返回</b>，不能抛出去：
+     * 这个方法跑在线程池里，抛出去会让整批采集失败，而单台不可达时其余实例的数据
+     * 仍然是真的，只是聚合结果少了它那部分。
+     */
+    private Fetched fetchOne(ProbeEndpoint ep) {
+        try {
+            if (ProbeEndpoint.GO.equals(ep.language())) {
+                // 版本先取、数据后收，且三次抓取全部成功才入列。
+                // 反过来的话，buildId 失败时这台已被标成 DISCONNECTED，
+                // 它的覆盖却已经并进了聚合结果，而版本又没进 unifiedVersion 的校验
+                // —— 实例间版本不一致会被这条缝绕过去
+                BuildVersion v = BuildVersion.parseId(goProbe.buildId(ep));
+                // meta 与 counters 要一并取：counters 单独存在没有意义，
+                // 块的位置信息全在 meta 里
+                byte[] meta = goProbe.meta(ep);
+                byte[] counters = goProbe.counters(ep);
+                return new Fetched(v, null, new byte[][]{meta, counters}, null, null, null);
+            }
+            if (ProbeEndpoint.CPP.equals(ep.language())) {
+                BuildVersion v = BuildVersion.parseId(cppProbe.buildId(ep));
+                // dump 会顺带清零并重新武装计数器：gcov 的 __gcov_dump() 只生效一次，
+                // 不 reset 的话下一次什么都不写。累计不会丢 —— .gcda 写入是合并语义
+                return new Fetched(v, null, null, cppProbe.dump(ep), null, null);
+            }
+            if (ProbeEndpoint.RUST.equals(ep.language())) {
+                BuildVersion v = BuildVersion.parseId(rustProbe.buildId(ep));
+                // 与 C++ 不同，__llvm_profile_write_file() 可以反复调用，不必 reset 重新武装；
+                // 但它同样是合并语义，所以探针每次落盘前会先删掉旧的 .profraw，交回的是当前累计值
+                return new Fetched(v, null, null, null, rustProbe.dump(ep), null);
+            }
+            ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
+            return new Fetched(BuildVersion.parse(dump.sessions()), dump, null, null, null, null);
+        } catch (Exception e) {
+            return new Fetched(null, null, null, null, null, describe(e));
         }
     }
 
@@ -208,45 +275,36 @@ public class ProjectRuntime {
         List<InstanceStatus> statuses = new ArrayList<>();
         List<BuildVersion> reported = new ArrayList<>();
 
-        for (ProbeEndpoint ep : endpoints) {
-            try {
-                BuildVersion v;
-                if (ProbeEndpoint.GO.equals(ep.language())) {
-                    // 版本先取、数据后收，且三次抓取全部成功才入列。
-                    // 反过来的话，buildId 失败时这台已被标成 DISCONNECTED，
-                    // 它的覆盖却已经并进了聚合结果，而版本又没进 unifiedVersion 的校验
-                    // —— 实例间版本不一致会被这条缝绕过去
-                    v = BuildVersion.parseId(goProbe.buildId(ep));
-                    // meta 与 counters 要一并取：counters 单独存在没有意义，
-                    // 块的位置信息全在 meta 里
-                    byte[] meta = goProbe.meta(ep);
-                    byte[] counters = goProbe.counters(ep);
-                    goDumps.add(new byte[][]{meta, counters});
-                } else if (ProbeEndpoint.CPP.equals(ep.language())) {
-                    v = BuildVersion.parseId(cppProbe.buildId(ep));
-                    // dump 会顺带清零并重新武装计数器：gcov 的 __gcov_dump() 只生效一次，
-                    // 不 reset 的话下一次什么都不写。累计不会丢 —— .gcda 写入是合并语义
-                    cppDumps.add(cppProbe.dump(ep));
-                } else if (ProbeEndpoint.RUST.equals(ep.language())) {
-                    v = BuildVersion.parseId(rustProbe.buildId(ep));
-                    // 与 C++ 不同，__llvm_profile_write_file() 可以反复调用，不必 reset 重新武装；
-                    // 但它同样是合并语义，所以探针每次落盘前会先删掉旧的 .profraw，交回的是当前累计值
-                    rustDumps.add(rustProbe.dump(ep));
-                } else {
-                    ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
-                    for (ExecutionData d : dump.exec().getContents()) {
-                        javaMerged.visitClassExecution(d);
-                    }
-                    anyJava = true;
-                    v = BuildVersion.parse(dump.sessions());
-                }
-                reported.add(v);
-                statuses.add(new InstanceStatus(ep.toString(), "CONNECTED", v, null));
-            } catch (Exception e) {
+        // 抓取阶段并行：每个实例都要等被测进程把覆盖数据落盘再序列化回来，串行做
+        // 总耗时是各实例之和。装配阶段仍按 endpoints 的顺序串行做 —— javaMerged
+        // 不是线程安全的，而实例表也必须稳定地按配置顺序排
+        long tFetch0 = System.nanoTime();
+        List<Fetched> fetched = ParallelFetch.map(endpoints, this::fetchOne);
+        long tFetchMs = (System.nanoTime() - tFetch0) / 1_000_000;
+
+        for (int i = 0; i < endpoints.size(); i++) {
+            ProbeEndpoint ep = endpoints.get(i);
+            Fetched f = fetched.get(i);
+            if (f.error() != null) {
                 // 单个实例不可达不该让整批采集失败：其余实例的数据仍然是真实的，
                 // 只是这一份聚合结果少了它那部分，必须在状态里说清楚是哪一台
-                statuses.add(new InstanceStatus(ep.toString(), "DISCONNECTED", null, describe(e)));
+                statuses.add(new InstanceStatus(ep.toString(), "DISCONNECTED", null, f.error()));
+                continue;
             }
+            if (f.java() != null) {
+                for (ExecutionData d : f.java().exec().getContents()) {
+                    javaMerged.visitClassExecution(d);
+                }
+                anyJava = true;
+            } else if (f.go() != null) {
+                goDumps.add(f.go());
+            } else if (f.cpp() != null) {
+                cppDumps.add(f.cpp());
+            } else if (f.rust() != null) {
+                rustDumps.add(f.rust());
+            }
+            reported.add(f.version());
+            statuses.add(new InstanceStatus(ep.toString(), "CONNECTED", f.version(), null));
         }
         instances = List.copyOf(statuses);
 
@@ -271,6 +329,7 @@ public class ProjectRuntime {
                 }
                 fresh.putAll(analyzer.analyze(javaMerged, classesDir, props.getJavaSourceRoot()));
             }
+            long tAna0 = System.nanoTime();
             if (!goDumps.isEmpty()) {
                 fresh.putAll(goAnalyzer.analyze(goDumps));
             }
@@ -280,6 +339,11 @@ public class ProjectRuntime {
             if (!rustDumps.isEmpty()) {
                 fresh.putAll(rustAnalyzer.analyze(rustDumps));
             }
+            // 留一行 debug：端到端染色延迟是核心功能的断言之一（≤5s），而它等于
+            // 「轮询间隔 + 这两段」。下次它又逼近阈值时，先看这两个数字是哪一段在涨，
+            // 不必再从头插桩量一遍
+            log.debug("采集耗时：抓取 {}ms / 归一化 {}ms", tFetchMs,
+                    (System.nanoTime() - tAna0) / 1_000_000);
 
             Map<String, FileCoverage> previous = state.get().files();
             state.set(new Snapshot(fresh, unifiedVersion(reported), versionConflict(statuses)));

@@ -169,7 +169,16 @@ public class ProjectRegistry {
             } catch (ScenarioConflictException e) {
                 throw ProjectOperationException.conflict(e.getMessage());
             }
-            persist(cfg);
+            try {
+                persist(cfg);
+            } catch (RuntimeException e) {
+                // 写库失败时旧实例还留在注册表里继续对外服务，必须把作废撤回来。
+                // 不撤的话这个项目从此不采集、不推送，页面上只是「数字不动了」，
+                // 而清零 / 开场景全部回 409「配置刚刚更新，请重试」——
+                // 真实原因是数据库挂了，那句提示把人引向完全相反的方向
+                old.unretire();
+                throw e;
+            }
             fresh.adoptScenariosFrom(old);
             runtimes.put(id, fresh);
             configs.put(id, cfg);
@@ -200,6 +209,10 @@ public class ProjectRegistry {
                 throw ProjectOperationException.unavailable(
                         "项目没能从数据库删除，本次删除未生效：" + e.getMessage());
             }
+            // 与 update 同一条原则：正在跑的那一轮采集完成后，仍会顶着这个已删除的
+            // 项目 id 写趋势表、往订阅该 id 的会话推数据。从注册表里摘掉拦不住它，
+            // 因为调度那一轮拿的是摘掉之前取到的实例引用
+            runtimes.get(id).retire();
             runtimes.remove(id);
             configs.remove(id);
         }

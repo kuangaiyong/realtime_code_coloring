@@ -30,7 +30,7 @@ CONTROLLER = "demo-service/src/main/java/com/shop/order/controller/OrderControll
 POLL_SEC = 20
 
 
-def http(url, method="GET", timeout=15):
+def http(url, method="GET", timeout=60):
     req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:

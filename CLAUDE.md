@@ -59,7 +59,7 @@
 | 2 | 归一化为行级 IR | `scripts/e2e_verify.py` | 逐行 COVERED/MISSED/PARTIAL/EMPTY 状态正确 |
 | 3 | 全量覆盖率计算 | `scripts/e2e_verify.py` | 未调用的接口 B/C 保持未覆盖 |
 | 4 | 增量覆盖率计算 | `scripts/e2e_incremental.py` | 平台增量行集合与 `git diff` **集合相等** |
-| 5 | 实时推送与染色渲染 | `scripts/e2e_verify.py`、`scripts/ws_verify.js` | 端到端延迟 **≤ 5s** |
+| 5 | 实时推送与染色渲染 | `scripts/e2e_verify.py`、`scripts/ws_verify.js`、`scripts/ui_verify.js` | 端到端延迟 **≤ 5s**（`ui_verify` 在真实 Chrome 里量：清零 → 调接口 → DOM 里真的出现绿行） |
 | 6 | 场景边界归因 + 并发场景拒绝 | `scripts/e2e_scenario.py` | 两场景覆盖行集合互不越界；并发 start、进行中清零均返回 409 |
 | 7 | 产物与源码版本一致性校验 | `scripts/e2e_incremental.py` | 源码漂移时返回 409 而非 200 |
 | 8 | 多实例聚合 + 实例间版本校验 | `e2e_multi_instance.py`（Java）、`e2e_go.py`（Go）、`e2e_cpp.py`（C++）、`e2e_rust.py`（Rust） | 各实例覆盖取并集（`/api/coverage/instances` 按实例分别归一化，断言 单实例最大 ≤ 聚合 ≤ 相加 且 ≠ 相加）；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
@@ -174,7 +174,7 @@ bash scripts/run_local.sh verify
 ```
 
 它会依次重启**全部八个**被测实例（2 个 Java + 2 个 Go + 2 个 C++ + 2 个 Rust）复位业务状态
-→ 跑 9 套 E2E。
+→ 跑 9 套 E2E + 1 套真实 Chrome 前端验收（`ui_verify.js`，排在最后）。
 全部为真实服务、真实探针、真实 git、真实 HTTP，**不允许用 mock / 桩 / 假数据通过验证**。
 
 每种语言都起两个实例，是因为「多实例聚合」在四种语言下是四条代码路径（见 §二 的注）。
@@ -194,7 +194,9 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 
 ### 工具链依赖
 
-平台侧需要 **JDK 17 + Maven + Go + GCC（MinGW-w64）+ Rust（rustup）**。
+平台侧需要 **JDK 17 + Maven + Go + GCC（MinGW-w64）+ Rust（rustup）**；
+前端验收另需 **Node + 真实 Chrome**（`PUPPETEER_HOME` / `CHROME_BIN`，同样由 `run_local.sh` 注入，
+别写死进脚本）。
 后三个不只是被测服务要用 —— **平台自己**要调它们做归一化，
 因为这些覆盖数据都是内部二进制格式，没有对外稳定契约，自行解析必然随版本崩：
 
@@ -211,6 +213,24 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 **别把某台机器的绝对路径写死进 application.yml。** 本机的 MinGW-w64 装在
 `~/devtools/mingw64`，rustup 在 `~/devtools/rustup`，
 由 `run_local.sh` 的 `MINGW_HOME` / `RUSTUP_HOME` 放进 PATH。
+
+### 前端：零构建的 Vue 3 + Element Plus
+
+`static/vendor/` 里是**提交进仓库的 UMD 产物**（vue / element-plus / icons），页面用浏览器
+原生 ES module 组装（`app.js` + `store.js` + `views/*.js`），**不引入 node / npm / Vite**，
+`pom.xml` 与 `run_local.sh` 一行不用改。平台面向内网，不能假设有外网 —— CDN 拿不到的表现是
+「HTTP 200 的空白页」，最难排查的一种坏法。
+
+三个反复会绊到的点：
+
+1. **改了 `static/` 必须重新 `mvn package`**。平台是从 jar 启动的，classpath 里的静态资源
+   不会跟着源目录变；只重启平台看到的还是旧页面，而且看不出任何异样。
+2. **Vue 模板表达式只认白名单里的全局量**（`Math`、`Date` 之类）。模板里直接写 `location`
+   会求值成 `undefined`，表现是「点了没反应」，只有控制台里才有一行 TypeError ——
+   要用的全局量必须从 `setup()` 里暴露出去。
+3. **E2E 钩子一律用 `data-testid`，不复用样式选择器**。旧前端的 24 个 `id=` 既是样式选择器
+   又是测试契约，改个布局就断；而且改成 Vue 之后 HTML 源码里只剩一个挂载点，
+   断言源码等于什么都没断言 —— 所以渲染断言必须开真实浏览器（`scripts/ui_verify.js`）。
 
 **数据库凭据只在本机的 `.env.local` 里，该文件不入库**（见 `.gitignore`）。
 `application.yml` 写的是 `${COVERAGE_DB_URL:…}` / `${COVERAGE_DB_USER:root}` /
@@ -232,7 +252,7 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 （已实测：库不可用时 `probeStatus=CONNECTED`、8 实例、门禁 200，趋势
 `available:false`）。**配置是核心能力的前提，不能随附加设施一起挂。**
 
-### 三个反复踩到的坑
+### 四个反复踩到的坑
 
 1. **业务状态无法靠清零复位**。覆盖率计数器能清零，订单状态不能——订单进入终态后
    回不到 CREATED。E2E 若依赖业务状态，第二次跑必然走进别的分支而失败。
@@ -240,7 +260,12 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 2. **版本号要与 pom 同步**。`scripts/run_local.sh` 按版本号拼 jar 路径，
    改 pom 版本号时必须同步改脚本顶部的 `VERSION=`（脚本里只此一处，
    原先两处 jar 路径各写一遍，漏改一处只会报「文件不存在」，看不出根因）。
-3. **`verify` 假定平台已经在跑**。它只重启被测实例，不启动平台；平台没起时
+3. **E2E 的客户端超时要按平台最坏情况取，不能凭手感。**一次采集要挨个 dump 8 个实例，
+   探针挂掉时每个耗尽 `timeout-ms`（3s）＝24s，再叠加各语言的外部工具，
+   还可能排在调度那一轮后面 —— 所以统一取 60s。原先各脚本各填 10/15/20/25s，
+   已经换来过两次与被测功能毫无关系的假失败（`/api/coverage/instances`、`/api/scenario/stop`），
+   每次都要先花时间确认「不是这次改动引入的」。
+4. **`verify` 假定平台已经在跑**。它只重启被测实例，不启动平台；平台没起时
    第一套用例就以「连接被拒绝」失败。更麻烦的是它已经把 8 个被测实例拉起来了，
    而 Java 实例握着 `platform/target/agent/jacocoagent.jar`，接着跑 `start` 会在
    `mvn clean` 删不掉这个 jar 上失败。**从全停状态恢复的顺序是

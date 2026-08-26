@@ -401,6 +401,28 @@ def main():
         check(st == 409, f"库挂时删默认项目仍先被 409 拦住：{body.get('error')}",
               f"库挂时删默认项目返回 {st}: {body}")
 
+        # 回归用例：库挂时改配置（PUT）不能把项目变成砖。
+        # 原先的顺序是「先作废旧运行时 → 再写库」，写库失败时旧的已经被作废却仍留在
+        # 注册表里，于是这个项目从此不采集、不推送（页面上只是「数字不动了」），
+        # 而清零 / 开场景一律回 409「配置刚刚更新，请重试」—— 把人指向完全相反的方向。
+        # 库挂只验 POST 是不够的：POST 的顺序本来就是对的（先写库再入册）
+        cur = must(*http(f"{PLATFORM}/api/projects/default"), what="库挂时读默认项目")
+        st, body = http(f"{PLATFORM}/api/projects/default", method="PUT", body=cur)
+        check(st == 503 and "数据库" in str(body.get("error", "")),
+              f"库挂时改配置明确失败（503）：{body.get('error')}",
+              f"库挂时改配置返回 {st}: {body}")
+
+        # 关键的一半：存失败之后，这个项目必须还活着
+        time.sleep(4)
+        after = must(*http(f"{PLATFORM}/api/coverage/summary"), what="改配置失败后 summary")
+        check(after["probeStatus"] == "CONNECTED" and after["files"],
+              f"改配置失败后项目照常采集（{len(after['files'])} 个文件）",
+              f"改配置失败把项目变砖了：probeStatus={after['probeStatus']}")
+        st, body = http(f"{PLATFORM}/api/coverage/reset", method="POST")
+        check(st == 200,
+              "改配置失败后清零仍然可用（没有被误报成「配置刚刚更新」）",
+              f"改配置失败后清零返回 {st}: {body.get('error')}")
+
         trend = must(*http(f"{PLATFORM}/api/coverage/trend"), what="库挂时趋势")
         check(trend["available"] is False and trend.get("error"),
               f"趋势明确不可用并给出原因：{trend.get('error')}",
