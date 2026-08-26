@@ -43,7 +43,18 @@ body {
 }
 .aside .brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--el-color-primary); flex: none; }
 .aside .brand .nm { font-size: 14px; font-weight: 600; color: var(--el-text-color-primary); }
-.aside .el-menu { border-right: none; flex: 1; }
+.aside .el-menu { border-right: none; }
+/* 「全部项目」是退出这一层的出口，要比菜单项弱一档：它不是并列的第四个视图 */
+.aside .backlink {
+  display: flex; align-items: center; gap: 6px; padding: 10px 16px 4px; cursor: pointer;
+  font-size: 13px; color: var(--el-text-color-secondary);
+}
+.aside .backlink:hover { color: var(--el-color-primary); }
+.aside .proj-name {
+  padding: 2px 16px 8px; font-size: 14px; font-weight: 600; color: var(--el-text-color-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.aside .grow { flex: 1; }
 .aside .foot {
   flex: none; padding: 10px 16px; font-size: 12px; line-height: 1.7;
   color: var(--el-text-color-secondary); border-top: 1px solid var(--el-border-color-lighter);
@@ -198,6 +209,11 @@ table.tbl td { padding: 9px 14px; border-bottom: 1px solid var(--el-border-color
 table.tbl tr:last-child td { border-bottom: none; }
 table.tbl td.mono, .mono { font-family: var(--mono); font-size: 12px; }
 
+/* 表格里的按钮组不许换行：折行会盖住相邻行，看起来像渲染错乱 */
+table.tbl td .el-button { margin-left: 0; }
+table.tbl td .el-button + .el-button { margin-left: 6px; }
+table.tbl td.actions { white-space: nowrap; }
+
 .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px; border: 1px solid; }
 .tag.ok { color: var(--el-color-success); border-color: var(--el-color-success); background: var(--el-color-success-light-9); }
 .tag.err { color: var(--el-color-danger); border-color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
@@ -224,6 +240,16 @@ table.tbl td.mono, .mono { font-family: var(--mono); font-size: 12px; }
    所以不做「已完成」态 —— 打勾会变成一句没有依据的断言 */
 .steps .step.live { color: var(--el-color-primary); }
 .steps .step.live .num { border-color: var(--el-color-primary); color: var(--el-color-primary); }
+
+/* 向导的表单行：标签固定宽度，输入框吃掉剩下的 —— 标签宽度不一会让输入框左边缘参差 */
+.fld { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.fld > label { width: 190px; flex: none; text-align: right; color: var(--el-text-color-regular); }
+.fld > .el-input { max-width: 520px; }
+.wz-foot { display: flex; align-items: center; gap: 8px; padding: 12px 18px;
+           border-top: 1px solid var(--el-border-color-lighter); }
+/* 走过的步骤要与「还没到」区分开，否则六个圈看起来一模一样，不知道自己在哪 */
+.steps .step.done { color: var(--el-color-success); }
+.steps .step.done .num { border-color: var(--el-color-success); color: var(--el-color-success); }
 
 .lang-tabs { display: flex; gap: 4px; padding: 10px 18px 0; flex-wrap: wrap; }
 .lang-tabs button { height: 28px; padding: 0 13px; font-size: 13px; cursor: pointer;

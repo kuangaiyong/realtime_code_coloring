@@ -695,6 +695,22 @@ public class ProjectRuntime {
         return summary(MODE_FULL, null, null);
     }
 
+    /**
+     * 项目列表要的那几个标量。
+     *
+     * <p>不复用 {@link #summary()}：它会把全部文件排序、再给每个文件建一个 Map，
+     * 而列表页每 5 秒轮询一次 —— 文件多的项目上这是持续的无效开销，
+     * 而列表只用得到下面四个值。
+     */
+    public Map<String, Object> status() {
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("probeStatus", probeStatus);
+        res.put("lastError", lastError);
+        res.put("lastCollectedAt", lastCollectedAt == null ? null : lastCollectedAt.toString());
+        res.put("overallRatio", round(overallRatio(state.get().files())));
+        return res;
+    }
+
     public Map<String, Object> summary(String mode, String baseline, String scenarioId) {
         Snapshot s = sourceOf(scenarioId);
         Map<String, Object> res = new LinkedHashMap<>();

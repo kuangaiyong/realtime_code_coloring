@@ -98,14 +98,63 @@ const countOf = (sel) => document.querySelectorAll(sel).length;
 
     await page.goto(PLATFORM + '/', { waitUntil: 'networkidle2', timeout: 30000 });
 
-    // ---------- 1 · 应用真的挂载起来了 ----------
+    // ---------- 1 · 首页是项目列表 ----------
     const mounted = await waitFor(page, () => !document.querySelector('#app .boot')
-      && !!document.querySelector('[data-testid="view-coloring"]'), null, 15000);
+      && !!document.querySelector('[data-testid="view-projects"]'), null, 15000);
     if (mounted < 0) {
       const boot = await page.evaluate(() => document.querySelector('#app').innerText.slice(0, 300));
-      die(`Vue 没能挂载，页面停在：${boot}\n  控制台：${errors.slice(0, 5).join(' | ')}`);
+      die('Vue 没能挂载到项目列表，页面停在：' + boot + ' 控制台：' + errors.slice(0, 5).join(' | '));
     }
-    pass(`应用在 ${mounted}ms 内挂载完成，默认进入代码染色视图`);
+    pass(`应用在 ${mounted}ms 内挂载完成，首页是项目列表`);
+
+    // 列表要能一眼看出「这个项目的基线配的哪个」「采不采得到数据」，
+    // 只给名字的话每问一次都得点进去看
+    const projects = await (await fetch(`${PLATFORM}/api/projects`)).json();
+    const listRows = await page.evaluate(countOf, '[data-testid="project-row"]');
+    if (listRows !== projects.projects.length) {
+      fail(`项目列表 ${listRows} 行，API 给了 ${projects.projects.length} 个项目`);
+    } else {
+      pass(`项目列表 ${listRows} 行，与 API 一致`);
+    }
+    const defRow = await page.evaluate((id) => {
+      const tr = document.querySelector('[data-testid="project-row"][data-id="' + id + '"]');
+      return tr ? [...tr.children].map(td => td.innerText.trim()) : null;
+    }, projects.defaultId);
+    if (!defRow) {
+      fail(`列表里找不到默认项目 ${projects.defaultId}`);
+    } else {
+      const cfg = projects.projects.find(p => p.id === projects.defaultId);
+      // 仓库目录与基线必须真的显示出来，而不是占个「—」
+      if (!defRow[1] || defRow[1] === '—' || !defRow[2] || defRow[2] === '—') {
+        fail(`列表没显示仓库目录/基线：${defRow.slice(0, 3).join(' | ')}`);
+      } else if (defRow[3] !== String(cfg.instanceCount)) {
+        fail(`列表实例数写 ${defRow[3]}，API 给的是 ${cfg.instanceCount}`);
+      } else {
+        pass(`列表带出了配置：仓库 ${defRow[1]} / 基线 ${defRow[2]} / ${defRow[3]} 个实例`);
+      }
+    }
+
+    // 默认项目删不掉（服务端 409），按钮必须先禁掉 —— 让人点了才被告知不行是坏体验
+    const delDisabled = await page.evaluate((id) => {
+      const tr = document.querySelector('[data-testid="project-row"][data-id="' + id + '"]');
+      const b = tr && tr.querySelector('[data-testid="btn-delete"]');
+      return b ? b.disabled : null;
+    }, projects.defaultId);
+    if (delDisabled !== true) fail(`默认项目的删除按钮没有禁用（disabled=${delDisabled}）`);
+    else pass('默认项目的删除按钮已禁用，与服务端的 409 一致');
+
+    // ---------- 1b · 进入项目 ----------
+    await page.click('[data-testid="project-row"][data-id="' + projects.defaultId
+      + '"] [data-testid="btn-open"]');
+    const entered = await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]')
+      && document.querySelectorAll('[data-testid="file-item"]').length > 0, null, 20000);
+    if (entered < 0) {
+      const h = await page.evaluate(() => location.hash);
+      die('点「进入」后没能进到染色视图并加载出文件（hash=' + h + '）');
+    }
+    const entryHash = await page.evaluate(() => location.hash);
+    if (!entryHash.startsWith('#/p/')) fail(`进入项目后地址是 ${entryHash}，项目 id 没有落进路径`);
+    else pass(`进入项目并加载出数据（${entered}ms，地址 ${entryHash}）`);
 
     for (const t of ['nav-coloring', 'nav-overview', 'nav-onboard', 'probe-pill', 'overall',
                      'mode-full', 'mode-incremental', 'btn-collect', 'btn-reset',
@@ -236,6 +285,28 @@ const countOf = (sel) => document.querySelectorAll(sel).length;
     const rankRows = await page.evaluate(countOf, '[data-testid="rank-table"] tbody tr');
     if (rankRows !== sum.files.length) fail(`排行表 ${rankRows} 行，应为 ${sum.files.length} 行`);
     else pass(`排行表 ${rankRows} 行，与文件数一致`);
+
+    // 排行的用处是「找到该补的文件、然后去看它」。路由改成两级之后，只写 #/coloring
+    // 匹配不上 #/p/<id>/<view>，点文件名会退回项目列表 —— 只数行数抓不到这种坏法
+    await page.evaluate(() => document.querySelectorAll('.rank-name')[0].click());
+    const jumped = await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]'),
+      null, 8000);
+    if (jumped < 0) {
+      fail(`点排行里的文件名没跳进染色视图（hash=${await page.evaluate(() => location.hash)}）`);
+    } else {
+      pass('点排行里的文件名跳进了染色视图');
+    }
+    await page.click('[data-testid="nav-overview"]');
+    await waitFor(page, () => !!document.querySelector('[data-testid="view-overview"]'), null, 8000);
+
+    // CI 抄的那条命令必须带项目：不带的话恒落在默认项目上，在别的项目页面照抄进 CI，
+    // 判的是 default 的覆盖率，返回 200 且字段齐全，CI 侧看不出打错了项目
+    const ciText = await page.evaluate(textOf, '.gate-ci');
+    if (ciText && !ciText.includes('/api/projects/')) {
+      fail(`门禁卡给 CI 的命令没带项目：${ciText.slice(0, 80)}`);
+    } else if (ciText) {
+      pass('门禁卡给 CI 的命令带上了项目路径');
+    }
 
     // 门禁三态：通过 / 不通过 / 无法判定。渲染成别的字样就说明分支没接上
     const verdict = await page.evaluate(textOf, '[data-testid="gate-verdict"]');
@@ -428,6 +499,135 @@ const countOf = (sel) => document.querySelectorAll(sel).length;
     } else {
       pass(`调接口 → 浏览器里 ${greens} 行变绿，端到端 ${latency}ms ≤ ${COLOR_BUDGET_MS}ms`);
     }
+
+    // ---------- 6b · 走完向导建出一个能采数的项目 ----------
+    // 这是方案 A 的核心承诺：向导最后一步强制自检，不通过就建不出来。
+    // 只断言「点得动」没有意义 —— 要证明的是建出来的项目<b>真的采得到数据</b>，
+    // 因为「建好了却没数据」正是这类平台最常见、也最难查的那种失败
+    const WZ_ID = 'ui-verify-wizard';
+    // 上一次跑到一半失败可能留下它，先清掉 —— 否则这次会撞「标识已被占用」
+    await fetch(`${PLATFORM}/api/projects/${WZ_ID}`, { method: 'DELETE' }).catch(() => {});
+
+    const seed = await (await fetch(`${PLATFORM}/api/projects/default`)).json();
+    const javaEp = (seed.instances || []).find(x => String(x).startsWith('java://')) || 'java://localhost:6300';
+    const hostPort = javaEp.split('://')[1];
+    const wzHost = hostPort.slice(0, hostPort.lastIndexOf(':'));
+    const wzPort = hostPort.slice(hostPort.lastIndexOf(':') + 1);
+
+    /** el-input 是受控组件，直接改 value 不会触发 Vue 更新，得走原生 setter + input 事件 */
+    async function fill(testid, value) {
+      const ok = await page.evaluate((sel, val) => {
+        const el = document.querySelector(sel);
+        if (!el) return false;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(el, val);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      }, `[data-testid="${testid}"]`, value);
+      if (!ok) die(`向导里找不到字段 ${testid}`);
+    }
+    const stepText = () => page.evaluate(() =>
+      document.querySelector('.card-head .sub') ? document.querySelector('.card-head .sub').innerText : '');
+
+    await page.goto(PLATFORM + '/#/new', { waitUntil: 'networkidle2', timeout: 30000 });
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-wizard"]'), null, 10000) < 0) {
+      die('打不开新建项目向导');
+    }
+    await fill('wz-name', '前端验收建的项目');
+    await fill('wz-id', WZ_ID);
+    await page.click('[data-testid="wz-next"]');            // 1 → 2
+    await sleep(600);
+    await fill('wz-repo', seed.repoDir);
+    await fill('wz-baseline', seed.baseline);
+    await page.click('[data-testid="wz-next"]');            // 2 → 3（跑 git）
+    if (await waitFor(page, () => /第 3 /.test(document.querySelector('.card-head .sub').innerText),
+        null, 30000) < 0) die(`向导卡在第 2 步：${await stepText()}`);
+    await fill('wz-inst-host-0', wzHost);
+    await fill('wz-inst-port-0', wzPort);
+    await page.click('[data-testid="wz-next"]');            // 3 → 4（连探针）
+    if (await waitFor(page, () => /第 4 /.test(document.querySelector('.card-head .sub').innerText),
+        null, 60000) < 0) die(`向导卡在第 3 步：${await stepText()}`);
+    await fill('wz-classesDir', seed.classesDir);
+    await fill('wz-javaSourceRoot', seed.javaSourceRoot);
+    await page.click('[data-testid="wz-next"]');            // 4 → 5（验路径）
+    if (await waitFor(page, () => /第 5 /.test(document.querySelector('.card-head .sub').innerText),
+        null, 60000) < 0) die(`向导卡在第 4 步：${await stepText()}`);
+    // 特意填一个非默认值：字段名与后端对不上的话，Spring 默认不报未知字段，
+    // 这个值会被静默丢弃 —— 而向导这边还煞有介事地校验过 0~100
+    await fill('wz-gate-full', '42');
+    await page.click('[data-testid="wz-next"]');            // 5 → 6（跑完整自检）
+    if (await waitFor(page, () => document.querySelectorAll('[data-testid="wz-check-row"]').length > 0,
+        null, 60000) < 0) die(`向导没能跑出自检表：${await stepText()}`);
+
+    const checkRows = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="wz-check-row"]')]
+        .map(r => ({ name: r.children[0].innerText.trim(), ok: r.children[1].innerText.trim() === '通过' })));
+    const notOk = checkRows.filter(r => !r.ok);
+    if (notOk.length) {
+      fail(`向导自检有不通过项：${notOk.map(r => r.name).join('、')}`);
+    } else {
+      pass(`向导第 6 步自检 ${checkRows.length} 项全通过`);
+    }
+
+    const createDisabled = await page.evaluate(() =>
+      document.querySelector('[data-testid="wz-create"]').disabled);
+    if (createDisabled) {
+      fail('自检全过，创建按钮却是禁用的');
+    } else {
+      await page.click('[data-testid="wz-create"]');
+      // 建完向导会先采一次再进项目：这一步就是要证明「建出来的项目真的采得到数据」
+      const got = await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]')
+        && document.querySelectorAll('[data-testid="file-item"]').length > 0, null, 60000);
+      if (got < 0) {
+        const h = await page.evaluate(() => location.hash);
+        fail(`创建后没能进到项目并采出数据（hash=${h}）`);
+      } else {
+        const n = await page.evaluate(countOf, '[data-testid="file-item"]');
+        const h = await page.evaluate(() => location.hash);
+        if (!h.includes(WZ_ID)) fail(`创建后进的不是新项目：${h}`);
+        else pass(`向导建出的项目立刻就有数据：${n} 个文件（${(got / 1000).toFixed(1)}s，${h}）`);
+      }
+    }
+
+    // 向导里填的全量阈值必须真的存住
+    const created = await (await fetch(`${PLATFORM}/api/projects/${WZ_ID}`)).json();
+    if (!created.gate || created.gate.overallThreshold !== 42) {
+      fail(`向导填的全量阈值 42 没存住，存进去的是 ${JSON.stringify(created.gate)}`
+        + ' —— 字段名与后端对不上时会被静默丢弃');
+    } else {
+      pass('向导填的门禁阈值真的存进了项目配置（overallThreshold=42）');
+    }
+
+    // ---------- 6c · 设置页把「改完即生效」接上 ----------
+    // 这是阶段 2 那套热生效能力在页面上唯一的入口。按钮接空函数的话，
+    // 后端能力在 UI 上够不着，而页面上看不出少了什么
+    await page.goto(PLATFORM + '/#/p/' + WZ_ID + '/settings', { waitUntil: 'networkidle2', timeout: 30000 });
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="st-inst-row"]'), null, 15000) < 0) {
+      fail('打不开项目设置页');
+    } else {
+      const instRows = await page.evaluate(countOf, '[data-testid="st-inst-row"]');
+      if (instRows !== created.instances.length) {
+        fail(`设置页列出 ${instRows} 个实例，配置里有 ${created.instances.length} 个`);
+      } else {
+        pass(`设置页读出了 ${instRows} 个实例`);
+      }
+      await fill('st-baseline', 'HEAD~2');
+      await page.click('[data-testid="st-save"]');
+      const saved = await waitFor(page, () => !document.querySelector('[data-testid="view-settings"]'),
+        null, 30000);
+      const after = await (await fetch(`${PLATFORM}/api/projects/${WZ_ID}`)).json();
+      if (after.baseline !== 'HEAD~2') {
+        fail(`设置页保存后基线仍是 ${after.baseline}，改动没生效`);
+      } else {
+        pass(`设置页改基线立即生效：HEAD~1 → ${after.baseline}（${(saved / 1000).toFixed(1)}s）`);
+      }
+    }
+
+    // 用例要能重复跑：不删掉的话，下一次会撞「标识已被占用」而失败，
+    // 而报出来的原因与被测功能毫无关系
+    const delResp = await fetch(`${PLATFORM}/api/projects/${WZ_ID}`, { method: 'DELETE' });
+    if (!delResp.ok) fail(`收尾删除向导建的项目失败（HTTP ${delResp.status}）`);
+    else pass('向导建的项目已删除，用例可重复跑');
 
     // ---------- 7 · 全程无脚本错误 ----------
     // 组件报错时 Vue 会跳过那一块继续渲染，页面「看着挺正常」，只少了一块

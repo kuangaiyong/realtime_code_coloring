@@ -48,15 +48,21 @@ public class ProjectController {
             // 同构造函数里的写法：库里出现一行 instances 为 null 的配置（手工改库、
             // 或版本升级留下的），不兜住的话整张列表 500，而不是只有那一个项目异常
             m.put("instanceCount", cfg.getInstances() == null ? 0 : cfg.getInstances().size());
+            // 仓库与基线摆在列表上，是因为多项目下最常问的一句就是「这个项目基线配的哪个」。
+            // 不列出来，每问一次都要点进去看一眼
+            m.put("repoDir", cfg.getRepoDir());
+            m.put("baseline", cfg.getBaseline());
             m.put("isDefault", cfg.getId().equals(registry.defaultId()));
             // 用 find 而不是 get：另一个请求恰好在这中间删掉某个项目时，
             // get 会抛 404，整张列表一个项目都列不出来
             ProjectRuntime rt = registry.find(cfg.getId());
-            Map<String, Object> summary = rt == null ? Map.of() : rt.summary();
-            m.put("probeStatus", summary.get("probeStatus"));
-            m.put("overallRatio", summary.get("overallRatio"));
-            m.put("lastError", summary.get("lastError"));
-            m.put("lastCollectedAt", summary.get("lastCollectedAt"));
+            // 用 status() 而不是 summary()：后者会排序并给每个文件建一个 Map，
+            // 而这张列表每 5 秒被轮询一次，只用得到下面四个标量
+            Map<String, Object> st = rt == null ? Map.of() : rt.status();
+            m.put("probeStatus", st.get("probeStatus"));
+            m.put("overallRatio", st.get("overallRatio"));
+            m.put("lastError", st.get("lastError"));
+            m.put("lastCollectedAt", st.get("lastCollectedAt"));
             return m;
         }).toList();
         Map<String, Object> res = new LinkedHashMap<>();

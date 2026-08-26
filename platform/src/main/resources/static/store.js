@@ -13,6 +13,16 @@ const { reactive } = Vue;
  * 必须只有一处真相。
  */
 export const store = reactive({
+  /**
+   * 当前看的是哪个项目。
+   *
+   * 它决定了下面每一次取数打的是哪条地址 —— 换项目而漏换某一处，页面上会出现
+   * 「A 项目的文件列表配 B 项目的覆盖率」，两边都是真数字，看不出是串台。
+   * 所以取数一律经 url() 拼地址，不在各处手写路径。
+   */
+  projectId: 'default',
+  projectName: '',
+
   // ---- 口径 ----
   mode: 'full',
   baseline: 'HEAD~1',
@@ -56,6 +66,14 @@ export const store = reactive({
   scenarios: [],
   activeScenario: null
 });
+
+/** 把项目 id 拼进地址。id 由用户自取，必须转义 —— 它会落进 URL 路径 */
+function url(path) {
+  return '/api/projects/' + encodeURIComponent(store.projectId) + path;
+}
+
+/** 视图里也要拼这个地址（例如总览页展示给 CI 抄的那条命令），导出同一份实现 */
+export { url as projectUrl };
 
 /** 有数据可显示。PARTIAL 少了某台实例那部分，但其余仍是真的，照常显示 */
 export function hasData(d) {
@@ -130,7 +148,7 @@ function applySummary(d) {
 
 export async function loadSummary() {
   try {
-    const d = await api.get('/api/coverage/summary?' + params());
+    const d = await api.get(url('/coverage/summary?') + params());
     applySummary(d);
     // 不 await：门禁要跑一次 git diff，让它挡在染色前面会拖慢整屏刷新
     loadGate();
@@ -158,7 +176,7 @@ export async function loadGate() {
     return;
   }
   try {
-    const d = await api.get('/api/coverage/gate?' + params());
+    const d = await api.get(url('/coverage/gate?') + params());
     if (seq !== gateSeq) return;
     store.gate = d;
     store.gateError = null;
@@ -185,7 +203,7 @@ export async function openFile(path) {
   store.current = path;
   let d;
   try {
-    d = await api.get('/api/coverage/file?path=' + encodeURIComponent(path) + '&' + params());
+    d = await api.get(url('/coverage/file?path=') + encodeURIComponent(path) + '&' + params());
   } catch (e) {
     // 过期请求的错误同样要丢掉：拿它去清空视图，会把刚打开的那个好文件一起清掉
     if (seq !== fileSeq) return;
@@ -235,7 +253,7 @@ export async function setMode(next) {
 
 export async function loadBuildTrend() {
   try {
-    const d = await api.get('/api/coverage/trend');
+    const d = await api.get(url('/coverage/trend'));
     store.buildTrend = d.available ? d.builds : [];
     store.buildTrendErr = d.available ? null : (d.error || '历史不可用');
   } catch (e) {
@@ -247,7 +265,7 @@ export async function loadBuildTrend() {
 export async function loadPerInstance() {
   store.perInstLoading = true;
   try {
-    const d = await api.get('/api/coverage/instances');
+    const d = await api.get(url('/coverage/instances'));
     store.perInst = d.instances;
     store.perInstAt = new Date(d.collectedAt).toLocaleTimeString();
     await refresh();
@@ -260,7 +278,7 @@ export async function loadPerInstance() {
 
 /** 场景归因：start 清零 → 跑测试 → stop 定格。列表与按钮状态都以服务端为准 */
 export async function loadScenarios() {
-  const d = await api.get('/api/scenario');
+  const d = await api.get(url('/scenario'));
   store.scenarios = d.scenarios;
   store.activeScenario = d.active;
   return d;
@@ -268,10 +286,10 @@ export async function loadScenarios() {
 
 export async function toggleScenario(id) {
   const starting = !store.activeScenario;
-  const url = starting
-    ? '/api/scenario/start?scenarioId=' + encodeURIComponent(id.trim())
-    : '/api/scenario/stop';
-  const d = await api.post(url);
+  const target = starting
+    ? url('/scenario/start?scenarioId=') + encodeURIComponent(id.trim())
+    : url('/scenario/stop');
+  const d = await api.post(target);
   store.banner = null;
   // 场景一结束就切过去看它覆盖了什么 —— 这正是录制这一轮的目的
   store.viewScenario = starting ? '' : d.scenarioId;
@@ -281,7 +299,7 @@ export async function toggleScenario(id) {
 }
 
 export async function collectNow() {
-  const d = await api.post('/api/coverage/collect');
+  const d = await api.post(url('/collect'));
   // /collect 返回的是实时全量快照，增量视图和场景视图下都不能直接渲染
   if (store.mode === 'incremental' || store.viewScenario) {
     await refresh();
@@ -293,16 +311,34 @@ export async function collectNow() {
 }
 
 export async function resetCounters() {
-  await api.post('/api/coverage/reset');
+  await api.post(url('/coverage/reset'));
   store.prevStatus = {};
   await refresh();
 }
 
+/**
+ * 当前这条推送连接。换项目时要先把旧的关掉 ——
+ * 留着的话，A 项目的推送会把正在看 B 项目的页面重绘成 A 的数字，
+ * 而两边都是真数字，界面上看不出这是串台。
+ */
+let ws = null;
+/** 主动关闭时置位：否则 onclose 里的自动重连会把刚关掉的那条又拉起来 */
+let wsClosing = false;
+
 /** 覆盖率变化时由服务端主动推送，避免前端空轮询 */
 export function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-  const ws = new WebSocket(proto + location.host + '/ws/coverage');
+  // 项目 id 走查询串，服务端按它过滤会话（见 CoveragePublisher.projectOf）
+  const target = proto + location.host + '/ws/coverage?project='
+    + encodeURIComponent(store.projectId);
+  wsClosing = true;
+  if (ws) ws.close();
+  wsClosing = false;
+  ws = new WebSocket(target);
+  const mine = ws;
   ws.onmessage = (ev) => {
+    // 换项目时旧连接可能还有一条消息在路上，认准是不是当前这条
+    if (mine !== ws) return;
     // 场景视图看的是 stop 时已定格的数据，实时推送与它无关，重渲染只会把它冲掉
     if (store.viewScenario) return;
     // 推送内容是全量口径，增量视图下改为按当前口径重取
@@ -314,5 +350,45 @@ export function connectWs() {
     loadGate();
     if (store.current) openFile(store.current);
   };
-  ws.onclose = () => setTimeout(connectWs, 3000);
+  ws.onclose = () => {
+    if (wsClosing || mine !== ws) return;
+    setTimeout(connectWs, 3000);
+  };
+}
+
+/**
+ * 切到另一个项目。
+ *
+ * 必须把上一个项目的数据全部清掉再取新的：留着的话，新项目还没采到数据的那一瞬间，
+ * 页面上显示的是上一个项目的覆盖率和文件列表 —— 而它们看起来完全正常。
+ */
+export async function setProject(id, name) {
+  // 名字可能已经由列表页带过来了（点「进入」那一下就有），别用 id 把它盖掉；
+  // 深链接进来时没有名字，先用 id 顶着。
+  // 注意判据要用「名字是不是已经有了」，不能用「projectId 变没变」——
+  // 列表页是先写 projectName、再改 hash 的，此刻 projectId 还是上一个值，
+  // 按后者判恒为 false，刚写进去的名字每次都会被 id 顶掉
+  const keep = store.projectName;
+  store.projectId = id;
+  store.projectName = name || keep || id;
+  store.summary = null;
+  store.lastGood = null;
+  store.file = null;
+  store.current = null;
+  store.prevStatus = {};
+  store.gate = null;
+  store.gateError = null;
+  store.banner = null;
+  store.trend = [];
+  store.trendKey = '';
+  store.buildTrend = [];
+  store.buildTrendErr = null;
+  store.perInst = null;
+  store.perInstAt = '';
+  store.scenarios = [];
+  store.activeScenario = null;
+  store.viewScenario = '';
+  connectWs();
+  await loadScenarios().catch(() => { /* 列表取不到不该挡住染色 */ });
+  await reload();
 }

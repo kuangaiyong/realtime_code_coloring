@@ -1,4 +1,4 @@
-import { store, params, loadBuildTrend, loadPerInstance, openFile, hasData } from '../store.js';
+import { store, params, projectUrl, loadBuildTrend, loadPerInstance, openFile, hasData } from '../store.js';
 import { pctClass, LANG } from '../api.js';
 
 const { computed } = Vue;
@@ -104,7 +104,9 @@ export const Overview = {
       ? '最后采集 ' + new Date(d.value.lastCollectedAt).toLocaleTimeString() : '');
 
     // ---- 门禁 ----
-    const gateCi = computed(() => '/api/coverage/gate?' + params());
+    // 必须带项目：不带的话这条命令恒落在默认项目上，在别的项目页面照抄进 CI，
+    // 判的是 default 的覆盖率 —— 返回 200、字段齐全，CI 侧看不出打错了项目
+    const gateCi = computed(() => projectUrl('/coverage/gate?') + params());
 
     // ---- 曲线 ----
     const buildNote = '每个构建一个点，取该构建观测到的峰值';
@@ -213,7 +215,9 @@ export const Overview = {
 
     /** 排行的用处是「找到该补的文件、然后去看它」，所以点文件名直接跳进染色视图 */
     function jumpTo(path) {
-      location.hash = '#/coloring';
+      // 路由是两级的：只写 #/coloring 匹配不上 #/p/<id>/<view>，
+      // 结果不是跳去染色而是退回项目列表
+      location.hash = '#/p/' + encodeURIComponent(store.projectId) + '/coloring';
       openFile(path);
     }
 

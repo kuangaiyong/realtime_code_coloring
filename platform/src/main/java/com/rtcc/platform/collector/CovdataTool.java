@@ -62,7 +62,8 @@ final class CovdataTool {
         }
         String resolved = "";
         try {
-            String version = run(goTool, "env", "GOVERSION");
+            Ran ver = run(goTool, "env", "GOVERSION");
+            String version = ver.ok() ? ver.output() : "";
             if (version.isBlank()) {
                 log.info("取不到 Go 版本，Go 归一化退回 `{} tool covdata`（每轮采集多花约 3 秒）", goTool);
                 CACHE.put(goTool, resolved);
@@ -81,10 +82,10 @@ final class CovdataTool {
             }
             Files.createDirectories(dir);
             long t0 = System.nanoTime();
-            String err = run(goTool, "build", "-o", exe.toAbsolutePath().toString(), "cmd/covdata");
+            Ran built = run(goTool, "build", "-o", exe.toAbsolutePath().toString(), "cmd/covdata");
             if (!Files.isRegularFile(exe)) {
                 log.info("编译 covdata 未产出可执行文件（{}），Go 归一化退回 `{} tool covdata`"
-                        + "（每轮采集多花约 3 秒）", err.isBlank() ? "无输出" : err, goTool);
+                        + "（每轮采集多花约 3 秒）", built.output().isBlank() ? "无输出" : built.output(), goTool);
                 CACHE.put(goTool, resolved);
                 return resolved;
             }
@@ -101,16 +102,20 @@ final class CovdataTool {
         return resolved;
     }
 
-    /** 跑一条命令，把 stdout+stderr 一起收回来。失败一律返回空串，由调用方决定怎么退让 */
-    private static String run(String... cmd) throws Exception {
+    /** 一次子进程调用的结果。失败时的输出<b>必须留着</b>，它是唯一能说明原因的东西 */
+    private record Ran(boolean ok, String output) {
+    }
+
+    /** 跑一条命令，把 stdout+stderr 一起收回来 */
+    private static Ran run(String... cmd) throws Exception {
         Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
         String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
         // 编译 covdata 实测约 8.6s，机器忙时更久；给足余量但不能无限等
         if (!p.waitFor(180, TimeUnit.SECONDS)) {
             p.destroyForcibly();
-            return "";
+            return new Ran(false, "超时未返回");
         }
-        return p.exitValue() == 0 ? out : "";
+        return new Ran(p.exitValue() == 0, out);
     }
 
     /** 拼出实际要执行的命令行：拿得到独立二进制就直接调，拿不到就退回 go tool */

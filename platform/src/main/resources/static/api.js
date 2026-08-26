@@ -31,6 +31,12 @@ async function request(path, options) {
 
 export const api = {
   get: (path) => request(path),
+  del: (path) => request(path, { method: 'DELETE' }),
+  put: (path, body) => request(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }),
   post: (path, body) => request(path, {
     method: 'POST',
     headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
