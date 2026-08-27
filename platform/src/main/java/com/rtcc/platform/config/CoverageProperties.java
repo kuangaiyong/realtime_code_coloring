@@ -77,6 +77,40 @@ public class CoverageProperties {
         return roots;
     }
 
+    /**
+     * 把 yml 里这份配置转成一个项目配置。
+     *
+     * 多项目落地前，平台跑的就是它；落地后它是首次启动时写进 project 表的那条<b>种子</b>记录，
+     * 使现有部署升级后行为完全不变 —— 否则升级即等于把所有配置清空。
+     *
+     * 工具链路径（go-tool / gcov-tool / llvm-*）刻意不搬过去：那是部署机器的属性，
+     * 不跟着项目走。见 {@link ProjectConfig} 的类注释。
+     */
+    public ProjectConfig toProjectConfig(String id, String name) {
+        ProjectConfig c = new ProjectConfig();
+        c.setId(id);
+        c.setName(name);
+        c.setInstances(new ArrayList<>(instances));
+        c.setRepoDir(repoDir);
+        c.setBaseline(baseline);
+        c.setClassesDir(classesDir);
+        c.setJavaSourceRoot(javaSourceRoot);
+        c.setGoSourceRoot(goSourceRoot);
+        c.setGoModulePath(goModulePath);
+        c.setGoExclude(new ArrayList<>(goExclude));
+        c.setCppSourceRoot(cppSourceRoot);
+        c.setCppObjectsDir(cppObjectsDir);
+        c.setRustSourceRoot(rustSourceRoot);
+        c.setRustBinary(rustBinary);
+        c.setIntervalMs(intervalMs);
+        c.setTimeoutMs(timeoutMs);
+        ProjectConfig.Gate g = new ProjectConfig.Gate();
+        g.setIncrementalThreshold(gate.getIncrementalThreshold());
+        g.setOverallThreshold(gate.getOverallThreshold());
+        c.setGate(g);
+        return c;
+    }
+
     public Gate getGate() { return gate; }
     public void setGate(Gate gate) { this.gate = gate; }
 

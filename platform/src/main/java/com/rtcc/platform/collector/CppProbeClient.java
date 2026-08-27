@@ -1,7 +1,6 @@
 package com.rtcc.platform.collector;
 
-import com.rtcc.platform.config.CoverageProperties;
-import org.springframework.stereotype.Component;
+import com.rtcc.platform.config.ProjectConfig;
 
 import java.io.IOException;
 import java.net.URI;
@@ -22,17 +21,14 @@ import java.time.Duration;
  * 而不是交给一个 writer。所以探针要先落盘，再把文件读出来带上文件名交回，
  * 一个 C++ 服务通常有多个编译单元，就有多份 .gcda。
  */
-@Component
 public class CppProbeClient {
 
-    private final CoverageProperties props;
+    private final ProjectConfig props;
     private final HttpClient http;
 
-    public CppProbeClient(CoverageProperties props) {
+    public CppProbeClient(ProjectConfig props) {
         this.props = props;
-        this.http = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(props.getTimeoutMs()))
-                .build();
+        this.http = SharedHttpClients.forConnectTimeout(props.getTimeoutMs());
     }
 
     /** 实例自报的构建版本，与 Java 侧的 sessionid 同一个约定 */

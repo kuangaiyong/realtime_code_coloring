@@ -1,10 +1,10 @@
 package com.rtcc.platform.collector;
 
 import com.rtcc.platform.config.CoverageProperties;
+import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.model.FileCoverage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -24,15 +24,17 @@ import java.util.*;
  * 行号信息全在 .profraw 与产物的 coverage mapping 里，所以必须配 rust-binary
  * —— 相当于 Java 的 classes-dir、C++ 的 .gcno。
  */
-@Component
 public class RustCoverageAnalyzer {
 
     private static final Logger log = LoggerFactory.getLogger(RustCoverageAnalyzer.class);
 
-    private final CoverageProperties props;
+    private final ProjectConfig props;
+    /** 工具链可执行文件的路径是部署机器的属性，换机器才改，与项目无关，因此仍从平台配置取 */
+    private final CoverageProperties platform;
 
-    public RustCoverageAnalyzer(CoverageProperties props) {
+    public RustCoverageAnalyzer(ProjectConfig props, CoverageProperties platform) {
         this.props = props;
+        this.platform = platform;
     }
 
     /** @param dumps 各实例交回的 .profraw，一个实例一份 */
@@ -57,7 +59,7 @@ public class RustCoverageAnalyzer {
 
         Path work = Files.createTempDirectory("rustcov");
         try {
-            List<String> merge = new ArrayList<>(List.of(props.getLlvmProfdataTool(), "merge", "-sparse"));
+            List<String> merge = new ArrayList<>(List.of(platform.getLlvmProfdataTool(), "merge", "-sparse"));
             for (int i = 0; i < dumps.size(); i++) {
                 Path raw = work.resolve("i" + i + ".profraw");
                 Files.write(raw, dumps.get(i));
@@ -67,7 +69,7 @@ public class RustCoverageAnalyzer {
             merge.addAll(List.of("-o", data.toAbsolutePath().toString()));
             exec(merge, "llvm-profdata merge");
 
-            String lcov = exec(List.of(props.getLlvmCovTool(), "export",
+            String lcov = exec(List.of(platform.getLlvmCovTool(), "export",
                     "--instr-profile=" + data.toAbsolutePath(),
                     bin.toAbsolutePath().toString(), "--format=lcov"), "llvm-cov export");
             return parse(lcov);

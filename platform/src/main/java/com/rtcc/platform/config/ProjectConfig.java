@@ -1,0 +1,170 @@
+package com.rtcc.platform.config;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * 一个被测项目的配置：探针地址、代码仓库、各语言的产物与源码根、门禁阈值。
+ *
+ * <p>与 {@link CoverageProperties} 的分界是「这项配置跟着项目走，还是跟着机器走」：
+ * <ul>
+ *   <li><b>项目级</b>（在这里）：换一个被测服务就要改的东西 —— 探针地址、仓库、产物目录、阈值。
+ *       它们将来存进数据库、在页面上编辑，改完热生效。</li>
+ *   <li><b>平台级</b>（留在 {@code CoverageProperties}）：{@code go-tool}、{@code gcov-tool}、
+ *       {@code llvm-profdata-tool} 这些<b>工具链可执行文件的路径</b>。它们是部署机器的属性，
+ *       换机器才改，与项目无关。做成页面可改反而危险：改错一个所有项目一起挂，
+ *       而且 llvm 的两个工具版本必须与 rustc 匹配，这种约束不该交给表单。</li>
+ * </ul>
+ *
+ * <p>字段名与 {@code CoverageProperties} 中对应项刻意保持一致，
+ * 使采集与归一化各类的改造只是换一个持有者，读取配置的写法一字不动。
+ */
+public class ProjectConfig {
+
+    /**
+     * 不带项目参数的旧接口（{@code /api/coverage/*}、{@code /ws/coverage}）
+     * 落到哪个项目上。它同时是首次启动时由 application.yml 种出的那个项目的 id。
+     */
+    public static final String DEFAULT_ID = "default";
+
+    /** 项目标识，同时是 API 路径与历史表里的分区键 */
+    private String id;
+    /** 项目显示名 */
+    private String name;
+
+    /**
+     * 被测实例的探针地址，形如 [语言://]host:port，可配多个（不写语言默认 java）。
+     *
+     * 同一服务的多个实例各自持有一份计数器，只有把它们并起来才是这个服务的真实覆盖：
+     * 负载均衡会把请求分到任意一个实例，只看其中一个必然少算。
+     */
+    private List<String> instances = new ArrayList<>();
+
+    /** 源码所在的 git 仓库根目录。IR 里的文件路径一律以它为基准 */
+    private String repoDir = "..";
+    /** 增量覆盖率的默认对比基线 */
+    private String baseline = "HEAD~1";
+
+    /** Java：被测产物的 class 目录，与源码版本必须一致 */
+    private String classesDir;
+    /** Java：源码根相对仓库根的位置，如 demo-service/src/main/java */
+    private String javaSourceRoot;
+
+    /** Go：模块目录相对仓库根的位置，如 demo-service-go */
+    private String goSourceRoot;
+    /** Go：模块的 import path，覆盖数据里的文件名以它为前缀，需剥掉后换成仓库相对路径 */
+    private String goModulePath;
+    /** Go：不参与统计的文件后缀，默认排除探针自身 —— 它测的是自己，不是被测代码 */
+    private List<String> goExclude = new ArrayList<>(List.of("coverage_agent.go"));
+
+    /** C++：源码根相对仓库根的位置。也是 gcov 的工作目录 —— .gcno 里记的是编译时的相对源码名 */
+    private String cppSourceRoot;
+    /** C++：对象文件目录，.gcno 在这里。它是编译期产物，与探针交回的 .gcda 配套才解得出行号 */
+    private String cppObjectsDir;
+
+    /** Rust：源码根相对仓库根的位置，如 demo-service-rust */
+    private String rustSourceRoot;
+    /** Rust：被测产物。行号信息在它的 coverage mapping 里，相当于 Java 的 classes-dir */
+    private String rustBinary;
+
+    /** 覆盖率门禁的阈值。CI 在合并前调 /api/coverage/gate，据此决定放行还是阻断 */
+    private Gate gate = new Gate();
+
+    /**
+     * 轮询间隔（毫秒）。<b>目前不生效</b> —— 调度是一个 {@code @Scheduled} 驱动全部项目
+     * （见 {@code ProjectRegistry#collectAll}），读的仍是平台级的 {@code coverage.interval-ms}。
+     * 要让它按项目走得先把调度改成线程池，那是多项目真正落地时的事。
+     */
+    private long intervalMs = 3000;
+    /** 探针读取超时（毫秒）。这个是真按项目生效的，四种语言的探针客户端都读它 */
+    private int timeoutMs = 3000;
+
+    /** 各语言的源码根，用于界定 git diff 的范围。由其余字段算出，不入库 */
+    @JsonIgnore
+    public List<String> getSourceRoots() {
+        List<String> roots = new ArrayList<>();
+        if (javaSourceRoot != null && !javaSourceRoot.isBlank()) {
+            roots.add(javaSourceRoot);
+        }
+        if (goSourceRoot != null && !goSourceRoot.isBlank()) {
+            roots.add(goSourceRoot);
+        }
+        if (cppSourceRoot != null && !cppSourceRoot.isBlank()) {
+            roots.add(cppSourceRoot);
+        }
+        if (rustSourceRoot != null && !rustSourceRoot.isBlank()) {
+            roots.add(rustSourceRoot);
+        }
+        return roots;
+    }
+
+    public String getId() { return id; }
+    public void setId(String id) { this.id = id; }
+
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+
+    public Gate getGate() { return gate; }
+    public void setGate(Gate gate) { this.gate = gate; }
+
+    public List<String> getInstances() { return instances; }
+    public void setInstances(List<String> instances) { this.instances = instances; }
+
+    public String getClassesDir() { return classesDir; }
+    public void setClassesDir(String classesDir) { this.classesDir = classesDir; }
+
+    public String getJavaSourceRoot() { return javaSourceRoot; }
+    public void setJavaSourceRoot(String javaSourceRoot) { this.javaSourceRoot = javaSourceRoot; }
+
+    public String getGoSourceRoot() { return goSourceRoot; }
+    public void setGoSourceRoot(String goSourceRoot) { this.goSourceRoot = goSourceRoot; }
+
+    public String getGoModulePath() { return goModulePath; }
+    public void setGoModulePath(String goModulePath) { this.goModulePath = goModulePath; }
+
+    public List<String> getGoExclude() { return goExclude; }
+    public void setGoExclude(List<String> goExclude) { this.goExclude = goExclude; }
+
+    public String getCppSourceRoot() { return cppSourceRoot; }
+    public void setCppSourceRoot(String cppSourceRoot) { this.cppSourceRoot = cppSourceRoot; }
+
+    public String getCppObjectsDir() { return cppObjectsDir; }
+    public void setCppObjectsDir(String cppObjectsDir) { this.cppObjectsDir = cppObjectsDir; }
+
+    public String getRustSourceRoot() { return rustSourceRoot; }
+    public void setRustSourceRoot(String rustSourceRoot) { this.rustSourceRoot = rustSourceRoot; }
+
+    public String getRustBinary() { return rustBinary; }
+    public void setRustBinary(String rustBinary) { this.rustBinary = rustBinary; }
+
+    public String getRepoDir() { return repoDir; }
+    public void setRepoDir(String repoDir) { this.repoDir = repoDir; }
+
+    public String getBaseline() { return baseline; }
+    public void setBaseline(String baseline) { this.baseline = baseline; }
+
+    public long getIntervalMs() { return intervalMs; }
+    public void setIntervalMs(long intervalMs) { this.intervalMs = intervalMs; }
+
+    public int getTimeoutMs() { return timeoutMs; }
+    public void setTimeoutMs(int timeoutMs) { this.timeoutMs = timeoutMs; }
+
+    /**
+     * 门禁阈值。只有两个数字，不做原型上那套多规则 + 优先级 —— 一个项目盯的就是
+     * 一个服务，「哪条规则优先」在这里没有对应的现实。
+     */
+    public static class Gate {
+        /** 增量行覆盖率下限（%）。这次改动的代码测没测到，是门禁最主要的用途 */
+        private double incrementalThreshold = 80d;
+        /** 全量行覆盖率下限（%）。0 表示不设门槛 —— 存量代码的覆盖率一时提不上来是常态 */
+        private double overallThreshold = 0d;
+
+        public double getIncrementalThreshold() { return incrementalThreshold; }
+        public void setIncrementalThreshold(double incrementalThreshold) { this.incrementalThreshold = incrementalThreshold; }
+
+        public double getOverallThreshold() { return overallThreshold; }
+        public void setOverallThreshold(double overallThreshold) { this.overallThreshold = overallThreshold; }
+    }
+}

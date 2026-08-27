@@ -20,14 +20,16 @@ TARGET = "demo-service/src/main/java/com/shop/order/service/OrderService.java"
 MAX_LATENCY_SEC = 5.0
 
 
+# 超时按平台的最坏情况取：一次采集要挨个 dump 8 个实例，探针挂掉时每个耗尽
+# timeout-ms（3s）＝24s，再叠加各语言的外部工具。凭手感填个 10s 只会换来假失败
 def get(url):
-    with urllib.request.urlopen(url, timeout=10) as r:
+    with urllib.request.urlopen(url, timeout=60) as r:
         return json.load(r)
 
 
 def post(url):
     req = urllib.request.Request(url, method="POST", data=b"")
-    with urllib.request.urlopen(req, timeout=10) as r:
+    with urllib.request.urlopen(req, timeout=60) as r:
         return json.load(r)
 
 

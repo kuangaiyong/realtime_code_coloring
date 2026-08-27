@@ -1,6 +1,7 @@
 package com.rtcc.platform.collector;
 
 import com.rtcc.platform.config.CoverageProperties;
+import com.rtcc.platform.config.ProjectConfig;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -25,27 +26,27 @@ class GoCoverageAnalyzerTest {
 
     @Test
     void 没有Go实例时不做任何事() throws Exception {
-        assertEquals(0, new GoCoverageAnalyzer(new CoverageProperties()).analyze(List.of()).size());
+        assertEquals(0, new GoCoverageAnalyzer(new ProjectConfig(), new CoverageProperties()).analyze(List.of()).size());
     }
 
     @Test
     void 未配置模块路径时拒绝出报告而不是返回空结果() {
-        CoverageProperties props = new CoverageProperties();
+        ProjectConfig props = new ProjectConfig();
         props.setGoSourceRoot("demo-service-go");
         // go-module-path 缺失 → profile 里的 import path 一个也换算不成仓库相对路径
 
         IOException e = assertThrows(IOException.class,
-                () -> new GoCoverageAnalyzer(props).analyze(ONE_DUMP));
+                () -> new GoCoverageAnalyzer(props, new CoverageProperties()).analyze(ONE_DUMP));
         assertTrue(e.getMessage().contains("go-module-path"), e.getMessage());
     }
 
     @Test
     void 未配置源码根时同样拒绝出报告() {
-        CoverageProperties props = new CoverageProperties();
+        ProjectConfig props = new ProjectConfig();
         props.setGoModulePath("example.com/demo");
 
         IOException e = assertThrows(IOException.class,
-                () -> new GoCoverageAnalyzer(props).analyze(ONE_DUMP));
+                () -> new GoCoverageAnalyzer(props, new CoverageProperties()).analyze(ONE_DUMP));
         assertTrue(e.getMessage().contains("go-source-root"), e.getMessage());
     }
 }

@@ -1,10 +1,10 @@
 package com.rtcc.platform.collector;
 
 import com.rtcc.platform.config.CoverageProperties;
+import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.model.FileCoverage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -23,7 +23,6 @@ import java.util.regex.Pattern;
  *
  * profile 每行形如：{@code 导入路径/文件.go:起行.起列,止行.止列 语句数 执行次数}
  */
-@Component
 public class GoCoverageAnalyzer {
 
     private static final Logger log = LoggerFactory.getLogger(GoCoverageAnalyzer.class);
@@ -32,10 +31,13 @@ public class GoCoverageAnalyzer {
     private static final Pattern BLOCK = Pattern.compile(
             "^(.+):(\\d+)\\.\\d+,(\\d+)\\.\\d+ \\d+ (\\d+)$");
 
-    private final CoverageProperties props;
+    private final ProjectConfig props;
+    /** 工具链可执行文件的路径是部署机器的属性，换机器才改，与项目无关，因此仍从平台配置取 */
+    private final CoverageProperties platform;
 
-    public GoCoverageAnalyzer(CoverageProperties props) {
+    public GoCoverageAnalyzer(ProjectConfig props, CoverageProperties platform) {
         this.props = props;
+        this.platform = platform;
     }
 
     /**
@@ -76,7 +78,9 @@ public class GoCoverageAnalyzer {
     }
 
     private void runCovdata(Path in, Path out) throws IOException {
-        List<String> cmd = List.of(props.getGoTool(), "tool", "covdata", "textfmt",
+        // 走 CovdataTool 而不是直接拼 `go tool covdata`：那层包装每轮采集要花约 3 秒
+        // （见 CovdataTool 的说明），而它是端到端染色延迟里最大的一块
+        List<String> cmd = CovdataTool.command(platform.getGoTool(), "textfmt",
                 "-i=" + in.toAbsolutePath(), "-o=" + out.toAbsolutePath());
         // profile 走 -o 落文件，stdout 本该是空的；但只要它写了东西而没人读，
         // 管道写满就会双方对着阻塞，直到 30 秒超时才被强杀。丢弃即可

@@ -1,6 +1,6 @@
 package com.rtcc.platform.collector;
 
-import com.rtcc.platform.config.CoverageProperties;
+import com.rtcc.platform.config.ProjectConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -53,7 +53,7 @@ class GitServiceTest {
         run("commit", "-qm", "baseline");
         baseline = run("rev-parse", "HEAD").strip();
 
-        CoverageProperties props = new CoverageProperties();
+        ProjectConfig props = new ProjectConfig();
         props.setRepoDir(repo.toString());
         props.setJavaSourceRoot("svc/src/main/java");
         git = new GitService(props);
@@ -120,7 +120,7 @@ class GitServiceTest {
      */
     @Test
     void 一个源码根都没配时直接报错而不是退化成整仓diff() throws Exception {
-        CoverageProperties bare = new CoverageProperties();
+        ProjectConfig bare = new ProjectConfig();
         bare.setRepoDir(repo.toString());
         GitService noRoots = new GitService(bare);
         Files.writeString(repo.resolve("README.md"), "只动了与被测服务无关的文件\n", StandardCharsets.UTF_8);

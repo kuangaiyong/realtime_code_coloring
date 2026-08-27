@@ -30,10 +30,10 @@ CONTROLLER = "demo-service/src/main/java/com/shop/order/controller/OrderControll
 POLL_SEC = 20
 
 
-def http(url, method="GET"):
+def http(url, method="GET", timeout=60):
     req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.load(r)
     except urllib.error.HTTPError as e:
         return e.code, json.load(e)
@@ -285,8 +285,24 @@ def main():
     # ---- 按实例分别归一化（实例对比视图的数据源） ----
     print()
     print("  >> 各实例分别归一化：GET /api/coverage/instances")
+    # 先让两台都跑一遍同一个接口，制造出必然存在的共享行。
+    # 下面「聚合 ≠ 相加」的前提是两台有共同覆盖到的行，而此刻实例 #2 刚重启完、
+    # 计数器从零开始，与实例 #1 的覆盖本就可能毫无交集 —— 前提不成立时这条断言会随机
+    # 失败，报出来的却是「并集语义不对」，把人引向一个根本不存在的聚合 bug
+    http(f"{DEMO1}/api/order/query?bizNo=A1002")
+    http(f"{DEMO2}/api/order/query?bizNo=A1002")
+    # 等轮询把这两次调用并进聚合快照、数据不再变动：/summary 给的是 3 秒轮询留下的快照，
+    # /instances 却是实时重新拉一遍探针。数据还在变的时候取这两个数去比，
+    # 比的是两个不同时刻的状态，结论时对时错
+    time.sleep(8)
+
     agg_before = sum(f["coveredLines"] for f in must(*summary(), what="summary")["files"])
-    st, per = http(f"{PLATFORM}/api/coverage/instances")
+    # 这一个接口要给它比别处宽的超时：它与轮询采集抢同一把 collectLock，
+    # 排在一次采集后面时要先等那次采完，而采集对每个不可达的实例都要耗满 timeout-ms
+    # （8 个实例最坏 24 秒），之后才轮到它自己对 8 个实例各跑一遍外部归一化工具。
+    # 写 15 秒时实例还少，如今偶尔会顶破 —— 顶破时报出来的是一串 Python 栈，
+    # 看着像平台崩了，而实际上只是没等够
+    st, per = http(f"{PLATFORM}/api/coverage/instances", timeout=90)
     if st != 200:
         print(f"  [FAIL] 取各实例覆盖失败：{st} {per}")
         ok = False

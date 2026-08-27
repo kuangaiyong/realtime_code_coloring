@@ -27,11 +27,25 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
     ws.onerror = (e) => { clearTimeout(timer); reject(new Error('WebSocket 错误')); };
   });
 
+  // 另开一个订阅了别的项目的会话。推送若不分项目，它会收到本项目的数据 ——
+  // 页面拿着别人的覆盖率重绘，界面上看不出这是串台，只会觉得数字莫名跳变
+  const OTHER = '__no_such_project__';
+  const wsOther = new WebSocket(`ws://localhost:18090/ws/coverage?project=${OTHER}`);
+  let leaked = null;
+  wsOther.onmessage = (ev) => { leaked = leaked || ev.data; };
+  // 两个连接的 onopen 都要在创建后立刻挂上：等完前一个再挂后一个的话，
+  // 后一个可能已经 open 过了，事件早已过去，处理器再挂上去永远不触发
+  const otherOpen = new Promise((r, j) => {
+    wsOther.onopen = r;
+    setTimeout(() => j(new Error('WebSocket 连接超时（跨项目会话）')), 5000);
+  });
+
   await new Promise((r, j) => {
     ws.onopen = r;
     setTimeout(() => j(new Error('WebSocket 连接超时')), 5000);
   });
-  console.log('  WebSocket 已连接');
+  await otherOpen;
+  console.log(`  WebSocket 已连接（本项目 1 个会话，项目 ${OTHER} 1 个会话）`);
 
   // 触发一次新的覆盖：先让订单回到可退款状态，再调用退款接口
   await fetch(`${DEMO}/api/order/callback?bizNo=A1002&status=SUCCESS`, { method: 'POST' });
@@ -58,31 +72,43 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
   if (latency > 6000) fail(`推送延迟 ${latency}ms 过高`);
   console.log(`  [PASS] 推送延迟 ${latency}ms 在可接受范围`);
 
-  // 静态染色页面可访问
+  // 本项目已经收到推送了，再宽限一会儿：过滤若失效，跨项目会话是同一轮循环里发的，
+  // 不会比这更晚。宽限只是排除调度抖动，不是等它慢慢来
+  await new Promise((r) => setTimeout(r, 1000));
+  if (leaked) fail(`推送串到了项目 ${OTHER} 的会话上：${String(leaked).slice(0, 120)}`);
+  console.log(`  [PASS] 推送未串到项目 ${OTHER} 的会话（该项目不存在，本就不该收到任何数据）`);
+  wsOther.close();
+
+  // 页面本体。前端改成 Vue 之后源码里只剩一个挂载点，断言 DOM 钩子的活儿
+  // 交给 scripts/ui_verify.js 在真实 Chrome 里做。这里只断言一件源码层面才查得到、
+  // 而浏览器里反而看不出的事：**页面引用的每个资源都真的取得到**。
+  // 少一个 vendor 文件的表现是「HTTP 200 的空白页」—— 最难排查的一种坏法
   const page = await fetch(`${PLATFORM}/`);
   const html = await page.text();
-  if (page.status !== 200) fail('染色页面返回 ' + page.status);
-  for (const marker of ['代码实时染色平台', '/ws/coverage', '/api/coverage/summary']) {
-    if (!html.includes(marker)) fail(`页面缺少预期内容: ${marker}`);
+  if (page.status !== 200) fail('页面返回 ' + page.status);
+  if (!html.includes('代码实时染色平台')) fail('页面标题不对');
+  // 只扫 index.html 的 src/href 是不够的：本次改动新增的全部前端代码
+  // （store.js / api.js / views/*.js）是 app.js 用 ES module 引进来的，
+  // 少一个的表现同样是 200 空白页。所以要顺着 import 把模块图整个走一遍
+  const seen = new Set();
+  const queue = [...html.matchAll(/(?:src|href)="(\/[^"]+)"/g)].map(m => m[1]);
+  if (queue.length < 5) fail(`页面只引用了 ${queue.length} 个资源，vendor 或入口脚本没接上`);
+  while (queue.length) {
+    const url = queue.shift();
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const r = await fetch(PLATFORM + url);
+    if (!r.ok) fail(`页面引用的 ${url} 取不到（HTTP ${r.status}）—— 浏览器里会是一张空白页`);
+    // vendor 是 1MB 的 UMD 包，里面没有 import；只顺着我们自己的模块往下走
+    if (!url.endsWith('.js') || url.startsWith('/vendor/')) continue;
+    const body = await r.text();
+    const dir = url.slice(0, url.lastIndexOf('/') + 1);
+    for (const m of body.matchAll(/^\s*import[^'"]*['"](\.[^'"]+)['"]/gm)) {
+      queue.push(new URL(m[1], 'http://x' + dir).pathname);
+    }
   }
-  console.log(`  [PASS] 染色页面可访问（${html.length} 字节，含 WebSocket 与 API 调用）`);
-
-  // 总览看板与覆盖率排行。渲染发生在浏览器里，这里断言不了像素，
-  // 但能断言两件真会坏的事：视图钩子在不在、以及看板赖以计算的字段在不在。
-  // 后端哪天少返回一个字段，看板会安静地渲染成空白 —— 正是本项目最怕的静默失效
-  for (const marker of ['data-view="dash"', 'id="viewDash"', 'id="dashStats"',
-                        'id="instBox"', 'id="rankBox"', 'data-rank="ratio"', 'data-rank="missed"',
-                        'id="trendBox"', 'id="trendMeta"', 'id="btnPerInst"',
-                        'id="gateBox"', 'id="gateMeta"',
-                        'data-trend="session"', 'data-trend="build"']) {
-    if (!html.includes(marker)) fail(`看板视图缺少钩子: ${marker}`);
-  }
-  console.log('  [PASS] 看板、排行与曲线的视图钩子齐备');
-
-  // 曲线画的是本次会话内的采样，不是跨构建历史（平台目前零持久化）。
-  // 这句免责一旦被删掉，用户会把一段会话内的爬升读成「这个项目的覆盖率长期趋势」
-  if (!html.includes('非跨构建历史')) fail('覆盖率曲线缺少「非跨构建历史」的声明');
-  console.log('  [PASS] 覆盖率曲线声明了数据范围（会话内采样，非跨构建历史）');
+  console.log(`  [PASS] 页面与整个 ES module 图共 ${seen.size} 个资源全部可取`
+    + `（${html.length} 字节的挂载壳）`);
 
   const dash = await (await fetch(`${PLATFORM}/api/coverage/summary`)).json();
   if (!Array.isArray(dash.instances) || dash.instances.length === 0) fail('summary 未返回 instances[]，看板的实例表会空白');
@@ -91,6 +117,13 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
       if (!(k in i)) fail(`实例 ${i.endpoint} 缺少字段 ${k}`);
     }
     if (!/^(java|go|cpp|rust):\/\//.test(i.endpoint)) fail(`看板按 endpoint 前缀判定语言，但取到 ${i.endpoint}`);
+    // 接入向导要把这个端口填进它给出的启动命令里。解析不出来的话命令是错的，
+    // 而照着错命令起的服务连不上，人只会以为是自己配错了
+    const hp = String(i.endpoint).split('://')[1] || '';
+    const at = hp.lastIndexOf(':');
+    if (at <= 0 || !/^\d+$/.test(hp.substring(at + 1))) {
+      fail(`接入向导要从 ${i.endpoint} 里取出 host:port 填进启动命令，但解析不出端口`);
+    }
   }
   console.log(`  [PASS] 实例表字段齐备，${dash.instances.length} 个实例的语言前缀均可识别`);
 

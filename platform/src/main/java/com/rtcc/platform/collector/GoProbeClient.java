@@ -1,7 +1,6 @@
 package com.rtcc.platform.collector;
 
-import com.rtcc.platform.config.CoverageProperties;
-import org.springframework.stereotype.Component;
+import com.rtcc.platform.config.ProjectConfig;
 
 import java.io.IOException;
 import java.net.URI;
@@ -19,17 +18,14 @@ import java.time.Duration;
  * 但「既有源码一行不改」仍然做得到：探针文件用 build tag 守卫、与 main 同包，
  * init() 自动执行，业务代码不需要 import 或调用任何东西。
  */
-@Component
 public class GoProbeClient {
 
-    private final CoverageProperties props;
+    private final ProjectConfig props;
     private final HttpClient http;
 
-    public GoProbeClient(CoverageProperties props) {
+    public GoProbeClient(ProjectConfig props) {
         this.props = props;
-        this.http = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(props.getTimeoutMs()))
-                .build();
+        this.http = SharedHttpClients.forConnectTimeout(props.getTimeoutMs());
     }
 
     /** 元数据（文件、函数、代码块位置），构建后不变 */

@@ -50,15 +50,18 @@ public class CoverageHistory {
             try {
                 jdbc.execute("""
                         CREATE TABLE IF NOT EXISTS build_coverage (
-                          build_commit  CHAR(40)     NOT NULL PRIMARY KEY,
+                          project_id    VARCHAR(64)  NOT NULL DEFAULT 'default',
+                          build_commit  CHAR(40)     NOT NULL,
                           first_seen_at DATETIME(3)  NOT NULL,
                           peak_at       DATETIME(3)  NOT NULL,
                           overall_ratio DECIMAL(5,2) NOT NULL,
                           covered_lines INT          NOT NULL,
                           missed_lines  INT          NOT NULL,
-                          file_count    INT          NOT NULL
+                          file_count    INT          NOT NULL,
+                          PRIMARY KEY (project_id, build_commit)
                         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                         """);
+                migrateProjectId();
                 ready = true;
                 unavailable = null;
                 return true;
@@ -70,10 +73,39 @@ public class CoverageHistory {
     }
 
     /**
+     * 给多项目之前建的表补上 project_id。既有记录按 DEFAULT 归入默认项目 ——
+     * 它们本来就是那一个项目产生的，趋势图不会断。
+     *
+     * <p>MySQL 没有 {@code ADD COLUMN IF NOT EXISTS}，所以先查一次列在不在。
+     * 三个动作放进同一条 ALTER：分开执行的话，中途失败会留下一张
+     * 「有 project_id 但主键还是单列 commit」的表，两个项目照样互相覆盖，
+     * 而且看不出问题出在哪。
+     */
+    private void migrateProjectId() {
+        Integer exists = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = 'build_coverage' AND column_name = 'project_id'
+                """, Integer.class);
+        if (exists != null && exists == 0) {
+            jdbc.execute("""
+                    ALTER TABLE build_coverage
+                      ADD COLUMN project_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST,
+                      DROP PRIMARY KEY,
+                      ADD PRIMARY KEY (project_id, build_commit)
+                    """);
+            log.info("build_coverage 已加上 project_id，既有记录归入项目 default");
+        }
+    }
+
+    /**
      * 记下这个构建的覆盖峰值。已有记录时只在覆盖行数更多时才更新 ——
      * 清零之后的低值不该把已经测到的成绩抹掉。
+     *
+     * <p>按项目分区：两个项目盯的可能是同一个仓库的同一个 commit，
+     * 不带项目维度的话它们会写进同一行互相覆盖，趋势图上串成一条。
      */
-    public void record(String buildCommit, double overallRatio,
+    public void record(String projectId, String buildCommit, double overallRatio,
                        int coveredLines, int missedLines, int fileCount) {
         if (buildCommit == null || !ensureReady()) {
             return;
@@ -81,16 +113,16 @@ public class CoverageHistory {
         try {
             jdbc.update("""
                     INSERT INTO build_coverage
-                      (build_commit, first_seen_at, peak_at, overall_ratio,
+                      (project_id, build_commit, first_seen_at, peak_at, overall_ratio,
                        covered_lines, missed_lines, file_count)
-                    VALUES (?, NOW(3), NOW(3), ?, ?, ?, ?)
+                    VALUES (?, ?, NOW(3), NOW(3), ?, ?, ?, ?)
                     ON DUPLICATE KEY UPDATE
                       peak_at       = IF(VALUES(covered_lines) > covered_lines, NOW(3), peak_at),
                       overall_ratio = IF(VALUES(covered_lines) > covered_lines, VALUES(overall_ratio), overall_ratio),
                       missed_lines  = IF(VALUES(covered_lines) > covered_lines, VALUES(missed_lines), missed_lines),
                       file_count    = IF(VALUES(covered_lines) > covered_lines, VALUES(file_count), file_count),
                       covered_lines = GREATEST(covered_lines, VALUES(covered_lines))
-                    """, buildCommit, overallRatio, coveredLines, missedLines, fileCount);
+                    """, projectId, buildCommit, overallRatio, coveredLines, missedLines, fileCount);
             unavailable = null;
         } catch (Exception e) {
             // 每轮采集都会走到这里，连不上时不能每 3 秒刷一条 ERROR
@@ -102,8 +134,8 @@ public class CoverageHistory {
         }
     }
 
-    /** 按时间正序返回最近若干个构建，供趋势图使用 */
-    public Map<String, Object> recent(int limit) {
+    /** 按时间正序返回这个项目最近若干个构建，供趋势图使用 */
+    public Map<String, Object> recent(String projectId, int limit) {
         Map<String, Object> res = new LinkedHashMap<>();
         if (!ensureReady()) {
             res.put("available", false);
@@ -115,7 +147,8 @@ public class CoverageHistory {
             List<Map<String, Object>> rows = jdbc.query("""
                     SELECT build_commit, peak_at, overall_ratio, covered_lines, missed_lines, file_count
                     FROM (
-                      SELECT * FROM build_coverage ORDER BY peak_at DESC LIMIT ?
+                      SELECT * FROM build_coverage
+                      WHERE project_id = ? ORDER BY peak_at DESC LIMIT ?
                     ) t ORDER BY peak_at ASC
                     """,
                     (rs, i) -> {
@@ -127,7 +160,7 @@ public class CoverageHistory {
                         m.put("missedLines", rs.getInt("missed_lines"));
                         m.put("fileCount", rs.getInt("file_count"));
                         return m;
-                    }, limit);
+                    }, projectId, limit);
             res.put("available", true);
             res.put("error", null);
             res.put("builds", new ArrayList<>(rows));

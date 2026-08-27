@@ -1,6 +1,7 @@
 package com.rtcc.platform.collector;
 
 import com.rtcc.platform.config.CoverageProperties;
+import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.model.FileCoverage;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -25,8 +26,8 @@ class RustCoverageAnalyzerTest {
 
     private static final List<byte[]> ONE_DUMP = List.of(new byte[]{1, 2, 3});
 
-    private CoverageProperties props(Path repo, String binary) {
-        CoverageProperties p = new CoverageProperties();
+    private ProjectConfig props(Path repo, String binary) {
+        ProjectConfig p = new ProjectConfig();
         p.setRepoDir(repo.toString());
         p.setRustSourceRoot("demo-service-rust");
         p.setRustBinary(binary);
@@ -35,23 +36,23 @@ class RustCoverageAnalyzerTest {
 
     @Test
     void 没有Rust实例时不做任何事() throws Exception {
-        assertEquals(0, new RustCoverageAnalyzer(new CoverageProperties()).analyze(List.of()).size());
+        assertEquals(0, new RustCoverageAnalyzer(new ProjectConfig(), new CoverageProperties()).analyze(List.of()).size());
     }
 
     @Test
     void 未配置源码根时拒绝出报告() {
-        CoverageProperties p = new CoverageProperties();
+        ProjectConfig p = new ProjectConfig();
         p.setRustBinary("whatever.exe");
 
         IOException e = assertThrows(IOException.class,
-                () -> new RustCoverageAnalyzer(p).analyze(ONE_DUMP));
+                () -> new RustCoverageAnalyzer(p, new CoverageProperties()).analyze(ONE_DUMP));
         assertTrue(e.getMessage().contains("rust-source-root"), e.getMessage());
     }
 
     @Test
     void 未配置产物时拒绝出报告(@TempDir Path repo) {
         IOException e = assertThrows(IOException.class,
-                () -> new RustCoverageAnalyzer(props(repo, null)).analyze(ONE_DUMP));
+                () -> new RustCoverageAnalyzer(props(repo, null), new CoverageProperties()).analyze(ONE_DUMP));
         assertTrue(e.getMessage().contains("rust-binary"), e.getMessage());
     }
 
@@ -62,7 +63,7 @@ class RustCoverageAnalyzerTest {
     @Test
     void 产物不存在时拒绝出报告(@TempDir Path repo) {
         IOException e = assertThrows(IOException.class,
-                () -> new RustCoverageAnalyzer(props(repo, repo.resolve("nope.exe").toString()))
+                () -> new RustCoverageAnalyzer(props(repo, repo.resolve("nope.exe").toString()), new CoverageProperties())
                         .analyze(ONE_DUMP));
         assertTrue(e.getMessage().contains("rust-binary 不存在"), e.getMessage());
     }
@@ -70,7 +71,7 @@ class RustCoverageAnalyzerTest {
     @Test
     void LCOV逐行状态与仓库相对路径(@TempDir Path repo) throws Exception {
         String abs = repo.toAbsolutePath().normalize().toString().replace('\\', '/');
-        Map<String, FileCoverage> got = new RustCoverageAnalyzer(props(repo, "x")).parse("""
+        Map<String, FileCoverage> got = new RustCoverageAnalyzer(props(repo, "x"), new CoverageProperties()).parse("""
                 SF:%s/demo-service-rust/src/order.rs
                 DA:10,3
                 DA:11,0
@@ -98,7 +99,7 @@ class RustCoverageAnalyzerTest {
                 ? Character.toLowerCase(abs.charAt(0)) + abs.substring(1)
                 : Character.toUpperCase(abs.charAt(0)) + abs.substring(1);
 
-        Map<String, FileCoverage> got = new RustCoverageAnalyzer(props(repo, "x")).parse("""
+        Map<String, FileCoverage> got = new RustCoverageAnalyzer(props(repo, "x"), new CoverageProperties()).parse("""
                 SF:%s/demo-service-rust/src/order.rs
                 DA:1,1
                 end_of_record
@@ -111,7 +112,7 @@ class RustCoverageAnalyzerTest {
     @Test
     void 只统计源码根之下的文件(@TempDir Path repo) throws Exception {
         String abs = repo.toAbsolutePath().normalize().toString().replace('\\', '/');
-        Map<String, FileCoverage> got = new RustCoverageAnalyzer(props(repo, "x")).parse("""
+        Map<String, FileCoverage> got = new RustCoverageAnalyzer(props(repo, "x"), new CoverageProperties()).parse("""
                 SF:%s/demo-service-rust/src/order.rs
                 DA:1,1
                 end_of_record
@@ -133,7 +134,7 @@ class RustCoverageAnalyzerTest {
     @Test
     void 一个文件都没输出时拒绝出报告(@TempDir Path repo) {
         IOException e = assertThrows(IOException.class,
-                () -> new RustCoverageAnalyzer(props(repo, "x")).parse(""));
+                () -> new RustCoverageAnalyzer(props(repo, "x"), new CoverageProperties()).parse(""));
         assertTrue(e.getMessage().contains("instrument-coverage"), e.getMessage());
     }
 
@@ -141,7 +142,7 @@ class RustCoverageAnalyzerTest {
     void 没有一个文件落在源码根下时拒绝出报告(@TempDir Path repo) {
         String abs = repo.toAbsolutePath().normalize().toString().replace('\\', '/');
         IOException e = assertThrows(IOException.class,
-                () -> new RustCoverageAnalyzer(props(repo, "x")).parse("""
+                () -> new RustCoverageAnalyzer(props(repo, "x"), new CoverageProperties()).parse("""
                         SF:%s/demo-service-go/main.go
                         DA:1,1
                         end_of_record
@@ -154,10 +155,12 @@ class RustCoverageAnalyzerTest {
     void 产物存在时才会去调llvm工具(@TempDir Path repo) throws Exception {
         Path bin = repo.resolve("demo.exe");
         Files.writeString(bin, "not a real binary");
-        CoverageProperties p = props(repo, bin.toString());
-        p.setLlvmProfdataTool(repo.resolve("no-such-llvm-profdata").toString());
+        ProjectConfig p = props(repo, bin.toString());
+        // llvm 工具的路径是平台级配置：它跟着部署机器走，不跟着项目走
+        CoverageProperties platform = new CoverageProperties();
+        platform.setLlvmProfdataTool(repo.resolve("no-such-llvm-profdata").toString());
 
         // 走到了调工具这一步（而不是提前因产物缺失退出），说明前置校验的顺序是对的
-        assertThrows(IOException.class, () -> new RustCoverageAnalyzer(p).analyze(ONE_DUMP));
+        assertThrows(IOException.class, () -> new RustCoverageAnalyzer(p, platform).analyze(ONE_DUMP));
     }
 }

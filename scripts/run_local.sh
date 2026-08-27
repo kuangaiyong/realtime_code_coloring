@@ -29,7 +29,10 @@ RUST_LLVM_BIN="$RUST_TOOLCHAIN/lib/rustlib/x86_64-pc-windows-gnu/bin"
 # Windows 上 LLVM 覆盖率只有 msvc 目标能用（见 CLAUDE.md），而 msvc 目标要链接
 # 微软的 CRT 与 SDK 导入库。xwin 只拉这些库文件，不装 Visual Studio
 XWIN_HOME="${XWIN_HOME:-/c/Users/Administrator/devtools/xwin}"
-export JAVA_HOME RUSTUP_HOME CARGO_HOME
+# 前端验收要开真实 Chrome。这两个也是「跟着机器走」的路径，与工具链同等对待
+PUPPETEER_HOME="${PUPPETEER_HOME:-/c/Users/Administrator/AppData/Roaming/npm/node_modules/@mermaid-js/mermaid-cli/node_modules/puppeteer}"
+CHROME_BIN="${CHROME_BIN:-/c/Program Files/Google/Chrome/Application/chrome.exe}"
+export JAVA_HOME RUSTUP_HOME CARGO_HOME PUPPETEER_HOME CHROME_BIN
 export PATH="$JAVA_HOME/bin:$MVN_HOME/bin:$GO_HOME/bin:$MINGW_HOME/bin:$RUST_LLVM_BIN:$CARGO_HOME/bin:$PATH"
 
 # 数据库凭据从 .env.local 读（已 gitignore）。没有这个文件也要能跑：
@@ -236,10 +239,18 @@ start() {
   echo "    demo-service-rust#2 http://localhost:18051  探针 http://localhost:6601"
 
   echo "==> 启动染色平台"
+  start_platform
+  echo "    platform      http://localhost:18090   ← 打开这个看染色"
+}
+
+# 起平台。数据库地址取当前环境里的 COVERAGE_DB_URL，
+# 因此 platform-dbdown 只要覆盖这个变量即可，不必另抄一份启动命令
+start_platform() {
+  kill_port 18090
+  sleep 2
   ( cd "$ROOT/platform" && exec java -jar "target/platform-$VERSION.jar" ) > "$LOG_DIR/platform.log" 2>&1 &
   echo $! > "$LOG_DIR/platform.pid"
   wait_ready "$LOG_DIR/platform.log" "Started PlatformApplication" "platform"
-  echo "    platform      http://localhost:18090   ← 打开这个看染色"
 }
 
 ALL_PORTS="18050 18051 18060 18061 18070 18071 18080 18081 18090"
@@ -279,9 +290,22 @@ resolve_python() {
   return 1
 }
 
+# 前端验收要 node + puppeteer + 真实 Chrome。必须在开跑之前探一次：
+# 它排在 verify 的最后一步，缺依赖的话会在前面九套用例跑完十几分钟之后才炸，
+# 而那时候人早走开了。PUPPETEER_HOME 的默认值指向 mermaid-cli 的嵌套 node_modules，
+# npm 的提升策略一变这个路径就没了 —— 正是最需要早说的那种缺失
+resolve_ui_deps() {
+  command -v node >/dev/null 2>&1 || { echo "!! 找不到 node，前端验收跑不了"; return 1; }
+  [ -f "$PUPPETEER_HOME/lib/puppeteer/puppeteer.js" ] || {
+    echo "!! puppeteer 不在 $PUPPETEER_HOME —— 用 PUPPETEER_HOME 指到正确位置"; return 1; }
+  [ -f "$CHROME_BIN" ] || { echo "!! 找不到 Chrome：$CHROME_BIN —— 用 CHROME_BIN 指过去"; return 1; }
+  return 0
+}
+
 verify() {
   # 只有 verify 用得上 python。放在顶层的话，没装 python 的机器连 stop 都跑不了
   resolve_python
+  resolve_ui_deps
 
   # 订单一旦进入终态就回不到 CREATED，业务状态只能靠重启被测实例复位。
   # 少了这一步，P0 用例第二次跑就会走进「重复回调」分支而失败。
@@ -308,6 +332,13 @@ verify() {
   "$PY" scripts/e2e_cpp.py
   echo
   "$PY" scripts/e2e_rust.py
+  echo
+  # 放最后：它会建项目、跑场景（start 会清零计数器），排在别的用例前面会洗掉它们的数据
+  "$PY" scripts/e2e_project.py
+  echo
+  # 放在 e2e_project 之后：它同样要点「清零计数器」才能验染色链路，
+  # 而 e2e_project 结尾会重启平台，正好由 ui_verify 自己等平台就绪
+  node scripts/ui_verify.js
 }
 
 case "${1:-start}" in
@@ -321,5 +352,13 @@ case "${1:-start}" in
   demo2-mismatch) kill_port 18081; sleep 2; start_demo 18081 6301 demo2 "$(printf '%040d' 1)" ;;
   # 同一提交但标记为 dirty：commit 相同、字节码不同，最容易被漏判成「版本一致」
   demo2-dirty) kill_port 18081; sleep 2; start_demo 18081 6301 demo2 "$(git rev-parse HEAD)-dirty" ;;
-  *) echo "用法: $0 {start|stop|verify|demo2-stop|demo2-start|demo2-mismatch|demo2-dirty}"; exit 1 ;;
+  # 以下两条供 e2e_project.py 摆布平台自身：验证数据库不可用时的降级
+  # 指向一个没人监听的端口，比停掉真数据库安全 —— 后者会波及机器上别的服务
+  platform-dbdown)
+    # 必须 export：平台是在子 shell 里 exec 起来的，只有导出的变量才传得进去
+    export COVERAGE_DB_URL="jdbc:mysql://127.0.0.1:3399/code_coloring?useSSL=false&connectTimeout=2000"
+    export COVERAGE_DB_PASSWORD="nope"
+    start_platform ;;
+  platform-restart) start_platform ;;
+  *) echo "用法: $0 {start|stop|verify|demo2-stop|demo2-start|demo2-mismatch|demo2-dirty|platform-dbdown|platform-restart}"; exit 1 ;;
 esac

@@ -1,10 +1,10 @@
 package com.rtcc.platform.collector;
 
 import com.rtcc.platform.config.CoverageProperties;
+import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.model.FileCoverage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -27,7 +27,6 @@ import java.util.regex.Pattern;
  * 探针交回的字节流格式（大端）：重复 { u32 名字长度 | 名字 | u32 内容长度 | 内容 }。
  * 一个 C++ 服务通常有多个编译单元，就有多份 .gcda，所以要带文件名传多份。
  */
-@Component
 public class CppCoverageAnalyzer {
 
     private static final Logger log = LoggerFactory.getLogger(CppCoverageAnalyzer.class);
@@ -35,10 +34,13 @@ public class CppCoverageAnalyzer {
     /** gcov -t 的每一行：{@code <计数>:<行号>:<源码>}，行号 0 的是 Source/Graph/Data 这些元信息 */
     private static final Pattern ROW = Pattern.compile("^\\s*([^:]+):\\s*(\\d+):(.*)$");
 
-    private final CoverageProperties props;
+    private final ProjectConfig props;
+    /** 工具链可执行文件的路径是部署机器的属性，换机器才改，与项目无关，因此仍从平台配置取 */
+    private final CoverageProperties platform;
 
-    public CppCoverageAnalyzer(CoverageProperties props) {
+    public CppCoverageAnalyzer(ProjectConfig props, CoverageProperties platform) {
         this.props = props;
+        this.platform = platform;
     }
 
     /** @param dumps 各实例交回的字节流，一个实例一份 */
@@ -113,7 +115,7 @@ public class CppCoverageAnalyzer {
         Path acc = dirs.get(0);
         for (int i = 1; i < dirs.size(); i++) {
             Path out = work.resolve("m" + i);
-            exec(List.of(props.getGcovMergeTool(), "merge",
+            exec(List.of(platform.getGcovMergeTool(), "merge",
                     acc.toAbsolutePath().toString(), dirs.get(i).toAbsolutePath().toString(),
                     "-o", out.toAbsolutePath().toString()), null, "gcov-tool merge");
             copyAll(gcno, out);
@@ -128,7 +130,7 @@ public class CppCoverageAnalyzer {
      * 工作目录必须是 C++ 源码根：.gcno 里记的源码名是编译时的相对名。
      */
     private String runGcov(Path profileDir, List<Path> gcno) throws IOException {
-        List<String> cmd = new ArrayList<>(List.of(props.getGcovTool(), "-t", "-r",
+        List<String> cmd = new ArrayList<>(List.of(platform.getGcovTool(), "-t", "-r",
                 "-o", profileDir.toAbsolutePath().toString()));
         gcno.forEach(p -> cmd.add(p.getFileName().toString()));
         Path cwd = Path.of(props.getRepoDir(), props.getCppSourceRoot());

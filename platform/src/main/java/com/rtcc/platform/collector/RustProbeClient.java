@@ -1,7 +1,6 @@
 package com.rtcc.platform.collector;
 
-import com.rtcc.platform.config.CoverageProperties;
-import org.springframework.stereotype.Component;
+import com.rtcc.platform.config.ProjectConfig;
 
 import java.io.IOException;
 import java.net.URI;
@@ -21,17 +20,14 @@ import java.time.Duration;
  * 交回的是一份 .profraw（LLVM 的原始计数器快照），一个进程一份，
  * 比 C++ 的多份 .gcda 简单。
  */
-@Component
 public class RustProbeClient {
 
-    private final CoverageProperties props;
+    private final ProjectConfig props;
     private final HttpClient http;
 
-    public RustProbeClient(CoverageProperties props) {
+    public RustProbeClient(ProjectConfig props) {
         this.props = props;
-        this.http = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(props.getTimeoutMs()))
-                .build();
+        this.http = SharedHttpClients.forConnectTimeout(props.getTimeoutMs());
     }
 
     /** 实例自报的构建版本，与 Java 侧的 sessionid 同一个约定 */

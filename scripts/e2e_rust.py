@@ -45,7 +45,10 @@ POLL_SEC = 25
 def http(url, method="GET"):
     req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
     try:
-        with urllib.request.urlopen(req, timeout=25) as r:
+    # 超时按平台的最坏情况取：一次采集要挨个 dump 8 个实例，探针挂掉时每个耗尽
+    # timeout-ms（3s）＝24s，再叠加各语言的外部工具，还可能排在调度那一轮后面。
+    # 凭手感填个 10s / 20s 只会换来一条与被测功能无关的假失败（已发生过两次）
+        with urllib.request.urlopen(req, timeout=60) as r:
             return r.status, json.load(r)
     except urllib.error.HTTPError as e:
         return e.code, json.load(e)
