@@ -5,6 +5,7 @@ import com.rtcc.platform.collector.ProbeClient;
 import com.rtcc.platform.config.CoverageProperties;
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.config.ProjectStore;
+import com.rtcc.platform.history.CollectEvents;
 import com.rtcc.platform.history.CoverageHistory;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -49,7 +50,7 @@ class ProjectLoadFailureTest {
         };
         ProjectRuntimeFactory factory = new ProjectRuntimeFactory(
                 new ProbeClient(), new CoverageAnalyzer(), platform, new CoveragePublisher(),
-                new CoverageHistory(unreachable())) {
+                new CoverageHistory(unreachable()), new CollectEvents(unreachable())) {
             @Override
             public ProjectRuntime create(ProjectConfig cfg) {
                 if (BAD_NAME.equals(cfg.getName())) {
@@ -58,7 +59,7 @@ class ProjectLoadFailureTest {
                 return super.create(cfg);
             }
         };
-        return new ProjectRegistry(seed, store, factory);
+        return new ProjectRegistry(seed, store, factory, new CollectEvents(unreachable()));
     }
 
     @Test

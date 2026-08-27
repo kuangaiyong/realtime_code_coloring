@@ -53,7 +53,11 @@ class ProjectRuntimeTest {
                 // 数据源指向一个必然连不上的地址：这些用例要证明的正是
                 // 「历史写不进去也不影响其余行为」
                 new CoverageHistory(new org.springframework.jdbc.datasource.DriverManagerDataSource(
-                        "jdbc:mysql://127.0.0.1:1/nonexistent")));
+                        "jdbc:mysql://127.0.0.1:1/nonexistent")),
+                // 采集事件同理：写不进去也不该影响采集本身
+                new com.rtcc.platform.history.CollectEvents(
+                        new org.springframework.jdbc.datasource.DriverManagerDataSource(
+                                "jdbc:mysql://127.0.0.1:1/nonexistent")));
     }
 
     @Test

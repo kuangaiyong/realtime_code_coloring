@@ -11,6 +11,7 @@ import com.rtcc.platform.collector.RustCoverageAnalyzer;
 import com.rtcc.platform.collector.RustProbeClient;
 import com.rtcc.platform.config.CoverageProperties;
 import com.rtcc.platform.config.ProjectConfig;
+import com.rtcc.platform.history.CollectEvents;
 import com.rtcc.platform.history.CoverageHistory;
 import org.springframework.stereotype.Component;
 
@@ -33,15 +34,17 @@ public class ProjectRuntimeFactory {
     private final CoverageProperties platform;
     private final CoveragePublisher publisher;
     private final CoverageHistory history;
+    private final CollectEvents events;
 
     public ProjectRuntimeFactory(ProbeClient probeClient, CoverageAnalyzer analyzer,
                                  CoverageProperties platform, CoveragePublisher publisher,
-                                 CoverageHistory history) {
+                                 CoverageHistory history, CollectEvents events) {
         this.probeClient = probeClient;
         this.analyzer = analyzer;
         this.platform = platform;
         this.publisher = publisher;
         this.history = history;
+        this.events = events;
     }
 
     public ProjectRuntime create(ProjectConfig cfg) {
@@ -49,6 +52,6 @@ public class ProjectRuntimeFactory {
                 new GoProbeClient(cfg), new GoCoverageAnalyzer(cfg, platform),
                 new CppProbeClient(cfg), new CppCoverageAnalyzer(cfg, platform),
                 new RustProbeClient(cfg), new RustCoverageAnalyzer(cfg, platform),
-                new GitService(cfg), cfg, publisher, history);
+                new GitService(cfg), cfg, publisher, history, events);
     }
 }

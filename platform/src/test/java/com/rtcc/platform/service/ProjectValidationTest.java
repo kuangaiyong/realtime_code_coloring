@@ -3,6 +3,7 @@ package com.rtcc.platform.service;
 import com.rtcc.platform.config.CoverageProperties;
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.config.ProjectStore;
+import com.rtcc.platform.history.CollectEvents;
 import com.rtcc.platform.history.CoverageHistory;
 import com.rtcc.platform.collector.CoverageAnalyzer;
 import com.rtcc.platform.collector.ProbeClient;
@@ -36,9 +37,10 @@ class ProjectValidationTest {
                 new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent"));
         ProjectRuntimeFactory factory = new ProjectRuntimeFactory(
                 new ProbeClient(), new CoverageAnalyzer(), platform, new CoveragePublisher(),
-                new CoverageHistory(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")));
+                new CoverageHistory(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")),
+                new CollectEvents(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")));
         // 库连不上时 loadAll 退回种子，因此这里拿到的是一个只有 default 的注册表
-        registry = new ProjectRegistry(seed, store, factory);
+        registry = new ProjectRegistry(seed, store, factory, new CollectEvents(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")));
     }
 
     private ProjectConfig cfg(String id, String name, List<String> instances) {

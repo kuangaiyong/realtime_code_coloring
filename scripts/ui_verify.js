@@ -13,6 +13,7 @@
  * 机器相关的两个路径走环境变量，由 run_local.sh 注入，不写死在脚本里。
  */
 const fs = require('fs');
+const { execFileSync } = require('child_process');
 const os = require('os');
 const path = require('path');
 
@@ -89,12 +90,27 @@ const countOf = (sel) => document.querySelectorAll(sel).length;
     // 按正文过滤是滤不中的
     const noise = (u) => String(u || '').includes('favicon');
     page.on('console', m => {
-      if (m.type() === 'error' && !noise(m.location() && m.location().url)) {
+      // 非 2xx 的响应会让 Chrome 打一条「Failed to load resource」。那不一定是缺陷 ——
+      // 门禁「判不了」按设计就是 409，页面也正确显示成「无法判定」。
+      // HTTP 层的问题交给下面的 response 钩子按状态码分类，这里只留真正的脚本错误
+      if (m.type() === 'error' && !noise(m.location() && m.location().url)
+          && !m.text().startsWith('Failed to load resource')) {
         errors.push('console: ' + m.text());
       }
     });
     page.on('pageerror', e => errors.push('pageerror: ' + e.message));
     page.on('requestfailed', r => { if (!noise(r.url())) errors.push('requestfailed: ' + r.url()); });
+
+    // 5xx 一定是缺陷；4xx 里只有门禁的「判不了」是设计如此，其余都该暴露出来。
+    // 用一句「有没有报错」糊过去的话，要么放过真问题，要么被设计内的 409 搞成假失败
+    const httpProblems = [];
+    page.on('response', (r) => {
+      const u = r.url().replace(PLATFORM, '');
+      if (noise(u) || r.status() < 400) return;
+      // 门禁三态里的「判不了」走 409，这是刻意的（见 CLAUDE.md 核心功能 #12）
+      if (r.status() === 409 && u.includes('/coverage/gate')) return;
+      httpProblems.push('HTTP ' + r.status() + ' ' + r.request().method() + ' ' + u);
+    });
 
     await page.goto(PLATFORM + '/', { waitUntil: 'networkidle2', timeout: 30000 });
 
@@ -629,12 +645,105 @@ const countOf = (sel) => document.querySelectorAll(sel).length;
     if (!delResp.ok) fail(`收尾删除向导建的项目失败（HTTP ${delResp.status}）`);
     else pass('向导建的项目已删除，用例可重复跑');
 
+    // ---------- 6d · 采集事件：真的停一台实例，看它记不记得住 ----------
+    // 这一页存在的理由是「事后追溯」：lastError 只挂在当前快照上，下一轮成功就被冲掉。
+    // 只断言「页面能打开」证明不了这件事 —— 必须真造一次掉线再恢复
+    // limit 必须与页面用的那个一致（views/events.js 取 200）：不一致的话，
+    // default 的事件一旦超过接口的上限，页面渲染出的行数就永远多于接口返回的条数，
+    // 「页面与接口对得上」这条断言会变成永远等不到
+    const EV_LIMIT = 200;
+    async function eventsFromApi() {
+      return (await fetch(`${PLATFORM}/api/projects/default/events?limit=${EV_LIMIT}`)).json();
+    }
+    /** 本次窗口之前就已经存在的事件，用来把「新增的」和「历史遗留的」分开 */
+    const evSince = (list, floorIso) =>
+      (list || []).filter(e => !floorIso || new Date(e.at).getTime() > new Date(floorIso).getTime());
+    const evBefore = await eventsFromApi();
+    // 这一刻之前的事件都算历史：default 项目删不掉，它的事件只增不减，
+    // 不划一条线的话，下面的断言会匹配到上一次 verify 留下的掉线/恢复组合，
+    // 在真失败之上再叠一条假成功
+    const evFloor = (evBefore.events || []).length ? evBefore.events[0].at : null;
+    if (!evBefore.available) {
+      // 库不可用时这一页本就该说清原因而不是回空列表，那是另一条设计路径
+      pass(`采集事件不可用时给出了原因（${evBefore.error}）`);
+    } else {
+      const bash = process.env.SHELL_BASH || 'bash';
+      const runLocal = (cmd) => execFileSync(bash, ['scripts/run_local.sh', cmd],
+        { cwd: process.cwd(), stdio: 'pipe', timeout: 180000 });
+      try {
+        runLocal('demo2-stop');
+        // 掉线要被下一轮采集看见：轮询 3s + 一轮采集，给足 40 秒
+        let partial = null;
+        for (let n = 0; n < 40 && !partial; n++) {
+          const d = await eventsFromApi();
+          partial = evSince(d.events, evFloor).find(e => e.status === 'PARTIAL');
+          if (!partial) await sleep(1000);
+        }
+        if (!partial) {
+          fail('停掉一台实例后，采集事件里没有出现 PARTIAL —— 事后追溯不到这次掉线');
+        } else if (!String(partial.detail || '').includes('6301')) {
+          fail(`事件记下了 PARTIAL，但没点名是哪台实例：${partial.detail}`);
+        } else {
+          pass(`停掉一台实例后记下了事件，并点名了是哪台：${String(partial.detail).slice(0, 46)}…`);
+        }
+      } finally {
+        // 无论上面成败都要把实例拉回来，否则后续跑什么都不对
+        runLocal('demo2-start');
+      }
+      let restored = null;
+      for (let n = 0; n < 40 && !restored; n++) {
+        const d = await eventsFromApi();
+        // 只在本次新增的那几条里找，别把上一次 verify 留下的组合认成这次的
+        const list = evSince(d.events, evFloor);
+        // 新的在前：恢复那条必须排在 PARTIAL 之前
+        const iPartial = list.findIndex(e => e.status === 'PARTIAL');
+        if (iPartial > 0 && list[iPartial - 1].status === 'CONNECTED') restored = list[iPartial - 1];
+        if (!restored) await sleep(1000);
+      }
+      if (!restored) fail('实例拉回来之后，采集事件里没有出现「恢复正常」');
+      else pass('实例恢复后也记下了一条，掉线区间在事件流里是闭合的');
+
+      // 只记变化，不是每轮一条。
+      //
+      // 断的必须是「本次窗口新增了几条」，不能断表的绝对行数：collect_event 只在删项目时
+      // 清理，而 default 按设计删不掉 —— 行数只增不减，跑几轮 verify 之后必然越过任何
+      // 固定阈值，报出来的却是「看起来是每轮都记」，把人指向完全错误的方向。
+      const evAfter = await eventsFromApi();
+      const added = evSince(evAfter.events, evFloor).length;
+      // 这段窗口里停了一次、起了一次，掐头去尾也就三四条；每轮都记的话是几十条
+      if (added > 8) {
+        fail(`这段窗口里新增了 ${added} 条采集事件 —— 看起来是每轮都记，而不是只记状态变化`);
+      } else {
+        pass(`这段窗口新增 ${added} 条采集事件：只记状态变化，没有把每轮采集刷进去`);
+      }
+
+      // 页面与接口对得上
+      await page.goto(PLATFORM + '/#/p/default/events', { waitUntil: 'networkidle2', timeout: 30000 });
+      // 等的是「行渲染出来」而不是「视图元素出现」：数据还在路上时视图已经在了，
+      // 立刻去数行数只会数到 0 —— 这种抢跑会让断言变成随机失败
+      const shown = await waitFor(page, (n) =>
+        document.querySelectorAll('[data-testid="event-row"]').length === n,
+        evAfter.events.length, 15000);
+      if (shown < 0) {
+        const got = await page.evaluate(countOf, '[data-testid="event-row"]');
+        fail(`事件页列出 ${got} 条，接口给了 ${evAfter.events.length} 条`);
+      } else {
+        pass(`事件页列出 ${evAfter.events.length} 条，与接口一致`);
+      }
+    }
+
     // ---------- 7 · 全程无脚本错误 ----------
     // 组件报错时 Vue 会跳过那一块继续渲染，页面「看着挺正常」，只少了一块
     if (errors.length) {
-      fail(`浏览器控制台有 ${errors.length} 条错误：\n      ` + errors.slice(0, 6).join('\n      '));
+      fail('浏览器控制台有 ' + errors.length + ' 条脚本错误：' + errors.slice(0, 6).join(' | '));
     } else {
-      pass('全程浏览器控制台无错误、无失败请求');
+      pass('全程浏览器控制台无脚本错误');
+    }
+    if (httpProblems.length) {
+      fail('页面打出了 ' + httpProblems.length + ' 个意料之外的失败请求：'
+        + httpProblems.slice(0, 6).join(' | '));
+    } else {
+      pass('全程没有 5xx，也没有门禁拒判之外的 4xx');
     }
   } finally {
     await browser.close();

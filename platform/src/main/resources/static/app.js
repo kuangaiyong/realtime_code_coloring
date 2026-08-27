@@ -6,6 +6,7 @@ import { Onboard } from './views/onboard.js';
 import { Projects } from './views/projects.js';
 import { Wizard } from './views/wizard.js';
 import { Settings } from './views/settings.js';
+import { Events } from './views/events.js';
 
 const { createApp, computed, ref, watchEffect } = Vue;
 
@@ -17,6 +18,7 @@ const ROUTES = [
   { path: 'coloring', name: '代码染色', icon: 'Document', comp: Coloring },
   { path: 'overview', name: '总览看板', icon: 'DataLine', comp: Overview },
   { path: 'onboard', name: '服务接入', icon: 'Connection', comp: Onboard },
+  { path: 'events', name: '采集事件', icon: 'Warning', comp: Events },
   { path: 'settings', name: '项目设置', icon: 'Setting', comp: Settings }
 ];
 const DEFAULT_ROUTE = 'coloring';

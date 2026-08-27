@@ -12,6 +12,7 @@ import com.rtcc.platform.collector.GoProbeClient;
 import com.rtcc.platform.collector.RustCoverageAnalyzer;
 import com.rtcc.platform.collector.RustProbeClient;
 import com.rtcc.platform.config.ProjectConfig;
+import com.rtcc.platform.history.CollectEvents;
 import com.rtcc.platform.history.CoverageHistory;
 import com.rtcc.platform.model.BuildVersion;
 import com.rtcc.platform.model.FileCoverage;
@@ -63,6 +64,8 @@ public class ProjectRuntime {
     private final ProjectConfig props;
     private final CoveragePublisher publisher;
     private final CoverageHistory history;
+    /** 采集状态的变化事件。回答「昨天半夜那次为什么没数据」 */
+    private final CollectEvents events;
 
     /**
      * 覆盖数据与它所属的构建版本必须整体替换。
@@ -117,7 +120,7 @@ public class ProjectRuntime {
                            CppProbeClient cppProbe, CppCoverageAnalyzer cppAnalyzer,
                            RustProbeClient rustProbe, RustCoverageAnalyzer rustAnalyzer, GitService git,
                            ProjectConfig props, CoveragePublisher publisher,
-                           CoverageHistory history) {
+                           CoverageHistory history, CollectEvents events) {
         this.probeClient = probeClient;
         this.analyzer = analyzer;
         this.goProbe = goProbe;
@@ -130,6 +133,7 @@ public class ProjectRuntime {
         this.props = props;
         this.publisher = publisher;
         this.history = history;
+        this.events = events;
     }
 
     /**
@@ -140,6 +144,17 @@ public class ProjectRuntime {
      * 仍会真的去清被测实例的计数器 —— 新实例采到的覆盖率会莫名其妙掉到接近 0。
      */
     private volatile boolean retired;
+
+    /**
+     * 最后一次<b>真的写进事件流</b>的状态。判「变没变」要拿它比，不能拿 probeStatus 比。
+     *
+     * <p>两者会岔开，而且岔开的那一段正是最需要记下来的：
+     * {@code update()} 是「先作废旧实例、再写库」，写库失败时 {@code unretire()} 把旧实例
+     * 救回来继续服务。作废与救回之间的那几轮采集照常写 probeStatus，却因为 retired
+     * 跳过了记录；等救回来之后，probeStatus 已经等于新值，后续每轮都判成「没变化」——
+     * 这次转折从此不会出现在事件流里，而它恰恰发生在平台出问题的时候。
+     */
+    private volatile String lastRecordedStatus = "UNKNOWN";
 
     /**
      * 在场景锁内原子地完成「确认没有进行中的场景」+「作废这个实例」。
@@ -199,6 +214,34 @@ public class ProjectRuntime {
      */
     void adoptScenariosFrom(ProjectRuntime old) {
         scenarios.putAll(old.scenarios);
+        // 采集状态也要接过来。不接的话新实例从 UNKNOWN 起步，第一次采集成功就记一条
+        // 「变成 正常」——页面上凭空出现一条恢复事件，而它前面并没有任何失败，
+        // 读的人会以为刚才发生过一次已恢复的故障。改配置不是一次状态变化
+        probeStatus = old.probeStatus;
+        lastError = old.lastError;
+        lastRecordedStatus = old.lastRecordedStatus;
+    }
+
+    /**
+     * 改采集状态，并在<b>状态真的变了</b>时记一条事件。
+     *
+     * <p>五处设 probeStatus 的地方全走这一个入口，是为了不漏：各自记一次的话，
+     * 漏掉一处的表现是「那类故障从来不出现在事件流里」，而事件流看起来一切正常。
+     *
+     * <p><b>只在 status 变化时记，不看 detail。</b>采集是 3 秒一轮的常驻轮询，
+     * 而失败原因里常带着变动的内容（是哪台实例、什么异常）——
+     * 跟着 detail 记的话，一次持续的掉线会刷出几千条，把真正的那几个转折点淹掉。
+     * 当下的原因在 lastError 里始终看得到。
+     */
+    private void setProbeStatus(String status, String detail) {
+        probeStatus = status;
+        lastError = detail;
+        // 被顶替掉的实例不再代表这个项目，它的状态变化不该记进事件流
+        if (retired || status.equals(lastRecordedStatus)) {
+            return;
+        }
+        lastRecordedStatus = status;
+        events.record(props.getId(), status, detail);
     }
 
     /**
@@ -292,8 +335,7 @@ public class ProjectRuntime {
             if (!"CONFIG_ERROR".equals(probeStatus)) {
                 log.error("被测实例地址配置有误（coverage.instances）：{}", e.getMessage());
             }
-            probeStatus = "CONFIG_ERROR";
-            lastError = e.getMessage();
+            setProbeStatus("CONFIG_ERROR", e.getMessage());
             return;
         }
         // 同语言的实例先在各自的原生数据层面合并：Java 走 exec 的探针取或，
@@ -347,9 +389,9 @@ public class ProjectRuntime {
             if (!"DISCONNECTED".equals(probeStatus)) {
                 log.warn("采集失败，{} 个实例全部不可达（被测服务未启动或探针未就绪）", endpoints.size());
             }
-            probeStatus = "DISCONNECTED";
-            lastError = statuses.isEmpty() ? "未配置任何被测实例（coverage.instances）"
-                    : statuses.get(0).error();
+            setProbeStatus("DISCONNECTED", statuses.isEmpty()
+                    ? "未配置任何被测实例（coverage.instances）"
+                    : statuses.get(0).error());
             return;
         }
 
@@ -399,11 +441,11 @@ public class ProjectRuntime {
             state.set(new Snapshot(fresh, unifiedVersion(reported), versionConflict(statuses)));
             // 少一台实例，聚合结果就少一部分覆盖：那些行会显示成红色，但其实别的机器跑到了。
             // 这不是「数据不可用」而是「数据不完整」，所以照常出报告，但状态必须与全连上区分开
-            probeStatus = connected == endpoints.size() ? "CONNECTED" : "PARTIAL";
-            lastError = connected == endpoints.size() ? null
-                    : statuses.stream().filter(s -> !"CONNECTED".equals(s.status()))
-                            .map(s -> s.endpoint() + "（" + s.error() + "）")
-                            .collect(Collectors.joining("、", "以下实例不可达，聚合结果缺少它们的覆盖：", ""));
+            setProbeStatus(connected == endpoints.size() ? "CONNECTED" : "PARTIAL",
+                    connected == endpoints.size() ? null
+                            : statuses.stream().filter(s -> !"CONNECTED".equals(s.status()))
+                                    .map(s -> s.endpoint() + "（" + s.error() + "）")
+                                    .collect(Collectors.joining("、", "以下实例不可达，聚合结果缺少它们的覆盖：", "")));
             lastCollectedAt = Instant.now();
 
             // 记进历史，供跨构建趋势。只记「全部实例版本一致且工作树干净」的构建：
@@ -436,8 +478,7 @@ public class ProjectRuntime {
                 // 写死一个只会把另一种语言的故障引去查错地方。异常自己会说明白
                 log.error("探针连接正常，但覆盖数据分析失败：{}", describe(e));
             }
-            probeStatus = "ANALYZE_ERROR";
-            lastError = describe(e);
+            setProbeStatus("ANALYZE_ERROR", describe(e));
         }
     }
 

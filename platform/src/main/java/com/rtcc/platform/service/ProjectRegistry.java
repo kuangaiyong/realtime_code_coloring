@@ -3,6 +3,7 @@ package com.rtcc.platform.service;
 import com.rtcc.platform.collector.ProbeEndpoint;
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.config.ProjectStore;
+import com.rtcc.platform.history.CollectEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -41,6 +42,7 @@ public class ProjectRegistry {
     private final Map<String, ProjectConfig> configs = new ConcurrentHashMap<>();
     private final ProjectStore store;
     private final ProjectRuntimeFactory factory;
+    private final CollectEvents events;
     /** 旧版 API（/api/coverage/*、/api/scenario/*）不带项目参数，落到这个项目上 */
     private final String defaultId;
     /**
@@ -49,9 +51,11 @@ public class ProjectRegistry {
      */
     private final Object writeLock = new Object();
 
-    public ProjectRegistry(ProjectConfig seed, ProjectStore store, ProjectRuntimeFactory factory) {
+    public ProjectRegistry(ProjectConfig seed, ProjectStore store, ProjectRuntimeFactory factory,
+                           CollectEvents events) {
         this.store = store;
         this.factory = factory;
+        this.events = events;
         this.defaultId = seed.getId();
         for (ProjectConfig cfg : store.loadAll(seed)) {
             // 没有 id 的配置直接跳过。不跳的话 ConcurrentHashMap 会因 null key 抛 NPE，
@@ -233,6 +237,8 @@ public class ProjectRegistry {
             }
             runtimes.remove(id);
             configs.remove(id);
+            // 项目都没了，它的采集事件没有留着的理由；删不掉也不该让删项目失败
+            events.forget(id);
         }
         log.info("已删除项目 {}", id);
     }

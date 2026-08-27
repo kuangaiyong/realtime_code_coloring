@@ -106,16 +106,37 @@ final class CovdataTool {
     private record Ran(boolean ok, String output) {
     }
 
-    /** 跑一条命令，把 stdout+stderr 一起收回来 */
+    /**
+     * 跑一条命令，把 stdout+stderr 一起收回来。
+     *
+     * <p><b>输出必须另起线程读，不能在主线程 readAllBytes 之后再 waitFor</b>：
+     * {@code readAllBytes()} 要等管道 EOF（通常即子进程退出）才返回，
+     * 排在超时之前的话，{@code go build} 一旦挂住（模块缓存文件锁、代理拉取无超时、
+     * 杀软扫描），这一行就永久阻塞，下面的 180 秒超时根本走不到。
+     *
+     * <p>后果比「慢一点」严重得多：{@link #path} 是 static synchronized，
+     * 而它经 Go 归一化落在 {@code collectLock} 里，调度器又只有一条线程 ——
+     * <b>所有项目的采集会从此永远停住，而日志里一个字都没有</b>。
+     */
     private static Ran run(String... cmd) throws Exception {
         Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
-        String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
-        // 编译 covdata 实测约 8.6s，机器忙时更久；给足余量但不能无限等
+        StringBuilder out = new StringBuilder();
+        Thread drain = new Thread(() -> {
+            try {
+                out.append(new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+            } catch (Exception ignored) {
+                // 子进程被强杀时这里会抛，属于预期
+            }
+        });
+        drain.setDaemon(true);
+        drain.start();
+        // 编译 covdata 实测约 2.6s（空闲）~8.6s（繁忙）；给足余量但不能无限等
         if (!p.waitFor(180, TimeUnit.SECONDS)) {
             p.destroyForcibly();
-            return new Ran(false, "超时未返回");
+            return new Ran(false, "超时未返回（已强制结束）");
         }
-        return new Ran(p.exitValue() == 0, out);
+        drain.join(2000);
+        return new Ran(p.exitValue() == 0, out.toString().trim());
     }
 
     /** 拼出实际要执行的命令行：拿得到独立二进制就直接调，拿不到就退回 go tool */

@@ -1,5 +1,6 @@
 package com.rtcc.platform.web;
 
+import com.rtcc.platform.history.CollectEvents;
 import com.rtcc.platform.service.ProjectRegistry;
 import com.rtcc.platform.service.ProjectRuntime;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,8 +29,11 @@ public class ProjectCoverageController {
 
     private final ProjectRegistry registry;
 
-    public ProjectCoverageController(ProjectRegistry registry) {
+    private final CollectEvents events;
+
+    public ProjectCoverageController(ProjectRegistry registry, CollectEvents events) {
         this.registry = registry;
+        this.events = events;
     }
 
     private ProjectRuntime rt(String project) {
@@ -47,6 +51,20 @@ public class ProjectCoverageController {
     @GetMapping("/coverage/instances")
     public Map<String, Object> instances(@PathVariable String project) {
         return rt(project).perInstance();
+    }
+
+    /**
+     * 采集状态的变化事件。回答「昨天半夜那次为什么没数据」。
+     *
+     * <p>只记状态<b>变化</b>，不是每轮一条 —— 3 秒一轮的轮询全记下来，
+     * 一天 28800 行，真正的那几个转折点会被淹掉。
+     */
+    @GetMapping("/events")
+    public Map<String, Object> events(@PathVariable String project,
+                                      @RequestParam(defaultValue = "100") int limit) {
+        // 认一下项目在不在：不认的话，删掉的项目也能查出一串事件来
+        registry.config(project);
+        return events.recent(project, Math.max(1, Math.min(limit, 500)));
     }
 
     @GetMapping("/coverage/trend")
