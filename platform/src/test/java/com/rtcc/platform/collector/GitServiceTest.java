@@ -159,6 +159,99 @@ class GitServiceTest {
                 "被删掉的文件没有可染色的载体，不该出现在增量结果里");
     }
 
+    /**
+     * 「增量基线」这个字段人填不出来，往往不是不懂概念，是不知道这个仓库里有什么可填。
+     * 候选必须来自真实仓库：前端写死 main 的话，主干叫 master 的仓库会拿到一个
+     * 选了就报错的选项 —— 比不给建议更糟，因为人会以为是平台坏了。
+     */
+    @Test
+    void 基线候选来自真实仓库且每一项都能解析() throws Exception {
+        // 补第二个提交，HEAD~1 才成立 —— buildRepo 只提交了一次
+        Files.writeString(foo, FOO_V1.replace("return 2;", "return 22;"), StandardCharsets.UTF_8);
+        run("commit", "-aqm", "second");
+        run("branch", "release-1.0");
+        run("tag", "v1.0.0");
+        run("tag", "v1.1.0");
+
+        List<GitService.BaselineRef> got = git.baselineCandidates().candidates();
+
+        // 每一项都必须是选中即可用的：解析不了的候选比没有候选更糟
+        for (GitService.BaselineRef r : got) {
+            assertDoesNotThrow(() -> git.resolve(r.ref()),
+                    "候选 " + r.ref() + " 解析不了，选了就报错");
+        }
+        List<String> refs = got.stream().map(GitService.BaselineRef::ref).toList();
+        assertTrue(refs.contains("release-1.0"), "本地分支没进候选：" + refs);
+        assertTrue(refs.contains("v1.1.0") && refs.contains("v1.0.0"), "tag 没进候选：" + refs);
+        assertTrue(refs.contains("HEAD~1"), "「上一个提交」没进候选：" + refs);
+
+        Map<String, String> kindOf = got.stream().collect(java.util.stream.Collectors.toMap(
+                GitService.BaselineRef::ref, GitService.BaselineRef::kind, (a, b) -> a));
+        assertEquals("branch", kindOf.get("release-1.0"));
+        assertEquals("tag", kindOf.get("v1.0.0"));
+        assertEquals("relative", kindOf.get("HEAD~1"));
+    }
+
+    /**
+     * 只有一个提交的新仓库里没有「上一个提交」。照给不误的话，
+     * 人选了它会撞上 409 拒判，而那是他能选到的唯一一个「相对」选项。
+     */
+    @Test
+    void 只有一个提交时不给出HEAD前一个() throws Exception {
+        // buildRepo 只提交了一次，此处 HEAD~1 本就不存在
+        List<String> refs = git.baselineCandidates().candidates().stream()
+                .map(GitService.BaselineRef::ref).toList();
+        assertFalse(refs.contains("HEAD~1"),
+                "仓库只有一个提交，却把 HEAD~1 当成候选给了出去：" + refs);
+    }
+
+    /**
+     * {@code refs/remotes/origin/HEAD} 是符号引用，选它等于「跟远端此刻默认指向的那个
+     * 分支比」，而它指哪个分支不写在这个名字里，人无从判断自己选的是什么。
+     *
+     * <p>坑在于 <b>git 把它缩写成「origin」而不是「origin/HEAD」</b>：按短名过滤
+     * 一个都拦不住，而候选里多出来的那个「origin」看上去像个正经分支。
+     * 这一条是先在真实仓库上跑出来、才发现按短名判是错的。
+     */
+    @Test
+    void 不把远端的符号引用当成候选() throws Exception {
+        // 真实的 clone 一定有 refs/remotes/origin/HEAD 这一条
+        run("update-ref", "refs/remotes/origin/main", baseline);
+        run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+
+        List<String> refs = git.baselineCandidates().candidates().stream()
+                .map(GitService.BaselineRef::ref).toList();
+        assertTrue(refs.contains("origin/main"), "远端分支没进候选：" + refs);
+        assertFalse(refs.contains("origin"), "origin/HEAD 缩写成的「origin」混进了候选：" + refs);
+        assertFalse(refs.contains("origin/HEAD"), refs.toString());
+    }
+
+    /**
+     * git 允许的分支名比 SAFE_REF 宽得多：{@code feature/添加登录}、
+     * {@code wip+experiment}、{@code _internal} 都是合法分支（实测）。
+     * 照单全收就会给出一个<b>平台自己推荐、选中却报「ref 不合法」</b>的选项 ——
+     * 人只会认为是平台坏了。而滤掉之后必须报出个数，
+     * 否则分支叫 feature/添加登录 的人会对着一个没有自己那个分支的列表发愁。
+     */
+    @Test
+    void 名字不合法的引用不进候选且报出被滤掉的个数() throws Exception {
+        run("branch", "feature/添加登录");
+        run("branch", "wip+experiment");
+        run("branch", "_internal");
+        run("branch", "release-2.0");
+
+        GitService.Baselines b = git.baselineCandidates();
+        List<String> refs = b.candidates().stream().map(GitService.BaselineRef::ref).toList();
+
+        for (GitService.BaselineRef r : b.candidates()) {
+            assertDoesNotThrow(() -> git.resolve(r.ref()),
+                    "候选 " + r.ref() + " 是平台自己推荐的，选中却解析不了");
+        }
+        assertTrue(refs.contains("release-2.0"), "合法分支被误滤：" + refs);
+        assertEquals(3, b.skipped(),
+                "被滤掉的个数没报准，界面上就无从解释「我的分支为什么不在列表里」：" + refs);
+    }
+
     @Test
     void 产物与源码一致时无漂移() throws Exception {
         assertEquals(List.of(), git.sourceDrift(baseline));

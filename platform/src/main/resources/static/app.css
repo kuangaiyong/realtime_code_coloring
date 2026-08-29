@@ -249,6 +249,14 @@ table.tbl td.actions { white-space: nowrap; }
 .fld { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .fld > label { width: 190px; flex: none; text-align: right; color: var(--el-text-color-regular); }
 .fld > .el-input { max-width: 520px; }
+/* label 里带一行小字解释这个字段问的是什么。「增量基线」这种名字本身不解释任何事，
+   而这套配置错一项就采不到数据，且错得静默 */
+.fld > label small { display: block; font-weight: normal; font-size: 11px; line-height: 1.5;
+  color: var(--el-text-color-secondary); }
+.fld > label:has(small) { align-self: flex-start; padding-top: 4px; }
+.fld:has(> .baseline-field) { align-items: flex-start; }
+.baseline-field { max-width: 520px; flex: 1; }
+.fld-hint { margin-top: 4px; font-size: 12px; line-height: 1.6; color: var(--el-text-color-secondary); }
 .wz-foot { display: flex; align-items: center; gap: 8px; padding: 12px 18px;
            border-top: 1px solid var(--el-border-color-lighter); }
 /* 走过的步骤要与「还没到」区分开，否则六个圈看起来一模一样，不知道自己在哪 */

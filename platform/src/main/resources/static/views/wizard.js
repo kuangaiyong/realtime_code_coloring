@@ -1,4 +1,5 @@
 import { api, LANG } from '../api.js';
+import { BaselineField } from '../components/baseline-field.js';
 
 const { computed, reactive, ref, onMounted } = Vue;
 
@@ -56,6 +57,7 @@ const PATH_FIELDS = {
 };
 
 export const Wizard = {
+  components: { BaselineField },
   emits: ['done', 'cancel'],
   setup(props, { emit }) {
     const step = ref(0);
@@ -272,12 +274,19 @@ export const Wizard = {
 
       <!-- 2 代码仓库 -->
       <template v-else-if="STEPS[step].key === 'repo'">
-        <div class="note info">平台读的是<b>本机已经 clone 好的仓库</b>，不做远程拉取，
-          因此不需要 Git 账号密码。基线用来算增量口径。</div>
+        <div class="note info">平台读的是<b>平台这台机器上已经 clone 好的仓库</b>，
+          不做远程拉取，因此不需要 Git 账号密码。</div>
         <div class="fld"><label>Git 仓库目录</label>
           <el-input v-model="draft.repoDir" data-testid="wz-repo" placeholder="/path/to/project" /></div>
-        <div class="fld"><label>默认基线</label>
-          <el-input v-model="draft.baseline" data-testid="wz-baseline" placeholder="HEAD~1、master、某个 tag" /></div>
+        <!-- 「默认基线」这四个字不解释任何事情。它其实只回答一句话：跟哪个版本比 ——
+             增量覆盖率的分母就是从那个版本到现在改过的可执行行 -->
+        <div class="fld"><label>增量基线<br><small>跟哪个版本比</small></label>
+          <baseline-field v-model="draft.baseline" :repo-dir="draft.repoDir" testid="wz-baseline" />
+        </div>
+        <div class="note info">增量覆盖率只统计<b>从这个版本到现在改过的代码</b>：
+          填 <code>origin/main</code> 回答的是「我这个分支相对主干改的代码测了没」，
+          填上一个 tag 回答的是「这次发版的新代码测了没」。
+          它是<b>默认值</b> —— 门禁接口每次可以带 <code>baseline=</code> 覆盖它。</div>
       </template>
 
       <!-- 3 被测实例 -->

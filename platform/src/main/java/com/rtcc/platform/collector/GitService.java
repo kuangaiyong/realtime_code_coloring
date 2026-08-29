@@ -40,6 +40,102 @@ public class GitService {
     }
 
     /**
+     * 一个可以填进「增量基线」的候选。
+     *
+     * @param ref    直接填进配置的那个字符串
+     * @param kind   分组用：{@code branch} / {@code remote} / {@code tag} / {@code relative}
+     * @param detail 一句人话，说明选了它意味着「跟什么比」
+     */
+    public record BaselineRef(String ref, String kind, String detail) {}
+
+    /**
+     * 候选列表 + <b>因名字不合法而被滤掉的个数</b>。
+     *
+     * <p>后者必须交出去：git 允许的分支名比 {@link #SAFE_REF} 宽得多，被滤掉是常态而非异常。
+     * 不说的话，分支叫 {@code feature/添加登录} 的人会对着一个<b>没有自己那个分支</b>的
+     * 列表发愁，而列表本身看不出任何异样。
+     */
+    public record Baselines(List<BaselineRef> candidates, int skipped) {}
+
+    /** tag 只取最近这么多个：一个活了几年的仓库有上百个 tag，全铺出来等于没给建议 */
+    private static final int MAX_TAGS = 10;
+    /** 分支同理。远端分支在多人仓库里尤其多 */
+    private static final int MAX_BRANCHES = 15;
+
+    /**
+     * 这个仓库里可以拿来当增量基线的引用。
+     *
+     * <p><b>为什么候选必须来自真实仓库，而不是前端写死几个：</b>写死 {@code main} 的话，
+     * 主干叫 {@code master} 的仓库会得到一个选了就报错的选项 —— 比不给建议更糟，
+     * 因为人会以为是平台坏了。这里给出的每一项都是 git 自己列出来的，选中即可用。
+     *
+     * <p>只起<b>一个</b> git 子进程：{@code for-each-ref} 一次把分支、远端分支、tag
+     * 全列出来，在 Java 侧分类。逐个 {@code rev-parse} 去试候选名要起四五个进程，
+     * 而这个接口是人点一下就调一次的。
+     *
+     * <p><b>列出来的必须是 {@link #resolve} 认得的。</b>git 允许的分支名比 SAFE_REF 宽得多
+     * （{@code feature/添加登录}、{@code wip+experiment}、{@code _internal} 都合法），
+     * 照单全收就会给出一个选中即报错的选项 —— 而它是<b>平台自己推荐</b>的，
+     * 人只会认为是平台坏了。被滤掉的数量随 {@code skipped} 交出去，
+     * 界面上要说一句，别让人对着一个缺了自己那个分支的列表发愁。
+     */
+    public Baselines baselineCandidates() throws IOException {
+        String out = run("for-each-ref", "--sort=-creatordate",
+                "--format=%(refname)\t%(refname:short)", "refs/heads", "refs/remotes", "refs/tags");
+
+        List<BaselineRef> branches = new ArrayList<>();
+        List<BaselineRef> remotes = new ArrayList<>();
+        List<BaselineRef> tags = new ArrayList<>();
+        int skipped = 0;
+        for (String line : out.split("\n")) {
+            String[] cols = line.strip().split("\t");
+            if (cols.length < 2 || cols[1].isBlank()) {
+                continue;
+            }
+            String full = cols[0];
+            String shortName = cols[1];
+            // 符号引用不该进候选：选「origin」等于「跟远端此刻默认指向的那个分支比」，
+            // 而它指哪个分支不写在这个名字里。
+            //
+            // 必须按<b>全名</b>判：git 会把 refs/remotes/origin/HEAD 缩写成
+            // 「origin」而不是「origin/HEAD」，按短名判一个都拦不住（实测出来的）
+            if (full.endsWith("/HEAD")) {
+                continue;
+            }
+            // 平台自己推荐、选中却报「ref 不合法」，人只会认为是平台坏了。
+            // git 允许而 SAFE_REF 不允许的名字很常见：feature/添加登录、
+            // wip+experiment、_internal 都是合法分支名（实测）
+            if (!SAFE_REF.matcher(shortName).matches()) {
+                skipped++;
+                continue;
+            }
+            if (full.startsWith("refs/heads/") && branches.size() < MAX_BRANCHES) {
+                branches.add(new BaselineRef(shortName, "branch", "本地分支"));
+            } else if (full.startsWith("refs/remotes/") && remotes.size() < MAX_BRANCHES) {
+                remotes.add(new BaselineRef(shortName, "remote", "远端分支"));
+            } else if (full.startsWith("refs/tags/") && tags.size() < MAX_TAGS) {
+                tags.add(new BaselineRef(shortName, "tag", "标签"));
+            }
+        }
+
+        List<BaselineRef> all = new ArrayList<>();
+        // 远端分支排最前：最常见的问法是「我这个分支相对主干改了什么」，
+        // 而主干的权威版本在远端，本地 main 可能落后好几天
+        all.addAll(remotes);
+        all.addAll(branches);
+        all.addAll(tags);
+        try {
+            // 放最后：它回答的是「最后一次提交测了没」，是个很窄的问题，
+            // 但在只有一个提交的新仓库里根本不成立，所以要真的试一下
+            resolve("HEAD~1");
+            all.add(new BaselineRef("HEAD~1", "relative", "上一个提交"));
+        } catch (IOException ignored) {
+            // 仓库只有一个提交，没有「上一个」可比
+        }
+        return new Baselines(all, skipped);
+    }
+
+    /**
      * 一次 diff 的结果。
      *
      * <p><b>为什么把「哪些是新增文件」和行号一起返回，而不是另开一个方法：</b>
