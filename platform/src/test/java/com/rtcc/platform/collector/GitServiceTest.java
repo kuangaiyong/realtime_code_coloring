@@ -75,11 +75,78 @@ class GitServiceTest {
         run("commit", "-aqm", "change");
         String head = run("rev-parse", "HEAD").strip();
 
-        Map<String, Set<Integer>> changed = git.changedLines(baseline, head);
+        Map<String, Set<Integer>> changed = git.changedLines(baseline, head).lines();
 
         assertEquals(Set.of("svc/src/main/java/com/demo/Foo.java"), changed.keySet(),
                 "源码根之外的文件不该进入增量口径");
         assertEquals(Set.of(5, 6), changed.get("svc/src/main/java/com/demo/Foo.java"));
+    }
+
+    @Test
+    void 分得清新增文件与修改文件() throws Exception {
+        // 一个改、一个新增：两者在 diff 里的区别只在基线侧是不是 /dev/null
+        Files.writeString(foo, FOO_V1.replace("return 2;", "return 22;"), StandardCharsets.UTF_8);
+        Files.writeString(foo.getParent().resolve("Bar.java"), """
+                package com.demo;
+
+                public class Bar {
+                    int z() { return 9; }
+                }
+                """, StandardCharsets.UTF_8);
+        run("add", "-A");
+        run("commit", "-qm", "add and modify");
+        String head = run("rev-parse", "HEAD").strip();
+
+        GitService.Changes ch = git.changedLines(baseline, head);
+
+        assertEquals(Set.of("svc/src/main/java/com/demo/Bar.java"), ch.addedPaths(),
+                "基线里本来就有的文件被标成了新增，或新增的文件没被标出来");
+        assertTrue(ch.lines().containsKey("svc/src/main/java/com/demo/Foo.java"),
+                "改过的文件仍应在变更行里");
+        assertTrue(ch.addedPaths().stream().allMatch(ch.lines()::containsKey),
+                "addedPaths 里出现了一个 lines 里根本没有的路径，前端会拿它标一个不存在的文件");
+    }
+
+    /**
+     * 改名 + 改内容：{@code -M} 下 git 给出的基线侧是<b>原路径</b>而不是 /dev/null。
+     * 判成新增的话，一次重命名会让整个文件的每一行都变成「这次新写的代码」，
+     * 增量分母凭空涨一大截，比例被压低 —— 而页面上只表现为「覆盖率怎么掉了」。
+     */
+    @Test
+    void 改名不算新增() throws Exception {
+        run("mv", "svc/src/main/java/com/demo/Foo.java", "svc/src/main/java/com/demo/Renamed.java");
+        Files.writeString(foo.getParent().resolve("Renamed.java"),
+                FOO_V1.replace("return 2;", "return 22;"), StandardCharsets.UTF_8);
+        run("add", "-A");
+        run("commit", "-qm", "rename and modify");
+        String head = run("rev-parse", "HEAD").strip();
+
+        GitService.Changes ch = git.changedLines(baseline, head);
+
+        assertTrue(ch.lines().containsKey("svc/src/main/java/com/demo/Renamed.java"),
+                "改名后的文件应按新路径进入增量范围：" + ch.lines().keySet());
+        assertEquals(Set.of(), ch.addedPaths(),
+                "改名被当成了新增，整个文件都会算进这次的增量分母");
+    }
+
+    @Test
+    void 新增文件的每一行都算变更行() throws Exception {
+        Path bar = foo.getParent().resolve("Bar.java");
+        // 4 行代码 + 1 个空行：新增文件没有基线可比，整份都是新的
+        Files.writeString(bar, """
+                package com.demo;
+
+                public class Bar {
+                    int z() { return 9; }
+                }
+                """, StandardCharsets.UTF_8);
+        run("add", "-A");
+        run("commit", "-qm", "add file");
+        String head = run("rev-parse", "HEAD").strip();
+
+        GitService.Changes ch = git.changedLines(baseline, head);
+        assertEquals(Set.of(1, 2, 3, 4, 5), ch.lines().get("svc/src/main/java/com/demo/Bar.java"));
+        assertEquals(Set.of("svc/src/main/java/com/demo/Bar.java"), ch.addedPaths());
     }
 
     @Test
@@ -88,7 +155,7 @@ class GitServiceTest {
         run("commit", "-qm", "delete");
         String head = run("rev-parse", "HEAD").strip();
 
-        assertTrue(git.changedLines(baseline, head).isEmpty(),
+        assertTrue(git.changedLines(baseline, head).lines().isEmpty(),
                 "被删掉的文件没有可染色的载体，不该出现在增量结果里");
     }
 

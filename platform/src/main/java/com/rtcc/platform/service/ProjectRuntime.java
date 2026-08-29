@@ -783,6 +783,9 @@ public class ProjectRuntime {
         }
 
         Map<String, FileCoverage> snap = s.files();
+        // 只有增量口径下「新增 / 修改」才成立：全量口径列的是产物里的全部文件，
+        // 给它们一律标上「修改」是在说一件没发生的事。null 即表示这一轮没有变更类型可言
+        Set<String> addedOrNull = null;
         if (MODE_INCREMENTAL.equals(mode)) {
             String ref = baseline == null || baseline.isBlank() ? props.getBaseline() : baseline;
             Scope scope = incrementalScope(s, ref);
@@ -790,9 +793,12 @@ public class ProjectRuntime {
             res.put("baselineCommit", scope.baselineCommit());
             res.put("changedFiles", scope.lines().size());
             snap = restrict(snap, scope.lines());
+            addedOrNull = scope.addedPaths();
         }
 
         List<Map<String, Object>> files = new ArrayList<>();
+        // lambda 要捕获它，得是 effectively final
+        final Set<String> added = addedOrNull;
         snap.values().stream()
                 .sorted(Comparator.comparing(FileCoverage::path))
                 .forEach(f -> {
@@ -803,6 +809,9 @@ public class ProjectRuntime {
                     m.put("coveredLines", f.coveredLines());
                     m.put("missedLines", f.missedLines());
                     m.put("ratio", round(f.ratio()));
+                    if (added != null) {
+                        m.put("changeType", added.contains(f.path()) ? "ADDED" : "MODIFIED");
+                    }
                     files.add(m);
                 });
         res.put("overallRatio", round(overallRatio(snap)));
@@ -1017,7 +1026,7 @@ public class ProjectRuntime {
         throw new ScenarioNotFoundException("场景 " + scenarioId + " 不存在（未开始过，或平台重启后已丢失）");
     }
 
-    private record Scope(String baselineCommit, Map<String, Set<Integer>> lines) {}
+    private record Scope(String baselineCommit, Map<String, Set<Integer>> lines, Set<String> addedPaths) {}
 
     /**
      * 算出「基线之后变动的行」这一分母。
@@ -1045,7 +1054,8 @@ public class ProjectRuntime {
                         + "，但以下源码此后已变更，行号无法对齐，请重新构建并重启被测服务：" + drift);
             }
             String baseSha = git.resolve(baseline);
-            return new Scope(baseSha, git.changedLines(baseSha, bv.commit()));
+            GitService.Changes ch = git.changedLines(baseSha, bv.commit());
+            return new Scope(baseSha, ch.lines(), ch.addedPaths());
         } catch (IOException e) {
             throw new IncrementalUnavailableException("读取 git 增量信息失败：" + e.getMessage());
         }

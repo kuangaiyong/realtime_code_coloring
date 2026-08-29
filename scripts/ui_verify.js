@@ -677,6 +677,122 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
       }
     }
 
+    // ---------- 4h · 增量列表的「新增 / 修改」 ----------
+    // 值得标出来，是因为两者该看的东西不同：新增文件整份都是这次的责任，一片红说明
+    // 这个类根本没被测到；修改文件里的红只是这次改的那几行没测，文件其余部分与这次无关。
+    //
+    // 基线在运行时算出来而不是写死 sha：本项目的设计就是「被测源码零改动」，
+    // 既有新增又有修改的区间在历史里很少，写死一个迟早会连不上真实历史。
+    const SRC_ROOTS = ['demo-service/src', 'demo-service-go', 'demo-service-cpp', 'demo-service-rust'];
+    const git = (...a) => execFileSync('git', a, { encoding: 'utf8' }).trim();
+
+    // <b>右端必须是探针自报的构建 commit，不是 HEAD。</b>平台算的是 baseline → buildCommit；
+    // 拿 HEAD 当标准答案的话，被测实例没跟着最新代码重编时，页面上每一行都会落进
+    // 「不在 git 的变更集里」，把「产物过期」报成「平台标错了」，排查方向当场跑偏
+    const CT_TARGET = sum.buildCommit;
+
+    /**
+     * 找一个<b>既有新增、又有修改</b>的基线。
+     *
+     * 只取「最近一次修改过被测源码的提交」是不够的：本项目的设计是被测源码零改动，
+     * 历史上纯新增的提交远多于修改，只要以后有人提一次纯修改，那一条就成了最近的 M 提交，
+     * 区间里只剩「修改」—— 下面「两种都要出现」的断言当场失败，而平台一点毛病没有。
+     * 所以往回扫，取第一个两种都齐的区间（越往回区间越大，越容易齐，取最新的那个即最小）。
+     */
+    let CT_BASE = null;
+    let statusRows = null;
+    for (const c of git('log', '--diff-filter=M', '--format=%H', '-n', '30', '--', ...SRC_ROOTS)
+        .split('\n').filter(Boolean)) {
+      let rows;
+      try {
+        rows = git('diff', '-M', '--name-status', c + '^', CT_TARGET, '--', ...SRC_ROOTS)
+          .split('\n').filter(Boolean);
+      } catch (e) {
+        continue;   // 根提交没有父，跳过
+      }
+      const kinds = new Set(rows.map(r => r[0]));
+      // R（改名）在平台侧同样归入「修改」，与 A 相对
+      if (kinds.has('A') && (kinds.has('M') || kinds.has('R'))) {
+        CT_BASE = c + '^';
+        statusRows = rows;
+        break;
+      }
+    }
+    if (!CT_BASE) {
+      fail('历史上找不到「既有新增又有修改」的区间，「新增 / 修改」这一条无从验证');
+    } else {
+      // git 的判定就是这一条的标准答案：平台标错了，人补测试就会补错地方
+      const expect = new Map();
+      for (const row of statusRows) {
+        const cols = row.split('\t');
+        if (cols.length < 2) continue;
+        // 改名给的是 R100<TAB>旧路径<TAB>新路径，取最后一列才是新侧路径
+        expect.set(cols[cols.length - 1], cols[0][0] === 'A' ? '新增' : '修改');
+      }
+
+      // 顶栏在增量口径下会写出「基线 <8 位 sha> → 产物 <8 位>」，用它判断
+      // 这一次请求有没有真的落地。只等「有文件」是不够的 —— 上一轮全量的 9 行
+      // 还挂在 DOM 上，会被当成结果读走；连着几次 setMode 的响应还会互相超车
+      const overallHas = (txt) => waitFor(page, (t) => {
+        const e = document.querySelector('[data-testid="overall"]');
+        return !!e && e.innerText.includes(t);
+      }, txt, 30000);
+
+      await page.click('[data-testid="nav-coloring"]');
+      await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]'), null, 8000);
+      await page.click('[data-testid="mode-incremental"]');
+      await waitFor(page, () => !!document.querySelector('[data-testid="baseline"]'), null, 20000);
+      if (await overallHas('增量') < 0) fail('切到增量口径后顶栏没跟着换成增量');
+      await fill('baseline', CT_BASE);
+      // fill 只发 input 事件，@change 不会触发；再点一次口径按钮把它送进去
+      await page.click('[data-testid="mode-incremental"]');
+      const baseShort = git('rev-parse', CT_BASE).slice(0, 8);
+      const listed = await overallHas('基线 ' + baseShort);
+      if (listed < 0) {
+        const now = await page.evaluate(textOf, '[data-testid="overall"]');
+        fail(`以 ${CT_BASE} 为基线的增量数据没加载出来（顶栏仍是「${now}」）`);
+      } else {
+        const rows = await page.evaluate(() =>
+          [...document.querySelectorAll('[data-testid="file-item"]')].map(b => {
+            const t = b.querySelector('[data-testid="change-type"]');
+            return { path: b.dataset.path, tag: t ? t.innerText.trim() : null };
+          }));
+        const wrong = [];
+        const counts = { 新增: 0, 修改: 0 };
+        for (const r of rows) {
+          if (!expect.has(r.path)) { wrong.push(`${r.path} 不在 git 的变更集里`); continue; }
+          if (r.tag !== expect.get(r.path)) {
+            wrong.push(`${r.path} 页面标「${r.tag}」，git 说是「${expect.get(r.path)}」`);
+          } else {
+            counts[r.tag]++;
+          }
+        }
+        if (wrong.length) {
+          fail(`增量列表的变更类型与 git 不一致：${wrong.slice(0, 3).join('；')}`);
+        } else if (!counts['新增'] || !counts['修改']) {
+          // 两种都出现过才算验到：全是同一种的话，标签写死成那一个也能过
+          fail(`这一轮只出现了一种变更类型（新增 ${counts['新增']} / 修改 ${counts['修改']}），断言等于没做`);
+        } else {
+          pass(`增量列表的变更类型与 git 逐个一致：${counts['新增']} 个新增 / ${counts['修改']} 个修改`);
+        }
+      }
+
+      // 全量口径下不该有这个标签：那时列的是产物里的全部文件，
+      // 给它们一律标上「修改」是在说一件没发生的事
+      await fill('baseline', 'HEAD~1');
+      await page.click('[data-testid="mode-full"]');
+      // 同样要等口径真的换回来：不等的话下面数到的是增量那一轮残留的列表，
+      // 而且后面的用例会在一个还停在增量口径的页面上跑
+      if (await overallHas('整体行覆盖率') < 0) die('切不回全量口径，后面的断言都会跑在错的口径上');
+      const strayTags = await page.evaluate(countOf, '[data-testid="change-type"]');
+      if (strayTags) {
+        fail(`全量口径下仍标着 ${strayTags} 个「新增 / 修改」—— 那时根本没有变更类型可言`);
+      } else {
+        pass('全量口径下不标变更类型：那时列的是产物里的全部文件，不是这次改的');
+      }
+      await sleep(1500);
+    }
+
     // ---------- 5 · 服务接入 ----------
     await page.click('[data-testid="nav-onboard"]');
     const onOb = await waitFor(page, () => !!document.querySelector('[data-testid="view-onboard"]'),

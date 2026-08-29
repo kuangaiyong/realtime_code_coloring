@@ -40,23 +40,59 @@ public class GitService {
     }
 
     /**
+     * 一次 diff 的结果。
+     *
+     * <p><b>为什么把「哪些是新增文件」和行号一起返回，而不是另开一个方法：</b>
+     * 两样都来自同一份 diff 输出，分开取就要再起一个 git 子进程 —— 而增量判定本来
+     * 就要起三个（查源码漂移、解析基线、算变更行，均无缓存），为一个展示用的标签
+     * 再加一个，代价落在每一次判定上。
+     *
+     * <p><b>「新增」的判据是 git 说基线侧是 /dev/null</b>，因此它跟着 {@code -M} 的改名检测走：
+     * 改名 + 改内容时基线侧给的是原路径，不算新增。但 {@code -M} <b>不是无条件的</b> ——
+     * 改动文件数超过 {@code diff.renameLimit} 时 git 会静默放弃精确检测（只往 stderr 写一句
+     * warning），一次改名退化成 delete + add。那时新路径会被标成新增，
+     * <b>而这与增量口径本身的算法是一致的</b>：同一份 diff 里，那个文件的每一行也确实
+     * 全都进了变更行集合。标签不会和下面的数字互相矛盾，只是两者一起把改名当成了新写。
+     * 不为此加 {@code -c diff.renameLimit=0}：不设上限的改名检测在大 diff 上很慢，
+     * 而这条路径每一次增量判定都要走。
+     *
+     * @param lines      每个文件的新侧变更行号
+     * @param addedPaths 其中在基线里根本不存在的那些
+     */
+    public record Changes(Map<String, Set<Integer>> lines, Set<String> addedPaths) {}
+
+    /**
      * baseline → target 之间，各源码根目录下每个文件的新增/修改行号（路径以仓库根为基准）。
      * 只看新侧行号，因为染色渲染的是新代码；删除的行没有可染色的载体。
      */
-    public Map<String, Set<Integer>> changedLines(String baseSha, String targetSha) throws IOException {
+    public Changes changedLines(String baseSha, String targetSha) throws IOException {
         List<String> args = new ArrayList<>(
                 List.of("diff", "-M", "--unified=0", "--no-color", baseSha, targetSha, "--"));
         args.addAll(sourceRoots());
         String diff = run(args.toArray(String[]::new));
 
         Map<String, Set<Integer>> result = new LinkedHashMap<>();
+        Set<String> added = new LinkedHashSet<>();
         Set<Integer> current = null;
+        // 基线侧是 /dev/null 的就是新增文件。这一行紧挨在 +++ 之前，记住上一条即可
+        boolean fromNull = false;
         for (String line : diff.split("\n", -1)) {
+            if (line.startsWith("--- ")) {
+                fromNull = line.substring(4).strip().equals("/dev/null");
+                continue;
+            }
             if (line.startsWith("+++ ")) {
                 String target = line.substring(4).strip();
                 // 文件被删除时新侧是 /dev/null，没有可染色的行
-                current = target.equals("/dev/null") ? null
-                        : result.computeIfAbsent(target.substring(2), k -> new TreeSet<>());
+                if (target.equals("/dev/null")) {
+                    current = null;
+                } else {
+                    String path = target.substring(2);
+                    current = result.computeIfAbsent(path, k -> new TreeSet<>());
+                    if (fromNull) {
+                        added.add(path);
+                    }
+                }
                 continue;
             }
             if (current == null || !line.startsWith("@@")) {
@@ -73,7 +109,10 @@ public class GitService {
             }
         }
         result.values().removeIf(Set::isEmpty);
-        return result;
+        // 上一句会丢掉「新增的文件里一行变更都没解析出来」这类条目，标记必须跟着丢，
+        // 否则 addedPaths 里会留下一个 lines 里根本不存在的路径
+        added.retainAll(result.keySet());
+        return new Changes(result, added);
     }
 
     /**

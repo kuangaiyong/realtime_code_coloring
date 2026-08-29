@@ -144,6 +144,11 @@ body {
 .file.on { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
 .file .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file .pc { margin-left: auto; font-family: var(--mono); font-size: 12px; flex: none; }
+/* 增量口径下的「新增 / 修改」。用描边而不是实心：它是这一行的注脚，
+   抢在覆盖率数字前面会把人的注意力从真正要看的东西上带走 */
+.file .ct { flex: none; padding: 0 6px; border-radius: 9px; font-size: 11px; line-height: 16px;
+  border: 1px solid; color: var(--el-text-color-secondary); border-color: var(--el-border-color); }
+.file .ct.added { color: var(--el-color-primary); border-color: var(--el-color-primary); }
 .pc.s { color: var(--el-color-success); }
 .pc.w { color: var(--el-color-warning); }
 .pc.d { color: var(--el-color-danger); }
