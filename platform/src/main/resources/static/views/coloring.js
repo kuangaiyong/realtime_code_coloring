@@ -35,7 +35,16 @@ export const Coloring = {
       return f.ratio + '% · 已覆盖 ' + f.coveredLines + ' 行 / 未覆盖 ' + f.missedLines + ' 行';
     });
 
-    return { store, all, files, keyword, emptyHint, ratioText, openFile, pctClass, hasData };
+    /**
+     * 「这个文件是这次新写的，还是在已有文件上改的」。
+     *
+     * 值得标出来，是因为两者该看的东西不同：新增文件整份都是这次的责任，
+     * 一片红说明这个类根本没被测到；而修改文件里的红只是这次改动的那几行没测，
+     * 文件其余部分的覆盖情况与这次无关 —— 不区分的话，一屏红里看不出哪些是真该补的。
+     */
+    const CHANGE = { ADDED: '新增', MODIFIED: '修改' };
+
+    return { store, all, files, keyword, emptyHint, ratioText, openFile, pctClass, hasData, CHANGE };
   },
   template: `
 <div class="view coloring" data-testid="view-coloring">
@@ -56,6 +65,12 @@ export const Coloring = {
               data-testid="file-item" :data-path="f.path"
               @click="openFile(f.path)">
         <span class="nm" :title="f.path">{{ f.sourceFileName }}</span>
+        <!-- 只有增量口径才有「新增 / 修改」可言，全量列的是产物里的全部文件；
+             服务端也只在增量口径下给 changeType，这里跟着它走而不是自己判 -->
+        <span v-if="f.changeType" class="ct" :class="f.changeType.toLowerCase()"
+              data-testid="change-type"
+              :title="f.changeType === 'ADDED' ? '基线里没有这个文件，整份都是这次新写的'
+                      : '基线里已有，这次只改了其中一部分行'">{{ CHANGE[f.changeType] }}</span>
         <span class="pc" :class="pctClass(f.ratio)">{{ f.ratio }}%</span>
       </button>
     </div>

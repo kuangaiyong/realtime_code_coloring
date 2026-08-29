@@ -74,7 +74,8 @@ body {
 .topbar .overall { font-family: var(--mono); color: var(--el-text-color-primary); font-size: 13px; }
 .spacer { margin-left: auto; }
 
-/* 场景录制条独立一行：与实时视图分开，避免「正在录场景」这件事被淹没在工具栏里 */
+/* 口径栏独立一行：它决定下面每个数字的含义（实时累计 还是 某个场景的定格快照），
+   所以只挂在会显示数字的视图上。录制操作在「测试场景」视图里，不在这条上 */
 .scenariobar {
   display: flex; align-items: center; gap: 10px; padding: 9px 18px; font-size: 13px;
   background: var(--el-bg-color); border-bottom: 1px solid var(--el-border-color-lighter);
@@ -143,6 +144,11 @@ body {
 .file.on { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
 .file .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file .pc { margin-left: auto; font-family: var(--mono); font-size: 12px; flex: none; }
+/* 增量口径下的「新增 / 修改」。用描边而不是实心：它是这一行的注脚，
+   抢在覆盖率数字前面会把人的注意力从真正要看的东西上带走 */
+.file .ct { flex: none; padding: 0 6px; border-radius: 9px; font-size: 11px; line-height: 16px;
+  border: 1px solid; color: var(--el-text-color-secondary); border-color: var(--el-border-color); }
+.file .ct.added { color: var(--el-color-primary); border-color: var(--el-color-primary); }
 .pc.s { color: var(--el-color-success); }
 .pc.w { color: var(--el-color-warning); }
 .pc.d { color: var(--el-color-danger); }
@@ -188,8 +194,6 @@ body {
 .gate .why { font-size: 13px; color: var(--el-text-color-primary); }
 .gate .num { font-family: var(--mono); font-size: 21px; color: var(--el-text-color-primary); margin-left: auto; }
 .gate .num small { font-size: 13px; color: var(--el-text-color-secondary); }
-.gate-ci { padding: 0 18px 15px; font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.7; }
-.gate-ci code { font-family: var(--mono); background: var(--el-fill-color-light); padding: 1px 5px; border-radius: 4px; word-break: break-all; }
 
 /* 纵轴钉死 0–100%：按数据范围自动缩放会把 0.2% 的抖动画成断崖 */
 .trend { padding: 14px; }

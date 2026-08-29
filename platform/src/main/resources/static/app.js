@@ -1,5 +1,5 @@
 import { store, hasData, reload, setMode, collectNow, resetCounters,
-         toggleScenario, setProject } from './store.js';
+         setProject } from './store.js';
 import { Coloring } from './views/coloring.js';
 import { Overview } from './views/overview.js';
 import { Onboard } from './views/onboard.js';
@@ -7,6 +7,8 @@ import { Projects } from './views/projects.js';
 import { Wizard } from './views/wizard.js';
 import { Settings } from './views/settings.js';
 import { Events } from './views/events.js';
+import { Scenarios } from './views/scenarios.js';
+import { Gate } from './views/gate.js';
 
 const { createApp, computed, ref, watchEffect } = Vue;
 
@@ -15,8 +17,13 @@ const { createApp, computed, ref, watchEffect } = Vue;
  * 侧边栏、路由、默认页三处不会各自跑偏。
  */
 const ROUTES = [
-  { path: 'coloring', name: '代码染色', icon: 'Document', comp: Coloring },
-  { path: 'overview', name: '总览看板', icon: 'DataLine', comp: Overview },
+  // 顺序按「先看什么」排：代码染色是这个平台的核心价值，总览是同一份数据的汇总，
+  // 场景与门禁是基于它们的两种判断，最后才是接入 / 诊断 / 配置这些不常用的。
+  // scoped 标记「这一页会显示覆盖数字」——口径栏只在它们上面出现
+  { path: 'coloring', name: '代码染色', icon: 'Document', comp: Coloring, scoped: true },
+  { path: 'overview', name: '总览看板', icon: 'DataLine', comp: Overview, scoped: true },
+  { path: 'scenarios', name: '测试场景', icon: 'VideoCamera', comp: Scenarios, scoped: true },
+  { path: 'gate', name: '覆盖门禁', icon: 'CircleCheck', comp: Gate, scoped: true },
   { path: 'onboard', name: '服务接入', icon: 'Connection', comp: Onboard },
   { path: 'events', name: '采集事件', icon: 'Warning', comp: Events },
   { path: 'settings', name: '项目设置', icon: 'Setting', comp: Settings }
@@ -79,9 +86,17 @@ const App = {
       store.projectName = r.name;
       location.hash = '#/p/' + encodeURIComponent(r.id) + '/' + DEFAULT_ROUTE;
     };
+    const currentRoute = computed(() => ROUTES.find(r => r.path === route.value) || ROUTES[0]);
     const currentView = computed(() => inProject.value
-      ? (ROUTES.find(r => r.path === route.value) || ROUTES[0]).comp
+      ? currentRoute.value.comp
       : (isNew.value ? Wizard : Projects));
+    /**
+     * 口径栏（全量/增量、数据源）只在<b>会显示覆盖数字</b>的视图上出现。
+     *
+     * 原先它挂在每个视图上，但在「项目设置」「采集事件」「服务接入」这三页，
+     * 「数据源：某个场景快照」根本无从谈起 —— 摆着只会让人以为它对这一页有影响。
+     */
+    const scoped = computed(() => inProject.value && currentRoute.value.scoped === true);
 
     // ---------- 深色模式 ----------
     // Element Plus 认 <html class="dark">，而本平台的 CSS 全走 --el-* 变量，跟着一起翻。
@@ -133,17 +148,9 @@ const App = {
     });
 
     // ---------- 场景 ----------
-    const scenarioInput = ref('');
+    // 录制操作已经搬进「测试场景」视图；这里只留「正在录制」这个提示，
+    // 挂在顶栏上（不是下面那条口径栏），见模板里的注释
     const running = computed(() => !!store.activeScenario);
-
-    async function onToggleScenario() {
-      try {
-        await toggleScenario(running.value ? '' : scenarioInput.value);
-        scenarioInput.value = '';
-      } catch (e) {
-        store.banner = { level: 'err', text: e.message };
-      }
-    }
 
     async function onSelectScenario(v) {
       store.viewScenario = v;
@@ -174,9 +181,10 @@ const App = {
     syncRoute();
 
     return {
-      ROUTES, route, inProject, isNew, currentView, navigate, toList, toNew, openSettings, openProject,
+      ROUTES, route, inProject, isNew, currentView, currentRoute, scoped,
+      navigate, toList, toNew, openSettings, openProject,
       store, probe, overall, dark,
-      scenarioInput, running, onToggleScenario, onSelectScenario,
+      running, onSelectScenario,
       setMode, onCollect, onReset
     };
   },
@@ -209,15 +217,18 @@ const App = {
 
   <div class="body">
     <header class="topbar">
-      <h1>{{ inProject ? (ROUTES.find(r => r.path === route) || ROUTES[0]).name
-              : (isNew ? '新建项目' : '项目管理') }}</h1>
+      <h1>{{ inProject ? currentRoute.name : (isNew ? '新建项目' : '项目管理') }}</h1>
       <!-- 口径、采集、清零都是「对某个项目」的动作，列表页上没有落点 -->
       <template v-if="inProject">
       <span class="pill" :class="probe.cls" data-testid="probe-pill"><i></i>{{ probe.text }}</span>
       <span class="overall" data-testid="overall">{{ overall }}</span>
+      <!-- 「正在录制」放顶栏而不是下面那条口径栏：录制期间清零会被拒、改配置会被拒，
+           而那两件事分别在别的页面上做。挂在口径栏里的话，它恰好在「项目设置」
+           这一页不显示 —— 正是最需要它的那一页 -->
+      <span v-if="running" class="pill err rec" data-testid="recording"><i></i>场景 {{ store.activeScenario }} 进行中</span>
       </template>
       <div class="spacer"></div>
-      <template v-if="inProject">
+      <template v-if="scoped">
       <div class="seg">
         <button :class="{ on: store.mode === 'full' }" data-testid="mode-full"
                 @click="setMode('full')">全量</button>
@@ -241,7 +252,10 @@ const App = {
       </el-button>
     </header>
 
-    <div v-if="inProject" class="scenariobar">
+    <!-- 这一条只剩「数据源」：它是口径，决定下面每个数字的含义，必须常驻可见。
+         开始 / 结束场景是操作，已经搬进「测试场景」视图 —— 一次性动作没有常驻的理由，
+         而且摆在设置页上会让人以为能在那儿开场景 -->
+    <div v-if="scoped" class="scenariobar">
       <label>数据源</label>
       <!-- 空串在 el-select 眼里就是「没选」，会落回 placeholder。所以 placeholder 必须
            写成实时口径本身，否则这里显示的是组件默认的英文 Select -->
@@ -251,15 +265,9 @@ const App = {
         <el-option v-for="s in store.scenarios" :key="s.scenarioId" :value="s.scenarioId"
                    :label="'场景 ' + s.scenarioId + '（' + s.files + ' 文件 / ' + s.overallRatio + '%）'" />
       </el-select>
-      <span class="spacer"></span>
-      <span v-if="running" class="rec" data-testid="recording"><i></i>场景 {{ store.activeScenario }} 进行中</span>
-      <el-input :model-value="running ? store.activeScenario : scenarioInput" size="small"
-                style="width:200px" :disabled="running" data-testid="scenario-id"
-                placeholder="场景 ID" title="给这一轮测试起个名字，例如 支付成功回归"
-                @update:model-value="v => scenarioInput = v" />
-      <el-button size="small" data-testid="btn-scenario" @click="onToggleScenario">
-        {{ running ? '结束场景' : '开始场景' }}
-      </el-button>
+      <span v-if="store.viewScenario" class="mono" style="color:var(--el-text-color-secondary)">
+        已定格的独占覆盖，不是实时累计
+      </span>
     </div>
 
     <div class="banner" data-testid="banner">

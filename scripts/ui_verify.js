@@ -57,6 +57,21 @@ async function waitFor(page, fn, arg, timeout) {
 const textOf = (sel) => document.querySelector(sel) ? document.querySelector(sel).innerText.trim() : null;
 const countOf = (sel) => document.querySelectorAll(sel).length;
 
+/**
+ * 等按钮真的能点了再点。Element Plus 的 el-button 在 :loading 期间渲染成 disabled 的
+ * 原生 button，点击会被静默吞掉 —— 后面等出来的失败与被点的那件事毫无关系，
+ * 每次都要先花时间确认「不是这次改动引入的」。
+ */
+async function clickWhenEnabled(page, testid, timeout = 60000) {
+  const ok = await waitFor(page, (t) => {
+    const e = document.querySelector(`[data-testid="${t}"]`);
+    const b = e && (e.tagName === 'BUTTON' ? e : e.querySelector('button'));
+    return !!b && !b.disabled;
+  }, testid, timeout);
+  if (ok < 0) die(`按钮 ${testid} 等了 ${timeout}ms 仍是禁用的，点不下去`);
+  await page.click(`[data-testid="${testid}"]`);
+}
+
 (async () => {
   console.log('='.repeat(70));
   console.log('前端验收（真实 Chrome）');
@@ -174,7 +189,7 @@ const countOf = (sel) => document.querySelectorAll(sel).length;
 
     for (const t of ['nav-coloring', 'nav-overview', 'nav-onboard', 'probe-pill', 'overall',
                      'mode-full', 'mode-incremental', 'btn-collect', 'btn-reset',
-                     'scenario-view', 'scenario-id', 'btn-scenario', 'banner']) {
+                     'scenario-view', 'banner']) {
       const n = await page.evaluate(countOf, `[data-testid="${t}"]`);
       if (n !== 1) fail(`骨架钩子 ${t} 出现 ${n} 次，应为 1 次`);
     }
@@ -315,13 +330,14 @@ const countOf = (sel) => document.querySelectorAll(sel).length;
     await page.click('[data-testid="nav-overview"]');
     await waitFor(page, () => !!document.querySelector('[data-testid="view-overview"]'), null, 8000);
 
-    // CI 抄的那条命令必须带项目：不带的话恒落在默认项目上，在别的项目页面照抄进 CI，
-    // 判的是 default 的覆盖率，返回 200 且字段齐全，CI 侧看不出打错了项目
-    const ciText = await page.evaluate(textOf, '.gate-ci');
-    if (ciText && !ciText.includes('/api/projects/')) {
-      fail(`门禁卡给 CI 的命令没带项目：${ciText.slice(0, 80)}`);
-    } else if (ciText) {
-      pass('门禁卡给 CI 的命令带上了项目路径');
+    // 总览上的门禁只留一句结论 + 入口，详情在独立视图。同一件事在两处各写一遍，
+    // 改起来必然有一处跟不上
+    if (!(await page.evaluate(countOf, '[data-testid="btn-gate-detail"]'))) {
+      fail('总览的门禁卡没有「查看详情」入口');
+    } else if (await page.evaluate(countOf, '.gate-ci')) {
+      fail('总览页仍在重复门禁的 CI 接入说明 —— 它已经搬到「覆盖门禁」视图');
+    } else {
+      pass('总览的门禁卡只留结论，详情由「查看详情」入口带过去');
     }
 
     // 门禁三态：通过 / 不通过 / 无法判定。渲染成别的字样就说明分支没接上
@@ -438,6 +454,345 @@ const countOf = (sel) => document.querySelectorAll(sel).length;
     }
     fs.rmSync(dlDir, { recursive: true, force: true });
 
+    // ---------- 4e · 信息架构：口径栏只在会显示数字的视图上 ----------
+    // 挂在每个视图上是原先的做法，但在「项目设置」「采集事件」「服务接入」这三页，
+    // 「数据源：某个场景快照」根本无从谈起，摆着只会让人以为它对这一页有影响
+    const scopedBar = async (view) => {
+      await page.click(`[data-testid="nav-${view}"]`);
+      // 等这一页真的挂上来再量。固定 sleep 在机器忙的时候会量到上一页的口径栏，
+      // 换来一次与被测功能无关的假失败
+      if (await waitFor(page, (v) => !!document.querySelector(`[data-testid="view-${v}"]`),
+          view, 8000) < 0) die(`打不开 ${view} 视图`);
+      return page.evaluate(() => !!document.querySelector('.scenariobar'));
+    };
+    const barOn = [];
+    const barOff = [];
+    for (const v of ['coloring', 'overview', 'scenarios', 'gate']) {
+      if (await scopedBar(v)) barOn.push(v); else barOff.push(v + '(缺)');
+    }
+    for (const v of ['onboard', 'events', 'settings']) {
+      if (await scopedBar(v)) barOff.push(v + '(多)');
+    }
+    if (barOff.length) {
+      fail(`口径栏出现的位置不对：${barOff.join('、')}`);
+    } else {
+      pass(`口径栏只出现在会显示数字的 ${barOn.length} 个视图上，设置/事件/接入页没有`);
+    }
+
+    // ---------- 4f · 测试场景：在页面上录一轮并归档 ----------
+    // 录制从顶部横条搬进了独立视图。只断言「页面能打开」证明不了它还能用。
+    // 归档的场景没有删除接口，所以每跑一次会多一条 —— 它们只在内存里
+    // （ProjectRuntime.scenarios 是个 ConcurrentHashMap），平台一重启就没了，
+    // 不会无限堆积，因此这里不为清理它去开一个删除接口
+    await page.click('[data-testid="nav-scenarios"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-scenarios"]'),
+        null, 8000) < 0) {
+      die('打不开测试场景视图');
+    }
+    const scBefore = await page.evaluate(countOf, '[data-testid="scenario-row"]');
+    const SC_ID = 'ui-verify-' + Date.now().toString(36);
+    await fill('scenario-id', SC_ID);
+    await page.click('[data-testid="btn-scenario"]');
+    // start 要给所有实例清零，8 个实例慢的时候要几秒
+    const recording = await waitFor(page, () => !!document.querySelector('[data-testid="recording"]'),
+      null, 60000);
+    if (recording < 0) {
+      fail('点了「开始场景」但没有出现「进行中」提示');
+    } else {
+      await fetch(`${DEMO}/api/order/query?bizNo=A1001`);
+      await sleep(4000);
+
+      // 「录制中」必须在<b>项目设置</b>那一页也看得见：录制期间保存配置会被服务端回 409，
+      // 而人正是在那一页才会撞上它。这个提示要是挂在口径栏里，恰好就在这一页不显示
+      await page.click('[data-testid="nav-settings"]');
+      await waitFor(page, () => !!document.querySelector('[data-testid="view-settings"]'), null, 8000);
+      const recElsewhere = await page.evaluate(countOf, '[data-testid="recording"]');
+      if (recElsewhere !== 1) {
+        fail(`录制中时「项目设置」页上的「进行中」提示出现 ${recElsewhere} 次，应为 1 次`);
+      } else {
+        pass('录制中的提示在「项目设置」页也在 —— 那一页保存配置会被服务端拒绝');
+      }
+      await page.click('[data-testid="nav-scenarios"]');
+      await waitFor(page, () => !!document.querySelector('[data-testid="view-scenarios"]'), null, 8000);
+
+      await clickWhenEnabled(page, 'btn-scenario');
+      const archived = await waitFor(page, (n) =>
+        document.querySelectorAll('[data-testid="scenario-row"]').length === n + 1,
+        scBefore, 60000);
+      if (archived < 0) {
+        fail('结束场景后归档列表没有多出一行');
+      } else {
+        const row = await page.evaluate((id) => {
+          const tr = document.querySelector(`[data-testid="scenario-row"][data-id="${id}"]`);
+          return tr ? [...tr.children].map(td => td.innerText.trim()) : null;
+        }, SC_ID);
+        if (!row) fail(`归档列表里找不到刚录的场景 ${SC_ID}`);
+        // 时长必须真的算出来：只显示两个时间戳的话，人得自己减
+        else if (!/秒|分钟|小时/.test(row[4])) fail(`归档没给出录制时长：${row.join(' | ')}`);
+        else pass(`页面上录了一轮并归档：${SC_ID}，${row[1]} 个文件 / ${row[2]} / 录了 ${row[4]}`);
+      }
+    }
+
+    // 不管上面走成什么样，都不能把场景留在「进行中」：留着的话，后面 section 6 的
+    // 清零按钮带着 :disabled="running"，点击会被静默吞掉；保存设置会被服务端 409；
+    // 更麻烦的是下一次 verify 里 e2e_scenario.py 的 start 会撞「已有场景在跑」，
+    // 级联出一串与本次改动无关的假失败。所以在这里兜一次底
+    const leftOver = await (await fetch(`${PLATFORM}/api/projects/default/scenario`)).json();
+    if (leftOver.active) {
+      await fetch(`${PLATFORM}/api/projects/default/scenario/stop`, { method: 'POST' })
+        .catch(() => {});
+      fail(`场景 ${leftOver.active} 没能从页面上结束，已在收尾时直接调接口停掉`);
+    }
+
+    // 场景快照不参与门禁判定 —— 它是过去某一轮的独占覆盖，与「这次能不能合并」无关
+    await page.click('[data-testid="nav-gate"]');
+    const refused = await waitFor(page, () => !!document.querySelector('[data-testid="gate-archived"]'),
+      null, 10000);
+    if (refused < 0) {
+      fail('看着场景快照时，门禁页没有说明「不参与判定」');
+    } else {
+      pass('场景快照下门禁明确拒判，而不是给一个与合并无关的结论');
+    }
+
+    // 在门禁页<b>原地</b>把数据源切回实时（不离开这一页）。组件不会因此重新挂载，
+    // 若不重判，页面会永久停在「判定中…」且一张判定卡都没有 ——
+    // 而这一页刻意不轮询，它自己不会好起来
+    await page.click('[data-testid="scenario-view"]');
+    const backLive = await page.evaluate(() => {
+      // 只认可见的那个下拉：Element Plus 会把别处 select 的下拉留在 DOM 里
+      const li = [...document.querySelectorAll('.el-select-dropdown__item')]
+        .filter(e => e.offsetParent !== null)
+        .find(e => e.innerText.trim().startsWith('实时'));
+      if (!li) return false;
+      li.click();
+      return true;
+    });
+    if (!backLive) {
+      fail('顶栏数据源里没有「实时」这一项');
+    } else if (await waitFor(page,
+        () => document.querySelectorAll('[data-testid="gate-card"]').length === 2, null, 30000) < 0) {
+      const at = await page.evaluate(textOf, '[data-testid="judged-at"]');
+      fail(`在门禁页把数据源切回实时后没有重判（「${at}」，0 张判定卡）—— 这一页不轮询，它自己不会好`);
+    } else {
+      pass('在门禁页原地把数据源切回实时会立即重判，不会停在空白的「判定中…」');
+    }
+
+    // 归档表的「查看覆盖」是这张表唯一的动作，也走一遍
+    await page.click('[data-testid="nav-scenarios"]');
+    await waitFor(page, () => !!document.querySelector('[data-testid="btn-view-scenario"]'), null, 8000);
+    await page.click('[data-testid="btn-view-scenario"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="btn-back-live"]'),
+        null, 15000) < 0) {
+      fail('点了归档场景的「查看覆盖」，数据源没有切过去');
+    } else {
+      pass('归档表的「查看覆盖」把数据源切到了那个场景');
+    }
+
+    // 切回实时，后面的断言仍按实时口径来
+    await page.click('[data-testid="btn-back-live"]');
+    await sleep(3000);
+
+    // ---------- 4g · 覆盖门禁：两种口径并排 ----------
+    // 全量说的是存量水位，增量说的是「这次改的代码测没测」——
+    // 只给一个数字的话，人会拿存量的不达标去挡这次合并
+    await page.click('[data-testid="nav-gate"]');
+    if (await waitFor(page, () => document.querySelectorAll('[data-testid="gate-card"]').length === 2,
+        null, 30000) < 0) {
+      const n = await page.evaluate(countOf, '[data-testid="gate-card"]');
+      fail(`门禁页给出 ${n} 张判定卡，应为全量与增量各一张`);
+    } else {
+      const verdicts = await page.evaluate(() => ['full', 'incremental'].map(m => {
+        const e = document.querySelector('[data-testid="gate-verdict-' + m + '"]');
+        return e ? e.innerText.trim() : null;
+      }));
+      const legal = ['通过', '不通过', '无法判定'];
+      if (!verdicts.every(v => legal.includes(v))) {
+        fail(`门禁结论不在三态之内：${verdicts.join(' / ')}`);
+      } else {
+        pass(`门禁页两种口径并排：全量「${verdicts[0]}」/ 增量「${verdicts[1]}」`);
+      }
+      const ci = await page.evaluate(textOf, '[data-testid="gate-ci"]');
+      if (!ci || !ci.includes('/api/projects/')) {
+        fail(`门禁页给 CI 的命令没带项目：${ci}`);
+      } else {
+        pass('门禁页给 CI 的命令带上了项目路径');
+      }
+
+      // 那条命令是给人抄进流水线的模板，必须跟着顶栏当前的口径与基线走，
+      // 而不是上一次判定时冻结下来的那份 —— 抄到的基线与框里显示的不一致，
+      // 流水线判的就是另一个基线，而这在页面上一点看不出来。
+      // 同时：卡片仍是按旧基线判的（改基线不重判，否则每敲一个字符起三个 git 进程），
+      // 所以必须当场点破，不能留一个不知道按什么判出来的数字
+      await page.click('[data-testid="mode-incremental"]');
+      if (await waitFor(page, () => !!document.querySelector('[data-testid="baseline"]'),
+          null, 20000) < 0) {
+        fail('切到增量口径后顶栏没有出现基线输入框');
+      } else {
+        await fill('baseline', 'HEAD~2');
+        await sleep(400);
+        const ciInc = await page.evaluate(textOf, '[data-testid="gate-ci"]');
+        const drift = await page.evaluate(countOf, '[data-testid="baseline-drift"]');
+        if (!/baseline=HEAD~2/.test(String(ciInc))) {
+          fail(`顶栏基线改成 HEAD~2 后，给 CI 的命令还是旧的：${ciInc}`);
+        } else if (drift !== 1) {
+          fail('基线改过了而判定还是旧的，页面没点破 —— 卡片就成了个不知道按什么判出来的数字');
+        } else {
+          pass('给 CI 的命令跟着顶栏基线走，并点破了「这个结论是按旧基线判的」');
+        }
+        // 还原：后面的染色延迟断言要按全量口径来
+        await fill('baseline', 'HEAD~1');
+        await page.click('[data-testid="mode-full"]');
+        await sleep(1500);
+      }
+
+      // 这一页刻意不轮询：增量判定每次要起三个 git 子进程（查漂移、解析基线、算变更行，
+      // 均无缓存），定时刷会在人只是把页面开着的时候持续烧 CPU。
+      // 代价是结论可能不是最新的，所以「判定于几点」必须写出来 ——
+      // 不标的话，人会拿一个半小时前的结论去决定合不合并
+      const stamp1 = await page.evaluate(textOf, '[data-testid="judged-at"]');
+      if (!/判定于 /.test(String(stamp1))) {
+        fail(`门禁页没有标出判定时间：「${stamp1}」—— 它不自动刷新，不标就会被当成实时的`);
+      } else {
+        await sleep(12000);
+        const stamp2 = await page.evaluate(textOf, '[data-testid="judged-at"]');
+        if (stamp2 !== stamp1) {
+          fail(`门禁页在自动刷新（${stamp1} → ${stamp2}）—— 每轮三个 git 子进程，不该定时刷`);
+        } else {
+          // 「改由重新判定触发」不能只写在 pass 文案里 —— 那个按钮得真按一下，
+          // 否则 load() 在第二次调用时坏掉，这里一个字都不会报
+          await page.click('[data-testid="btn-rejudge"]');
+          const advanced = await waitFor(page, (prev) => {
+            const e = document.querySelector('[data-testid="judged-at"]');
+            return !!e && /判定于 /.test(e.innerText) && e.innerText.trim() !== prev;
+          }, String(stamp1).trim(), 30000);
+          if (advanced < 0) {
+            const now = await page.evaluate(textOf, '[data-testid="judged-at"]');
+            fail(`点了「重新判定」但判定时间没动（仍是「${now}」）—— 这一页不轮询，它是唯一的刷新入口`);
+          } else {
+            const cards = await page.evaluate(countOf, '[data-testid="gate-card"]');
+            if (cards !== 2) fail(`重新判定后只剩 ${cards} 张判定卡`);
+            else pass(`门禁页不自动刷新（${stamp1} 12 秒未变），「重新判定」点一下就重判（${advanced}ms，两种口径都在）`);
+          }
+        }
+      }
+    }
+
+    // ---------- 4h · 增量列表的「新增 / 修改」 ----------
+    // 值得标出来，是因为两者该看的东西不同：新增文件整份都是这次的责任，一片红说明
+    // 这个类根本没被测到；修改文件里的红只是这次改的那几行没测，文件其余部分与这次无关。
+    //
+    // 基线在运行时算出来而不是写死 sha：本项目的设计就是「被测源码零改动」，
+    // 既有新增又有修改的区间在历史里很少，写死一个迟早会连不上真实历史。
+    const SRC_ROOTS = ['demo-service/src', 'demo-service-go', 'demo-service-cpp', 'demo-service-rust'];
+    const git = (...a) => execFileSync('git', a, { encoding: 'utf8' }).trim();
+
+    // <b>右端必须是探针自报的构建 commit，不是 HEAD。</b>平台算的是 baseline → buildCommit；
+    // 拿 HEAD 当标准答案的话，被测实例没跟着最新代码重编时，页面上每一行都会落进
+    // 「不在 git 的变更集里」，把「产物过期」报成「平台标错了」，排查方向当场跑偏
+    const CT_TARGET = sum.buildCommit;
+
+    /**
+     * 找一个<b>既有新增、又有修改</b>的基线。
+     *
+     * 只取「最近一次修改过被测源码的提交」是不够的：本项目的设计是被测源码零改动，
+     * 历史上纯新增的提交远多于修改，只要以后有人提一次纯修改，那一条就成了最近的 M 提交，
+     * 区间里只剩「修改」—— 下面「两种都要出现」的断言当场失败，而平台一点毛病没有。
+     * 所以往回扫，取第一个两种都齐的区间（越往回区间越大，越容易齐，取最新的那个即最小）。
+     */
+    let CT_BASE = null;
+    let statusRows = null;
+    for (const c of git('log', '--diff-filter=M', '--format=%H', '-n', '30', '--', ...SRC_ROOTS)
+        .split('\n').filter(Boolean)) {
+      let rows;
+      try {
+        rows = git('diff', '-M', '--name-status', c + '^', CT_TARGET, '--', ...SRC_ROOTS)
+          .split('\n').filter(Boolean);
+      } catch (e) {
+        continue;   // 根提交没有父，跳过
+      }
+      const kinds = new Set(rows.map(r => r[0]));
+      // R（改名）在平台侧同样归入「修改」，与 A 相对
+      if (kinds.has('A') && (kinds.has('M') || kinds.has('R'))) {
+        CT_BASE = c + '^';
+        statusRows = rows;
+        break;
+      }
+    }
+    if (!CT_BASE) {
+      fail('历史上找不到「既有新增又有修改」的区间，「新增 / 修改」这一条无从验证');
+    } else {
+      // git 的判定就是这一条的标准答案：平台标错了，人补测试就会补错地方
+      const expect = new Map();
+      for (const row of statusRows) {
+        const cols = row.split('\t');
+        if (cols.length < 2) continue;
+        // 改名给的是 R100<TAB>旧路径<TAB>新路径，取最后一列才是新侧路径
+        expect.set(cols[cols.length - 1], cols[0][0] === 'A' ? '新增' : '修改');
+      }
+
+      // 顶栏在增量口径下会写出「基线 <8 位 sha> → 产物 <8 位>」，用它判断
+      // 这一次请求有没有真的落地。只等「有文件」是不够的 —— 上一轮全量的 9 行
+      // 还挂在 DOM 上，会被当成结果读走；连着几次 setMode 的响应还会互相超车
+      const overallHas = (txt) => waitFor(page, (t) => {
+        const e = document.querySelector('[data-testid="overall"]');
+        return !!e && e.innerText.includes(t);
+      }, txt, 30000);
+
+      await page.click('[data-testid="nav-coloring"]');
+      await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]'), null, 8000);
+      await page.click('[data-testid="mode-incremental"]');
+      await waitFor(page, () => !!document.querySelector('[data-testid="baseline"]'), null, 20000);
+      if (await overallHas('增量') < 0) fail('切到增量口径后顶栏没跟着换成增量');
+      await fill('baseline', CT_BASE);
+      // fill 只发 input 事件，@change 不会触发；再点一次口径按钮把它送进去
+      await page.click('[data-testid="mode-incremental"]');
+      const baseShort = git('rev-parse', CT_BASE).slice(0, 8);
+      const listed = await overallHas('基线 ' + baseShort);
+      if (listed < 0) {
+        const now = await page.evaluate(textOf, '[data-testid="overall"]');
+        fail(`以 ${CT_BASE} 为基线的增量数据没加载出来（顶栏仍是「${now}」）`);
+      } else {
+        const rows = await page.evaluate(() =>
+          [...document.querySelectorAll('[data-testid="file-item"]')].map(b => {
+            const t = b.querySelector('[data-testid="change-type"]');
+            return { path: b.dataset.path, tag: t ? t.innerText.trim() : null };
+          }));
+        const wrong = [];
+        const counts = { 新增: 0, 修改: 0 };
+        for (const r of rows) {
+          if (!expect.has(r.path)) { wrong.push(`${r.path} 不在 git 的变更集里`); continue; }
+          if (r.tag !== expect.get(r.path)) {
+            wrong.push(`${r.path} 页面标「${r.tag}」，git 说是「${expect.get(r.path)}」`);
+          } else {
+            counts[r.tag]++;
+          }
+        }
+        if (wrong.length) {
+          fail(`增量列表的变更类型与 git 不一致：${wrong.slice(0, 3).join('；')}`);
+        } else if (!counts['新增'] || !counts['修改']) {
+          // 两种都出现过才算验到：全是同一种的话，标签写死成那一个也能过
+          fail(`这一轮只出现了一种变更类型（新增 ${counts['新增']} / 修改 ${counts['修改']}），断言等于没做`);
+        } else {
+          pass(`增量列表的变更类型与 git 逐个一致：${counts['新增']} 个新增 / ${counts['修改']} 个修改`);
+        }
+      }
+
+      // 全量口径下不该有这个标签：那时列的是产物里的全部文件，
+      // 给它们一律标上「修改」是在说一件没发生的事
+      await fill('baseline', 'HEAD~1');
+      await page.click('[data-testid="mode-full"]');
+      // 同样要等口径真的换回来：不等的话下面数到的是增量那一轮残留的列表，
+      // 而且后面的用例会在一个还停在增量口径的页面上跑
+      if (await overallHas('整体行覆盖率') < 0) die('切不回全量口径，后面的断言都会跑在错的口径上');
+      const strayTags = await page.evaluate(countOf, '[data-testid="change-type"]');
+      if (strayTags) {
+        fail(`全量口径下仍标着 ${strayTags} 个「新增 / 修改」—— 那时根本没有变更类型可言`);
+      } else {
+        pass('全量口径下不标变更类型：那时列的是产物里的全部文件，不是这次改的');
+      }
+      await sleep(1500);
+    }
+
     // ---------- 5 · 服务接入 ----------
     await page.click('[data-testid="nav-onboard"]');
     const onOb = await waitFor(page, () => !!document.querySelector('[data-testid="view-onboard"]'),
@@ -540,7 +895,7 @@ const countOf = (sel) => document.querySelectorAll(sel).length;
         el.dispatchEvent(new Event('input', { bubbles: true }));
         return true;
       }, `[data-testid="${testid}"]`, value);
-      if (!ok) die(`向导里找不到字段 ${testid}`);
+      if (!ok) die(`页面上找不到输入框 ${testid}`);
     }
     const stepText = () => page.evaluate(() =>
       document.querySelector('.card-head .sub') ? document.querySelector('.card-head .sub').innerText : '');

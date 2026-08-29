@@ -1,4 +1,4 @@
-import { store, params, projectUrl, loadBuildTrend, loadPerInstance, openFile, hasData } from '../store.js';
+import { store, loadBuildTrend, loadPerInstance, openFile, hasData } from '../store.js';
 import { pctClass, LANG } from '../api.js';
 
 const { computed } = Vue;
@@ -104,9 +104,10 @@ export const Overview = {
       ? '最后采集 ' + new Date(d.value.lastCollectedAt).toLocaleTimeString() : '');
 
     // ---- 门禁 ----
-    // 必须带项目：不带的话这条命令恒落在默认项目上，在别的项目页面照抄进 CI，
-    // 判的是 default 的覆盖率 —— 返回 200、字段齐全，CI 侧看不出打错了项目
-    const gateCi = computed(() => projectUrl('/coverage/gate?') + params());
+    /** 详情在独立视图里。模板表达式里写不了 location，得从这儿暴露 */
+    function toGate() {
+      location.hash = '#/p/' + encodeURIComponent(store.projectId) + '/gate';
+    }
 
     // ---- 曲线 ----
     const buildNote = '每个构建一个点，取该构建观测到的峰值';
@@ -222,8 +223,8 @@ export const Overview = {
     }
 
     return {
-      store, stats, collectedAt, gateCi, trendView, setTrendScope,
-      inst, instEmpty, perInstMap, perInstOf, langOf, loadPerInstance,
+      store, stats, collectedAt, trendView, setTrendScope,
+      inst, instEmpty, perInstMap, perInstOf, langOf, loadPerInstance, toGate,
       ranked, jumpTo, pctClass, exportCsv
     };
   },
@@ -237,29 +238,27 @@ export const Overview = {
     </div>
   </div>
 
+  <!-- 门禁在这里只留一句结论：判定详情、增量与全量的对比、CI 接入命令都在
+       「覆盖门禁」那一页。同一件事在两处各写一遍，改起来必然有一处跟不上 -->
   <div class="card">
     <div class="card-head">
       <h2>覆盖率门禁</h2>
-      <span class="sub" v-if="store.gate">{{ store.gate.metric }} · 阈值 {{ store.gate.threshold }}%</span>
+      <el-button size="small" data-testid="btn-gate-detail" @click="toGate">查看详情</el-button>
     </div>
     <div v-if="store.viewScenario" class="empty">场景快照不参与门禁判定</div>
-    <!-- 门禁结论是三态而非两态：「判不了」必须与「不通过」分开显示 ——
-         前者该找人看平台，后者该补测试 -->
     <div v-else-if="store.gateError" class="gate undecided" data-testid="gate">
       <span class="verdict" data-testid="gate-verdict">无法判定</span>
       <span class="why">{{ store.gateError }}</span>
     </div>
-    <template v-else-if="store.gate">
-      <div class="gate" :class="store.gate.passed ? 'pass' : 'block'" data-testid="gate">
-        <span class="verdict" data-testid="gate-verdict">{{ store.gate.passed ? '通过' : '不通过' }}</span>
-        <span class="why">{{ store.gate.reason }}</span>
-        <span class="num" data-testid="gate-actual">
-          <template v-if="store.gate.actual === null">—</template>
-          <template v-else>{{ store.gate.actual }}<small>%</small></template>
-        </span>
-      </div>
-      <div class="gate-ci">CI 合并前调 <code>GET {{ gateCi }}</code>，按 <code>passed</code> 放行或阻断；判不了时返回 409，别把它当成不通过。</div>
-    </template>
+    <div v-else-if="store.gate" class="gate" :class="store.gate.passed ? 'pass' : 'block'"
+         data-testid="gate">
+      <span class="verdict" data-testid="gate-verdict">{{ store.gate.passed ? '通过' : '不通过' }}</span>
+      <span class="why">{{ store.gate.reason }}</span>
+      <span class="num" data-testid="gate-actual">
+        <template v-if="store.gate.actual === null">—</template>
+        <template v-else>{{ store.gate.actual }}<small>%</small></template>
+      </span>
+    </div>
     <div v-else class="empty">等待判定…</div>
   </div>
 
