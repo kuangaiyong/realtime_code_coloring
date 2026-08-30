@@ -1,4 +1,5 @@
 import { api, LANG } from '../api.js';
+import { BaselineField } from '../components/baseline-field.js';
 
 const { computed, reactive, ref, onMounted } = Vue;
 
@@ -18,7 +19,8 @@ const { computed, reactive, ref, onMounted } = Vue;
  */
 const GROUPS = [
   { title: '基本', fields: [['name', '项目名', 'text']] },
-  { title: '代码仓库', fields: [['repoDir', 'Git 仓库目录', 'text'], ['baseline', '默认基线', 'text']] },
+  // baseline 不走这张表：它要按仓库列出候选，见模板里的 baseline-field
+  { title: '代码仓库', fields: [['repoDir', 'Git 仓库目录', 'text']] },
   { title: '采集', fields: [['timeoutMs', '探针读取超时 (ms)', 'number']] }
 ];
 
@@ -31,6 +33,7 @@ const PATH_FIELDS = {
 };
 
 export const Settings = {
+  components: { BaselineField },
   props: { projectId: { type: String, required: true } },
   emits: ['saved', 'back'],
   setup(props, { emit }) {
@@ -124,6 +127,12 @@ export const Settings = {
             <label>{{ f[1] }}</label>
             <el-input v-if="f[2] === 'number'" v-model.number="cfg[f[0]]" :data-testid="'st-' + f[0]" />
             <el-input v-else v-model="cfg[f[0]]" :data-testid="'st-' + f[0]" />
+          </div>
+          <!-- 「默认基线」四个字不解释任何事情：它只回答「跟哪个版本比」，
+               而增量覆盖率的分母就是从那个版本到现在改过的可执行行 -->
+          <div v-if="g.title === '代码仓库'" class="fld">
+            <label>增量基线<br><small>跟哪个版本比</small></label>
+            <baseline-field v-model="cfg.baseline" :repo-dir="cfg.repoDir" testid="st-baseline" />
           </div>
         </template>
 

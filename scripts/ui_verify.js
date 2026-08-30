@@ -58,6 +58,57 @@ const textOf = (sel) => document.querySelector(sel) ? document.querySelector(sel
 const countOf = (sel) => document.querySelectorAll(sel).length;
 
 /**
+ * 往「增量基线」那个可选可输入的下拉里填一个值。
+ *
+ * 它不是输入框：data-testid 挂在 .el-select 根节点上，fill() 那套
+ * （直接对着 data-testid 调 HTMLInputElement 的 value setter）在它身上会抛错。
+ * 走 filterable + allow-create 的路径 —— 输进去，再点中下拉里那一项，
+ * 候选里没有的 ref 也能这样填进去。
+ */
+async function pickBaseline(page, testid, value) {
+  await page.evaluate((t) => {
+    const root = document.querySelector(`[data-testid="${t}"]`);
+    if (!root) throw new Error('找不到基线控件 ' + t);
+    root.querySelector('.el-select__wrapper').click();
+  }, testid);
+  await sleep(400);
+  await page.evaluate((args) => {
+    const inp = document.querySelector(`[data-testid="${args.t}"] input.el-select__input`);
+    const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    set.call(inp, args.v);
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+  }, { t: testid, v: value });
+  await sleep(600);
+  const picked = await page.evaluate(() => {
+    const li = [...document.querySelectorAll('.el-select-dropdown__item')]
+      .filter(e => e.offsetParent !== null)[0];
+    if (!li) return false;
+    li.click();
+    return true;
+  });
+  if (!picked) die(`基线下拉里一个可选项都没有，填不进 ${value}`);
+  await sleep(300);
+}
+
+/** 下拉里当前列出的候选（要先展开）。返回 [{ref, kind}] */
+async function baselineOptions(page, testid) {
+  await page.evaluate((t) => {
+    document.querySelector(`[data-testid="${t}"] .el-select__wrapper`).click();
+  }, testid);
+  await sleep(700);
+  const out = await page.evaluate(() => {
+    const vis = (sel) => [...document.querySelectorAll(sel)].filter(e => e.offsetParent !== null);
+    return {
+      groups: vis('.el-select-group__title').map(e => e.innerText.trim()),
+      refs: vis('.el-select-dropdown__item').map(e => e.innerText.trim().split(/\s+/)[0])
+    };
+  });
+  await page.keyboard.press('Escape');
+  await sleep(300);
+  return out;
+}
+
+/**
  * 等按钮真的能点了再点。Element Plus 的 el-button 在 :loading 期间渲染成 disabled 的
  * 原生 button，点击会被静默吞掉 —— 后面等出来的失败与被点的那件事毫无关系，
  * 每次都要先花时间确认「不是这次改动引入的」。
@@ -909,7 +960,51 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
     await page.click('[data-testid="wz-next"]');            // 1 → 2
     await sleep(600);
     await fill('wz-repo', seed.repoDir);
-    await fill('wz-baseline', seed.baseline);
+
+    // 「增量基线」是整套配置里最难填的一项：人填不出来往往不是不懂这个概念，
+    // 是不知道<b>这个仓库里有什么可填</b>。所以候选必须来自真实仓库 ——
+    // 前端写死 main 的话，主干叫 master 的仓库会拿到一个选了就报错的选项，
+    // 比不给建议更糟，因为人会以为是平台坏了
+    await sleep(1200);   // 候选是跟着仓库路径异步取的
+    const opts = await baselineOptions(page, 'wz-baseline');
+
+    // 标准答案<b>问平台要</b>，不在 node 这边跑 git：repoDir 是「..」这种相对路径，
+    // 它相对的是<b>平台进程</b>的工作目录，而 node 跑在仓库根 —— 两个基准不同，
+    // 自己解析必然指到别的地方（这一条是先跑出假失败才发现的）。
+    // 「候选一定解析得了」这条性质由单测守（那里仓库路径是绝对的、无歧义）；
+    // 这里守的是另一半：界面列出来的，就是平台给出来的那些
+    const fromApi = await (await fetch(
+      `${PLATFORM}/api/git/baselines?repoDir=${encodeURIComponent(seed.repoDir)}`)).json();
+    const apiRefs = new Set((fromApi.candidates || []).map(c => c.ref));
+    const bad = opts.refs.filter(r => !apiRefs.has(r));
+    if (!opts.refs.length) {
+      fail('基线下拉一个候选都没列出来，人又回到了「不知道该填什么」');
+    } else if (bad.length) {
+      fail(`界面上的基线候选不是平台给的：${bad.join('、')} —— 前端自己编的选项没人保证能用`);
+    } else if (opts.refs.length !== apiRefs.size) {
+      fail(`平台给了 ${apiRefs.size} 个候选，界面只列出 ${opts.refs.length} 个`);
+    } else if (opts.refs.includes('origin')) {
+      // git 把 refs/remotes/origin/HEAD 缩写成「origin」，它是符号引用，
+      // 选它等于「跟远端此刻默认指向的那个分支比」，而那是哪个分支不写在名字里
+      fail('基线候选里混进了 origin（origin/HEAD 的缩写），选它无从判断在跟谁比');
+    } else if (!opts.groups.length) {
+      fail(`基线候选没有分组：${opts.refs.join('、')} —— 混在一起看不出分支和标签是两种东西`);
+    } else {
+      pass(`基线可从仓库里选：${opts.refs.length} 个候选（与平台给出的完全一致）、按「${opts.groups.join('/')}」分组`);
+    }
+
+    // 另一半：候选之外的 ref 同样合法（某个 sha、v1.2.0^、上游仓库的引用），
+    // 只给下拉等于把能力砍掉一半
+    await pickBaseline(page, 'wz-baseline', 'HEAD~2');
+    const typed = await page.evaluate(() =>
+      document.querySelector('[data-testid="wz-baseline"]').innerText.trim());
+    if (!typed.includes('HEAD~2')) {
+      fail(`候选里没有的 ref 填不进去（框里是「${typed}」）`);
+    } else {
+      pass('候选之外的 ref 也能直接输入：HEAD~2 已填入');
+    }
+
+    await pickBaseline(page, 'wz-baseline', seed.baseline);
     await page.click('[data-testid="wz-next"]');            // 2 → 3（跑 git）
     if (await waitFor(page, () => /第 3 /.test(document.querySelector('.card-head .sub').innerText),
         null, 30000) < 0) die(`向导卡在第 2 步：${await stepText()}`);
@@ -918,6 +1013,39 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
     await page.click('[data-testid="wz-next"]');            // 3 → 4（连探针）
     if (await waitFor(page, () => /第 4 /.test(document.querySelector('.card-head .sub').innerText),
         null, 60000) < 0) die(`向导卡在第 3 步：${await stepText()}`);
+    // 先走一遍<b>真实踩到过的那条错路</b>：产物目录指向平台自己的 target/classes。
+    // 它确实存在，所以「目录是否有效」这一项照旧通过 —— 光靠它挡不住。
+    // 建出来的项目会满屏「源码读取失败」，而没有任何一处说得清问题在配置上，
+    // 而向导本就是唯一能在这个时点挡下来的地方
+    await fill('wz-classesDir', 'target/classes');   // 相对平台安装目录 → 平台自己的产物
+    await fill('wz-javaSourceRoot', seed.javaSourceRoot);
+    await page.click('[data-testid="wz-next"]');
+    // 等「验完了」而不是定长 sleep：这一步后端要真去连全部探针，
+    // 超过定长就会把「还没验完」读成「被拦住」而误报 pass（自检表只在第 6 步有，
+    // 这一步的结论是走 ElMessage 弹出来的）
+    // 不能用 offsetParent 判 .el-message 是否可见：它是 position: fixed，
+    // 而 fixed 元素的 offsetParent 按规范就是 null（这一条是跑出来才发现的）
+    const settled = await waitFor(page, () =>
+      /第 5 /.test(document.querySelector('.card-head .sub').innerText)
+      || document.querySelectorAll('.el-message').length > 0,
+      null, 60000);
+    if (settled < 0) {
+      fail('填了错的产物目录后，向导既没前进也没给出提示 —— 人不知道发生了什么');
+    } else if (/第 5 /.test(String(await stepText()))) {
+      fail('产物目录指向了另一个工程（平台自己的 target/classes），向导却放行了 —— '
+        + '建出来只会满屏「源码读取失败」，而没有一处说得清问题在配置上');
+    } else {
+      const why = await page.evaluate(() => [...document.querySelectorAll('.el-message')]
+        .map(e => e.innerText.trim()).join(' | '));
+      // 拦住了还不够，得说清是哪一项：只说「路径无效」会把人引去找一个没问题的目录
+      if (!/同一个工程|一个都找不到/.test(why)) {
+        fail(`向导拦住了，但没说清为什么：「${why}」—— 目录本身是有效的，人会去找一个没问题的目录`);
+      } else {
+        pass('产物目录指向另一个工程时向导当场拦住，并说清了是「产物与源码不是同一个工程」');
+      }
+      await page.evaluate(() => document.querySelectorAll('.el-message').forEach(e => e.remove()));
+    }
+
     await fill('wz-classesDir', seed.classesDir);
     await fill('wz-javaSourceRoot', seed.javaSourceRoot);
     await page.click('[data-testid="wz-next"]');            // 4 → 5（验路径）
@@ -982,7 +1110,14 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
       } else {
         pass(`设置页读出了 ${instRows} 个实例`);
       }
-      await fill('st-baseline', 'HEAD~2');
+      // 设置页的基线也是同一个可选可输入的控件，不是输入框
+      const stOpts = await baselineOptions(page, 'st-baseline');
+      if (!stOpts.refs.length) {
+        fail('设置页的基线下拉一个候选都没有 —— 改配置时同样需要知道这个仓库里有什么可填');
+      } else {
+        pass(`设置页的基线同样能从仓库里选：${stOpts.refs.length} 个候选`);
+      }
+      await pickBaseline(page, 'st-baseline', 'HEAD~2');
       await page.click('[data-testid="st-save"]');
       const saved = await waitFor(page, () => !document.querySelector('[data-testid="view-settings"]'),
         null, 30000);

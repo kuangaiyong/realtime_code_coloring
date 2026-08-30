@@ -12,7 +12,9 @@ import com.rtcc.platform.model.BuildVersion;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -97,6 +99,10 @@ public class ProjectChecker {
                     "不是可用的 git 仓库：" + describe(e)));
             return;
         }
+        // 填成子目录是能跑通的 —— 正因为能跑通才危险，见 repoIsTopLevel
+        if (!repoIsTopLevel(git, repo, items)) {
+            return;
+        }
         try {
             String base = git.resolve(cfg.getBaseline());
             items.add(new CheckItem("baseline", "增量基线", true,
@@ -123,6 +129,7 @@ public class ProjectChecker {
         if (languages.contains(ProbeEndpoint.JAVA)) {
             dir(items, "classesDir", "Java 产物目录（classes-dir）", cfg.getClassesDir());
             sourceRoot(items, cfg, "javaSourceRoot", "Java 源码根", cfg.getJavaSourceRoot());
+            classesMatchSource(items, cfg);
         }
         if (languages.contains(ProbeEndpoint.GO)) {
             sourceRoot(items, cfg, "goSourceRoot", "Go 源码根", cfg.getGoSourceRoot());
@@ -161,6 +168,159 @@ public class ProjectChecker {
         File f = new File(path);
         items.add(new CheckItem(name, label, f.isFile(),
                 f.isFile() ? f.getAbsolutePath() : "文件不存在：" + f.getAbsolutePath()));
+    }
+
+    /**
+     * <b>repo-dir 必须是 git 仓库的根，不能是它下面的某个子目录。</b>
+     *
+     * <p>填子目录是能跑通的：git 在子目录里照常工作，{@code rev-parse HEAD} 也照常返回，
+     * 所以上面那一项会通过。<b>正因为能跑通才危险</b> —— {@code diff --name-only}
+     * 交出来的路径始终以仓库根为基准（实测：在 {@code demo-service} 里跑，git 说的是
+     * {@code demo-service/src/main/java/...}），而覆盖率 IR 里的路径是
+     * {@code src/main/java/...}，两边永远交不上。
+     *
+     * <p>结果不是报错，是<b>增量范围恒为空</b>：门禁每次都回「基线之后没有变更的
+     * 可执行代码」并<b>放行</b>（分母为 0 时按设计放行），CI 从此挡不住任何东西，
+     * 而它看上去一切正常。
+     *
+     * @return 是否可以继续往下检查
+     */
+    private boolean repoIsTopLevel(GitService git, File repo, List<CheckItem> items) {
+        String name = "repoIsTopLevel";
+        String label = "仓库目录是否为仓库根";
+        try {
+            File top = new File(git.topLevel()).getCanonicalFile();
+            // 两边都取 canonical 再比、再 relativize。repoDir 常常是相对路径
+            // （向导的默认值就是 ..），拿它去 relativize 一个绝对路径会抛
+            // IllegalArgumentException，被下面的 catch 吞成一句「查不出仓库根」——
+            // 那条写清楚了该怎么改的指引一个字都出不来
+            File canonicalRepo = repo.getCanonicalFile();
+            if (top.equals(canonicalRepo)) {
+                return true;
+            }
+            String sub = top.toPath().relativize(canonicalRepo.toPath()).toString().replace('\\', '/');
+            items.add(new CheckItem(name, label, false,
+                    "填的是仓库里的一个子目录，不是仓库根。git 交出来的变更路径始终以仓库根为基准，"
+                            + "与覆盖率里的路径对不上，增量范围会恒为空 —— 门禁每次都会以"
+                            + "「没有变更的可执行代码」放行，看不出任何异样。"
+                            + "请把仓库目录改成 " + top.getAbsolutePath()
+                            + "，并把各语言的源码根改成相对它的路径（例如 "
+                            + sub + "/src/main/java）"));
+            return false;
+        } catch (Exception e) {
+            items.add(new CheckItem(name, label, false, "查不出仓库根：" + describe(e)));
+            return false;
+        }
+    }
+
+    /** 抽样多少个 class 去对源码。一个都对不上才判失败，所以不必全扫 */
+    private static final int SAMPLE_CLASSES = 30;
+
+    /**
+     * 一个 class 可能来自哪些源码文件。
+     *
+     * <p>JaCoCo 认的是字节码，所以「Java 产物目录」里完全可能是 Kotlin / Groovy 编出来的。
+     * 只按 {@code .java} 找的话，一个配置完全正确的 Kotlin 工程会被判成「产物与源码
+     * 不是同一个工程」，创建按钮从此点不动 —— 这一项本来是防止误配的，反倒成了误伤。
+     */
+    private static final String[] SOURCE_EXT = { ".java", ".kt", ".groovy", ".scala" };
+
+    /**
+     * <b>产物目录里的类，在源码根下找不找得到。</b>
+     *
+     * <p>这一项补的是一个「目录存在，但根本不是这个工程」的洞。两个字段的相对基准不同 ——
+     * {@code classes-dir} 相对<b>平台进程的工作目录</b>（见 {@code ProjectRuntime}
+     * 里的 {@code new File(getClassesDir())}），{@code java-source-root} 相对
+     * <b>repo-dir</b>。于是「填 {@code target/classes}、以为是被测工程的产物」
+     * 会落到平台自己的 {@code target/classes} 上，而那个目录<b>确实存在</b>，
+     * 逐项检查全过、项目照样建得出来。
+     *
+     * <p>之后的表现是：覆盖率 IR 里装的全是平台自己的类，源码路径按 repo-dir 拼出来
+     * 一个不存在的文件，染色页满屏「源码读取失败」—— 而没有任何一处告诉人问题在配置上。
+     * 这正是本类存在的理由，却恰好是它原先漏掉的一种。
+     *
+     * <p>判据是<b>一个都对不上</b>而不是「有对不上的」：产物里混着少量没有源码的类是常态
+     * （生成代码、依赖被打进来、模块拆分），按后者判会把好配置拦下来。
+     */
+    private void classesMatchSource(List<CheckItem> items, ProjectConfig cfg) {
+        String name = "classesMatchSource";
+        String label = "产物与源码是否同一个工程";
+        File classes = cfg.getClassesDir() == null ? null : new File(cfg.getClassesDir());
+        // 空白串也要当成「没填」：new File(parent, "") 会 resolve 回 parent 本身，
+        // 于是这一项会多报一条「多半指向了不同的工程」，
+        // 把「你还没填源码根」说成「你填错了工程」，指错排查方向
+        String srcRel = cfg.getJavaSourceRoot();
+        File src = srcRel == null || srcRel.isBlank() ? null
+                : new File(cfg.getRepoDir() == null ? "" : cfg.getRepoDir(), srcRel);
+        if (classes == null || !classes.isDirectory() || src == null || !src.isDirectory()) {
+            // 上面两项已经把「没填 / 目录不存在」点名了，这里再报一次只是噪音
+            return;
+        }
+        List<String> sampled = new ArrayList<>();
+        collectClasses(classes, sampled);
+        if (sampled.isEmpty()) {
+            items.add(new CheckItem(name, label, false,
+                    "产物目录里一个 .class 都没有：" + classes.getAbsolutePath()
+                            + "。被测服务多半还没编译，或这个目录指错了"));
+            return;
+        }
+        String example = null;
+        for (String rel : sampled) {
+            // Kotlin 把 Foo.kt 里的顶层函数编成 FooKt.class —— 源码文件名里没有那个 Kt。
+            // 不脱掉它，一个全是顶层函数的 Kotlin 工程会一个都对不上
+            List<String> bases = rel.endsWith("Kt")
+                    ? List.of(rel, rel.substring(0, rel.length() - 2)) : List.of(rel);
+            for (String base : bases) {
+                for (String ext : SOURCE_EXT) {
+                    if (new File(src, base + ext).isFile()) {
+                        items.add(new CheckItem(name, label, true,
+                                "产物里的类能在源码根下找到，例如 " + base + ext));
+                        return;
+                    }
+                }
+            }
+            if (example == null) {
+                example = rel + SOURCE_EXT[0];
+            }
+        }
+        // 纯文本：这段话会被前端按文本插值渲染（自检表 {{ it.detail }}、
+        // 拦截提示走 ElMessage），带上 <b> 只会把标签本身显示出来
+        items.add(new CheckItem(name, label, false,
+                "抽查了 " + sampled.size() + " 个类，在源码根下一个都找不到，"
+                        + "这两个路径多半指向了不同的工程。产物目录解析到 " + classes.getAbsolutePath()
+                        + "（相对路径以平台安装目录为基准，不是上面填的仓库目录），源码根解析到 "
+                        + src.getAbsolutePath() + "。例如产物里有 " + example + "，而源码根下没有它。"
+                        + "建议 classes-dir 填绝对路径"));
+    }
+
+    /**
+     * 收集若干个顶层类的<b>不带扩展名</b>的相对路径（{@code com/x/Foo.class} → {@code com/x/Foo}）。
+     *
+     * <p>跳过内部类（名字里带 {@code $}）：它们的源码文件名是外层类的名字，
+     * 拿它去找必然找不到，会把判据变成噪音。
+     *
+     * <p><b>按层遍历而不是深度优先。</b>深度优先会一头扎进第一个包里取满 30 个 ——
+     * 那个包恰好全是生成代码（{@code com/x/generated/Q*}）时，一个配置正确的工程
+     * 会被判成配错。按层走天然铺开在各个顶层包上。
+     */
+    private void collectClasses(File root, List<String> out) {
+        Deque<File> queue = new ArrayDeque<>();
+        queue.add(root);
+        while (!queue.isEmpty() && out.size() < SAMPLE_CLASSES) {
+            File[] children = queue.poll().listFiles();
+            if (children == null) {
+                continue;
+            }
+            for (File f : children) {
+                if (f.isDirectory()) {
+                    queue.add(f);
+                } else if (f.getName().endsWith(".class") && !f.getName().contains("$")
+                        && out.size() < SAMPLE_CLASSES) {
+                    String rel = root.toPath().relativize(f.toPath()).toString().replace('\\', '/');
+                    out.add(rel.substring(0, rel.length() - ".class".length()));
+                }
+            }
+        }
     }
 
     /** 源码根是相对仓库根的，单独看这个字符串没意义，必须拼上仓库根再判 */

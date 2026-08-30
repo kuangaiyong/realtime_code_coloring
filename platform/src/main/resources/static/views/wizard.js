@@ -1,4 +1,5 @@
 import { api, LANG } from '../api.js';
+import { BaselineField } from '../components/baseline-field.js';
 
 const { computed, reactive, ref, onMounted } = Vue;
 
@@ -38,8 +39,11 @@ const PORTS = { java: 6300, go: 6400, cpp: 6500, rust: 6600 };
 /** 第 4 步按第 3 步选到的语言动态显示。字段名与后端检查项的 name 一一对应 */
 const PATH_FIELDS = {
   java: [
-    ['classesDir', 'Java 产物目录', '被测服务的 .class 所在目录，缺了它解不出任何行号'],
-    ['javaSourceRoot', 'Java 源码根', '用于渲染染色视图']
+    ['classesDir', 'Java 产物目录',
+      '被测服务的 .class 所在目录，缺了它解不出任何行号。<b>建议填绝对路径</b> —— '
+      + '相对路径以平台安装目录为基准（不是上一步填的仓库目录），'
+      + '填 target/classes 会落到平台自己的产物上，而那个目录确实存在'],
+    ['javaSourceRoot', 'Java 源码根', '相对<b>仓库目录</b>，用于渲染染色视图']
   ],
   go: [
     ['goSourceRoot', 'Go 源码根', ''],
@@ -47,15 +51,20 @@ const PATH_FIELDS = {
   ],
   cpp: [
     ['cppSourceRoot', 'C++ 源码根', '平台侧的 gcov 要在这个目录下才找得到源码'],
-    ['cppObjectsDir', 'C++ 对象目录', '.gcno 所在目录，相当于 Java 的 classes-dir']
+    ['cppObjectsDir', 'C++ 对象目录',
+      '.gcno 所在目录，相当于 Java 的 classes-dir。同样建议填绝对路径 —— '
+      + '相对路径以平台安装目录为基准']
   ],
   rust: [
     ['rustSourceRoot', 'Rust 源码根', ''],
-    ['rustBinary', 'Rust 产物', '指向产物本身 —— 行号信息在它自带的 coverage mapping 里']
+    ['rustBinary', 'Rust 产物',
+      '指向产物本身 —— 行号信息在它自带的 coverage mapping 里。'
+      + '同样建议填绝对路径，相对路径以平台安装目录为基准']
   ]
 };
 
 export const Wizard = {
+  components: { BaselineField },
   emits: ['done', 'cancel'],
   setup(props, { emit }) {
     const step = ref(0);
@@ -137,16 +146,26 @@ export const Wizard = {
       return null;
     });
 
-    /** 这一步能不能往下走。返回 null 表示可以，否则是拦住的理由 */
+    /**
+     * 这一步能不能往下走。返回 null 表示可以，否则是拦住的理由。
+     *
+     * <b>这些名字必须与后端 ProjectChecker 给出的检查项对齐。</b>漏一个的表现是：
+     * 后端判了不通过，向导却照常前进 —— 那一项等于白检。
+     * 用白名单而不是「有不过的就拦」，是因为各步只送这一步需要的字段，
+     * 后端会对没送的字段照报「没填」（第 2 步故意送 instances: []，
+     * 拿它拦人就永远走不到第 3 步）。
+     */
     function blocker() {
       const k = STEPS[step.value].key;
       if (k === 'basic') return basicError.value;
-      if (k === 'repo') return failed(['repoDir', 'baseline']);
+      // repoIsTopLevel：填成仓库子目录时增量范围会恒为空，门禁从此永远放行
+      if (k === 'repo') return failed(['repoDir', 'repoIsTopLevel', 'baseline']);
       if (k === 'instances') {
         if (!instances.value.length) return '至少要有一个被测实例';
         return failed(['instances', 'versions', ...Object.keys(items.value).filter(n => n.startsWith('instance:'))]);
       }
-      if (k === 'paths') return failed(pathFields.value.map(f => f[1]));
+      // classesMatchSource：产物目录指向另一个工程时，逐个字段看全是「有效」的
+      if (k === 'paths') return failed([...pathFields.value.map(f => f[1]), 'classesMatchSource']);
       if (k === 'gate') return gateError.value;
       return null;
     }
@@ -272,12 +291,19 @@ export const Wizard = {
 
       <!-- 2 代码仓库 -->
       <template v-else-if="STEPS[step].key === 'repo'">
-        <div class="note info">平台读的是<b>本机已经 clone 好的仓库</b>，不做远程拉取，
-          因此不需要 Git 账号密码。基线用来算增量口径。</div>
+        <div class="note info">平台读的是<b>平台这台机器上已经 clone 好的仓库</b>，
+          不做远程拉取，因此不需要 Git 账号密码。</div>
         <div class="fld"><label>Git 仓库目录</label>
           <el-input v-model="draft.repoDir" data-testid="wz-repo" placeholder="/path/to/project" /></div>
-        <div class="fld"><label>默认基线</label>
-          <el-input v-model="draft.baseline" data-testid="wz-baseline" placeholder="HEAD~1、master、某个 tag" /></div>
+        <!-- 「默认基线」这四个字不解释任何事情。它其实只回答一句话：跟哪个版本比 ——
+             增量覆盖率的分母就是从那个版本到现在改过的可执行行 -->
+        <div class="fld"><label>增量基线<br><small>跟哪个版本比</small></label>
+          <baseline-field v-model="draft.baseline" :repo-dir="draft.repoDir" testid="wz-baseline" />
+        </div>
+        <div class="note info">增量覆盖率只统计<b>从这个版本到现在改过的代码</b>：
+          填 <code>origin/main</code> 回答的是「我这个分支相对主干改的代码测了没」，
+          填上一个 tag 回答的是「这次发版的新代码测了没」。
+          它是<b>默认值</b> —— 门禁接口每次可以带 <code>baseline=</code> 覆盖它。</div>
       </template>
 
       <!-- 3 被测实例 -->
@@ -311,9 +337,15 @@ export const Wizard = {
       <template v-else-if="STEPS[step].key === 'paths'">
         <div class="note info">下面这些字段是<b>按上一步选到的语言</b>列出来的（{{ languages.map(l => LANG[l]).join('、') }}）。
           它们错了不会报错，只会让覆盖率莫名其妙偏低 —— 所以这一步一定要验。</div>
-        <div v-for="f in pathFields" :key="f[1]" class="fld">
+        <!-- 说明常驻在输入框下面，不做 placeholder：placeholder 一打字就没了，
+             而「这个相对路径以谁为基准」恰恰要在填的过程中看得见。
+             文案是本文件里的字面量（含 <b>），不是用户输入，所以 v-html 是安全的 -->
+        <div v-for="f in pathFields" :key="f[1]" class="fld fld-stacked">
           <label>{{ LANG[f[0]] }} · {{ f[2] }}</label>
-          <el-input v-model="draft[f[1]]" :data-testid="'wz-' + f[1]" :placeholder="f[3]" />
+          <div class="fld-body">
+            <el-input v-model="draft[f[1]]" :data-testid="'wz-' + f[1]" />
+            <div class="fld-hint" :data-testid="'wz-' + f[1] + '-hint'" v-html="f[3]"></div>
+          </div>
         </div>
       </template>
 
