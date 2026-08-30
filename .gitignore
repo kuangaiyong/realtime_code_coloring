@@ -19,3 +19,11 @@ __pycache__/
 
 # UI 参考截图：只作设计参考，几十 MB 的 JPEG 不进仓库
 参考图片/
+
+# 本机的 Claude Code 自定义命令与技能，属个人工具配置，与项目无关。
+# 注意只忽略这两个子目录 —— .claude/launch.json 是项目的预览配置，要入库
+.claude/commands/
+.claude/skills/
+
+# OpenSpec 的本地工作目录
+openspec/
