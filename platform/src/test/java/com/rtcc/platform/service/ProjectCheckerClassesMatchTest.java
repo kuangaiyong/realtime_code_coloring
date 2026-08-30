@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -218,6 +219,54 @@ class ProjectCheckerClassesMatchTest {
                 "没说清该改成哪个目录：" + detail);
         assertTrue(detail.contains("demo-service/src/main/java"),
                 "没给出源码根该怎么跟着改：" + detail);
+    }
+
+    /**
+     * <b>「这个相对路径你多半是按仓库目录填的」。</b>
+     *
+     * <p>同一份配置里两个字段两种基准：{@code classes-dir} 相对<b>平台进程的工作目录</b>，
+     * 紧挨着的 {@code java-source-root} 相对 <b>repo-dir</b>。照着旁边那行的写法填
+     * {@code demo-service/target/classes}，就被解析到平台自己目录底下 ——
+     * 只回一句「不是有效目录」的话，人看到的是一条自己从没写过的路径，
+     * 还得先想明白基准是谁才知道该改成什么。
+     */
+    @Test
+    void 相对路径按仓库基准填时直接给出该填的绝对路径() throws Exception {
+        Path repo = Files.createDirectories(tmp.resolve("myrepo"));
+        source(repo.resolve("demo-service/src/main/java"), "com/shop/order/OrderService.java");
+        // 相对路径要满足两条：在<b>任何</b>可能的工作目录下都不存在，在仓库目录下存在。
+        // 写死 demo-service/target/classes 的话，从仓库根跑测试（IDE 里改过 working dir）
+        // 就真能解析到，classesDir 判成 ok，用例失败而信息一个字都不指向真正的原因
+        String rel = "nowhere-" + UUID.randomUUID() + "/target/classes";
+        Path real = Files.createDirectories(repo.resolve(rel));
+
+        Map<String, Object> res = new ProjectChecker(new ProbeClient())
+                .check(cfg(repo, rel, "demo-service/src/main/java"));
+
+        Map<String, Object> m = item(res, "classesDir");
+        assertFalse((Boolean) m.get("ok"), "这个相对路径在平台目录下确实不存在，本就该判失败");
+        String detail = String.valueOf(m.get("detail"));
+        assertTrue(detail.contains(real.toFile().getCanonicalPath()),
+                "没给出该填的绝对路径，人还得自己想明白基准是谁：" + detail);
+    }
+
+    /** 换个基准也找不到时不给提示：瞎猜一条路径出来，比只说「不是有效目录」更误导 */
+    @Test
+    void 换仓库基准也找不到时不乱猜() throws Exception {
+        Path repo = Files.createDirectories(tmp.resolve("myrepo"));
+        source(repo.resolve("demo-service/src/main/java"), "com/shop/order/OrderService.java");
+
+        Map<String, Object> res = new ProjectChecker(new ProbeClient())
+                .check(cfg(repo, "nowhere-" + UUID.randomUUID() + "/target/classes",
+                        "demo-service/src/main/java"));
+
+        Map<String, Object> m = item(res, "classesDir");
+        // 先钉住「这一项判失败」：只断言不含提示串的话，任何让 dir() 恒判通过的回归
+        // 都会让这条继续 PASS —— 那时 detail 是条绝对路径，自然也不含提示串
+        assertFalse((Boolean) m.get("ok"), "两个基准下都找不到，本就该判失败");
+        String detail = String.valueOf(m.get("detail"));
+        assertFalse(detail.contains("你要填的多半是"),
+                "两个基准下都不存在，却还是猜了一条路径出来：" + detail);
     }
 
     private void git(Path dir, String... args) throws Exception {

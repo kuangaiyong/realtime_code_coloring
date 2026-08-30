@@ -26,8 +26,6 @@ export const store = reactive({
   // ---- 口径 ----
   mode: 'full',
   baseline: 'HEAD~1',
-  /** 看哪一份数据：空串是实时累计覆盖，否则是某个已归档场景的独占覆盖 */
-  viewScenario: '',
 
   // ---- 数据 ----
   summary: null,
@@ -63,7 +61,7 @@ export const store = reactive({
   perInstLoading: false,
 
   // ---- 场景 ----
-  scenarios: [],
+  /** 正在录制的场景 id。页面上没有录制入口，但经 API 开着的场景要显示出来 */
   activeScenario: null
 });
 
@@ -82,10 +80,9 @@ export function hasData(d) {
 }
 
 function params() {
-  const p = store.mode === 'incremental'
+  return store.mode === 'incremental'
     ? 'mode=incremental&baseline=' + encodeURIComponent(store.baseline.trim())
     : 'mode=full';
-  return store.viewScenario ? p + '&scenarioId=' + encodeURIComponent(store.viewScenario) : p;
 }
 
 export { params };
@@ -115,10 +112,9 @@ function applySummary(d) {
   }
 
   // 口径一换，纵轴的含义就变了：把增量的 12% 和全量的 30% 画进同一条线是骗人的，
-  // 所以换口径 / 换场景就把采样清掉重开
-  const key = d.mode + '|' + (d.scenarioId || '');
-  if (key !== store.trendKey) {
-    store.trendKey = key;
+  // 所以换口径就把采样清掉重开
+  if (d.mode !== store.trendKey) {
+    store.trendKey = d.mode;
     store.trend = [];
   }
   if (hasData(d)) {
@@ -168,13 +164,6 @@ export async function loadSummary() {
 let gateSeq = 0;
 export async function loadGate() {
   const seq = ++gateSeq;
-  if (store.viewScenario) {
-    // 场景快照是过去某一轮的独占覆盖，不是当前构建的整体情况；
-    // 拿它判门禁，得出的结论与"这次能不能合并"无关
-    store.gate = null;
-    store.gateError = null;
-    return;
-  }
   try {
     const d = await api.get(url('/coverage/gate?') + params());
     if (seq !== gateSeq) return;
@@ -223,7 +212,7 @@ export async function openFile(path) {
   store.prevStatus = next;
 }
 
-/** 换口径或换数据源后文件范围会变，原先选中的文件可能已不在范围内 */
+/** 换口径后文件范围会变，原先选中的文件可能已不在范围内 */
 export async function reload() {
   store.prevStatus = {};
   const d = await loadSummary();
@@ -276,32 +265,45 @@ export async function loadPerInstance() {
   }
 }
 
-/** 场景归因：start 清零 → 跑测试 → stop 定格。列表与按钮状态都以服务端为准 */
-export async function loadScenarios() {
+/**
+ * 有没有场景正在录制。
+ *
+ * 页面上不提供开始 / 结束场景的入口（场景归因是给 CI 与脚本用的，经 API 做），
+ * 但「正在录制」必须显示：录制期间清零与保存配置都会被服务端回 409，
+ * 不显示的话那两处看起来就是点了没反应。
+ */
+export async function loadActiveScenario() {
   const d = await api.get(url('/scenario'));
-  store.scenarios = d.scenarios;
   store.activeScenario = d.active;
   return d;
 }
 
-export async function toggleScenario(id) {
-  const starting = !store.activeScenario;
-  const target = starting
-    ? url('/scenario/start?scenarioId=') + encodeURIComponent(id.trim())
-    : url('/scenario/stop');
-  const d = await api.post(target);
-  store.banner = null;
-  // 场景一结束就切过去看它覆盖了什么 —— 这正是录制这一轮的目的
-  store.viewScenario = starting ? '' : d.scenarioId;
-  await loadScenarios();
-  await reload();
-  return d;
+/**
+ * 定时跟一下场景状态。<b>这是页面上唯一会跟住它的地方</b>，撤掉录制入口之后没有别的。
+ *
+ * <b>为什么不搭 WebSocket 的车：</b>推送是「覆盖率<b>变化</b>时才推」。
+ * start 会清零计数器（有变化，推得到），而 stop 不改变任何覆盖数字 ——
+ * 没人调接口时就一条推送都不会来，页面于是永远停在「进行中」：红点解不开，
+ * 而清零按钮绑着 :disabled="running"，永久点不动，tooltip 还写着
+ * 「场景进行中不能清零」，只有整页刷新才恢复，而人不会想到去刷新。
+ *
+ * 代价是一个 3 秒的轮询。它只读服务端内存里的一个字段，与门禁那种
+ * 「每次要起三个 git 子进程」不是一回事，所以这里可以轮询而门禁不行。
+ */
+let scenarioTimer = null;
+function followScenario() {
+  // 换项目时必须先清掉：两个定时器同时写 store.activeScenario，
+  // 页面会在两个项目的场景状态之间来回跳
+  if (scenarioTimer) clearInterval(scenarioTimer);
+  scenarioTimer = setInterval(() => {
+    loadActiveScenario().catch(() => { /* 取不到不该在页面上刷错误，下一轮再说 */ });
+  }, 3000);
 }
 
 export async function collectNow() {
   const d = await api.post(url('/collect'));
-  // /collect 返回的是实时全量快照，增量视图和场景视图下都不能直接渲染
-  if (store.mode === 'incremental' || store.viewScenario) {
+  // /collect 返回的是实时全量快照，增量视图下不能直接渲染
+  if (store.mode === 'incremental') {
     await refresh();
     return;
   }
@@ -339,8 +341,6 @@ export function connectWs() {
   ws.onmessage = (ev) => {
     // 换项目时旧连接可能还有一条消息在路上，认准是不是当前这条
     if (mine !== ws) return;
-    // 场景视图看的是 stop 时已定格的数据，实时推送与它无关，重渲染只会把它冲掉
-    if (store.viewScenario) return;
     // 推送内容是全量口径，增量视图下改为按当前口径重取
     if (store.mode === 'incremental') {
       refresh();
@@ -385,10 +385,9 @@ export async function setProject(id, name) {
   store.buildTrendErr = null;
   store.perInst = null;
   store.perInstAt = '';
-  store.scenarios = [];
   store.activeScenario = null;
-  store.viewScenario = '';
   connectWs();
-  await loadScenarios().catch(() => { /* 列表取不到不该挡住染色 */ });
+  followScenario();
+  await loadActiveScenario().catch(() => { /* 取不到不该挡住染色 */ });
   await reload();
 }

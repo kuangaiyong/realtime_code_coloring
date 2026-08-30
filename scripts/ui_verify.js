@@ -108,21 +108,6 @@ async function baselineOptions(page, testid) {
   return out;
 }
 
-/**
- * 等按钮真的能点了再点。Element Plus 的 el-button 在 :loading 期间渲染成 disabled 的
- * 原生 button，点击会被静默吞掉 —— 后面等出来的失败与被点的那件事毫无关系，
- * 每次都要先花时间确认「不是这次改动引入的」。
- */
-async function clickWhenEnabled(page, testid, timeout = 60000) {
-  const ok = await waitFor(page, (t) => {
-    const e = document.querySelector(`[data-testid="${t}"]`);
-    const b = e && (e.tagName === 'BUTTON' ? e : e.querySelector('button'));
-    return !!b && !b.disabled;
-  }, testid, timeout);
-  if (ok < 0) die(`按钮 ${testid} 等了 ${timeout}ms 仍是禁用的，点不下去`);
-  await page.click(`[data-testid="${testid}"]`);
-}
-
 (async () => {
   console.log('='.repeat(70));
   console.log('前端验收（真实 Chrome）');
@@ -239,12 +224,11 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
     else pass(`进入项目并加载出数据（${entered}ms，地址 ${entryHash}）`);
 
     for (const t of ['nav-coloring', 'nav-overview', 'nav-onboard', 'probe-pill', 'overall',
-                     'mode-full', 'mode-incremental', 'btn-collect', 'btn-reset',
-                     'scenario-view', 'banner']) {
+                     'mode-full', 'mode-incremental', 'btn-collect', 'btn-reset', 'banner']) {
       const n = await page.evaluate(countOf, `[data-testid="${t}"]`);
       if (n !== 1) fail(`骨架钩子 ${t} 出现 ${n} 次，应为 1 次`);
     }
-    pass('侧边栏、顶栏、场景条的骨架钩子齐备');
+    pass('侧边栏、顶栏、口径栏的骨架钩子齐备');
 
     // ---------- 2 · 顶栏显示的数字与 API 一致 ----------
     const sum = await (await fetch(`${PLATFORM}/api/coverage/summary`)).json();
@@ -494,7 +478,7 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
       const lines = text.replace(/^\ufeff/, '').trim().split(/\r?\n/);
       if (lines.length !== sum.files.length + 1) {
         fail(`CSV 有 ${lines.length} 行，应为表头 1 行 + ${sum.files.length} 个文件`);
-      } else if (!/口径|全量|增量|场景/.test(csvFile)) {
+      } else if (!/口径|全量|增量/.test(csvFile)) {
         // 口径不写进文件名的话，隔几天再打开就分不清这是增量还是全量的数字
         fail(`CSV 文件名没有写明口径：${csvFile}`);
       } else {
@@ -507,18 +491,18 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
 
     // ---------- 4e · 信息架构：口径栏只在会显示数字的视图上 ----------
     // 挂在每个视图上是原先的做法，但在「项目设置」「采集事件」「服务接入」这三页，
-    // 「数据源：某个场景快照」根本无从谈起，摆着只会让人以为它对这一页有影响
+    // 全量 / 增量口径不改变页面上的任何东西，摆着只会让人以为它对这一页有影响
     const scopedBar = async (view) => {
       await page.click(`[data-testid="nav-${view}"]`);
       // 等这一页真的挂上来再量。固定 sleep 在机器忙的时候会量到上一页的口径栏，
       // 换来一次与被测功能无关的假失败
       if (await waitFor(page, (v) => !!document.querySelector(`[data-testid="view-${v}"]`),
           view, 8000) < 0) die(`打不开 ${view} 视图`);
-      return page.evaluate(() => !!document.querySelector('.scenariobar'));
+      return page.evaluate(() => !!document.querySelector('[data-testid="mode-full"]'));
     };
     const barOn = [];
     const barOff = [];
-    for (const v of ['coloring', 'overview', 'scenarios', 'gate']) {
+    for (const v of ['coloring', 'overview', 'gate']) {
       if (await scopedBar(v)) barOn.push(v); else barOff.push(v + '(缺)');
     }
     for (const v of ['onboard', 'events', 'settings']) {
@@ -530,118 +514,94 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
       pass(`口径栏只出现在会显示数字的 ${barOn.length} 个视图上，设置/事件/接入页没有`);
     }
 
-    // ---------- 4f · 测试场景：在页面上录一轮并归档 ----------
-    // 录制从顶部横条搬进了独立视图。只断言「页面能打开」证明不了它还能用。
-    // 归档的场景没有删除接口，所以每跑一次会多一条 —— 它们只在内存里
-    // （ProjectRuntime.scenarios 是个 ConcurrentHashMap），平台一重启就没了，
-    // 不会无限堆积，因此这里不为清理它去开一个删除接口
-    await page.click('[data-testid="nav-scenarios"]');
-    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-scenarios"]'),
-        null, 8000) < 0) {
-      die('打不开测试场景视图');
-    }
-    const scBefore = await page.evaluate(countOf, '[data-testid="scenario-row"]');
+    // ---------- 4f · 场景进行中：页面上唯一的解释 ----------
+    // 页面上没有开始 / 结束场景的入口 —— 场景归因是给 CI 与脚本用的，所以这里也经 API 开。
+    // 但「进行中」必须显示出来：录制期间清零与保存配置都会被服务端回 409，
+    // 不显示的话那两处看起来就是「点了没反应」，而这个提示是页面上唯一的解释。
+    //
+    // <b>两个方向都要验，而且不许靠刷新页面蒙混过去。</b>开了不显示，是少一个提示；
+    // 结束了解不开，是把清零按钮永久废掉（它绑 :disabled="running"），后者严重得多。
+    // 页面靠每轮推送跟这个状态（store.connectWs），所以两边都等得到，最多滞后一轮采集
     const SC_ID = 'ui-verify-' + Date.now().toString(36);
-    await fill('scenario-id', SC_ID);
-    await page.click('[data-testid="btn-scenario"]');
-    // start 要给所有实例清零，8 个实例慢的时候要几秒
-    const recording = await waitFor(page, () => !!document.querySelector('[data-testid="recording"]'),
-      null, 60000);
-    if (recording < 0) {
-      fail('点了「开始场景」但没有出现「进行中」提示');
-    } else {
-      await fetch(`${DEMO}/api/order/query?bizNo=A1001`);
-      await sleep(4000);
+    const SC_API = `${PLATFORM}/api/projects/${projects.defaultId}/scenario`;
+    // 一轮采集是 interval-ms + 跑这一轮，机器忙时要好几秒，给足余量
+    const SC_WAIT = 30000;
+    const resetDisabled = () => {
+      const e = document.querySelector('[data-testid="btn-reset"]');
+      const b = e && (e.tagName === 'BUTTON' ? e : e.querySelector('button'));
+      return !!b && b.disabled;
+    };
 
-      // 「录制中」必须在<b>项目设置</b>那一页也看得见：录制期间保存配置会被服务端回 409，
-      // 而人正是在那一页才会撞上它。这个提示要是挂在口径栏里，恰好就在这一页不显示
-      await page.click('[data-testid="nav-settings"]');
-      await waitFor(page, () => !!document.querySelector('[data-testid="view-settings"]'), null, 8000);
-      const recElsewhere = await page.evaluate(countOf, '[data-testid="recording"]');
-      if (recElsewhere !== 1) {
-        fail(`录制中时「项目设置」页上的「进行中」提示出现 ${recElsewhere} 次，应为 1 次`);
-      } else {
-        pass('录制中的提示在「项目设置」页也在 —— 那一页保存配置会被服务端拒绝');
-      }
-      await page.click('[data-testid="nav-scenarios"]');
-      await waitFor(page, () => !!document.querySelector('[data-testid="view-scenarios"]'), null, 8000);
-
-      await clickWhenEnabled(page, 'btn-scenario');
-      const archived = await waitFor(page, (n) =>
-        document.querySelectorAll('[data-testid="scenario-row"]').length === n + 1,
-        scBefore, 60000);
-      if (archived < 0) {
-        fail('结束场景后归档列表没有多出一行');
-      } else {
-        const row = await page.evaluate((id) => {
-          const tr = document.querySelector(`[data-testid="scenario-row"][data-id="${id}"]`);
-          return tr ? [...tr.children].map(td => td.innerText.trim()) : null;
-        }, SC_ID);
-        if (!row) fail(`归档列表里找不到刚录的场景 ${SC_ID}`);
-        // 时长必须真的算出来：只显示两个时间戳的话，人得自己减
-        else if (!/秒|分钟|小时/.test(row[4])) fail(`归档没给出录制时长：${row.join(' | ')}`);
-        else pass(`页面上录了一轮并归档：${SC_ID}，${row[1]} 个文件 / ${row[2]} / 录了 ${row[4]}`);
+    // 提示要在<b>项目设置</b>那一页看得见：保存配置被 409 挡下就发生在那一页。
+    // 它要是挂进口径栏（只在会显示覆盖数字的页上），恰好就在最需要它的那一页不显示。
+    // 4e 最后停在 settings，这里不再切一次
+    /**
+     * 开场景，失败重试一次。
+     *
+     * <b>重试不是为了掩盖失败，是为了不把别人的缺陷算到这条用例头上。</b>
+     * start 要给 8 台实例清零，走的是 ProjectRuntime.resetCounters；JaCoCo 的 tcpserver
+     * backlog 很小，平台自己的调度采集或接入自检正连着同一个探针端口时，这一次连接
+     * 会被直接拒掉（Connection refused），IOException 一路逃到 Spring 变成裸 500。
+     * 这是平台侧既有的缺陷（探针连不上该是 503 加一句点名哪台，而不是 500），
+     * 与本用例要验的「页面跟不跟得住场景状态」无关 —— e2e_scenario.py 才是管 start 的。
+     * 两次都失败才算真失败：那时多半不是撞车，而是探针真的没了。
+     */
+    async function startScenario() {
+      for (let n = 0; n < 2; n++) {
+        const r = await fetch(`${SC_API}/start?scenarioId=${SC_ID}`, { method: 'POST' });
+        if (r.ok) return;
+        const why = (await r.text().catch(() => '')).slice(0, 200);
+        if (n === 0) {
+          console.log(`  ..  起场景失败（HTTP ${r.status}），等一轮采集过去再试一次`);
+          await sleep(5000);
+          continue;
+        }
+        // 起不了场景就没什么可验的了：接着往下跑，下面每一条都会在
+        // 「本来就没有场景」的状态下空过，一屏 [PASS] 什么都没断言
+        die(`连着两次都起不了场景（HTTP ${r.status}）：${why}`);
       }
     }
+    await startScenario();
+    const recOn = await waitFor(page,
+      () => document.querySelectorAll('[data-testid="recording"]').length === 1, null, SC_WAIT);
+    if (recOn < 0) fail('场景开了，「项目设置」页上却一直没出现「进行中」—— 那一页保存配置会被 409 挡下');
+    else pass(`场景 ${SC_ID} 开了 ${(recOn / 1000).toFixed(1)}s 后，「项目设置」页上出现「进行中」`);
 
-    // 不管上面走成什么样，都不能把场景留在「进行中」：留着的话，后面 section 6 的
-    // 清零按钮带着 :disabled="running"，点击会被静默吞掉；保存设置会被服务端 409；
-    // 更麻烦的是下一次 verify 里 e2e_scenario.py 的 start 会撞「已有场景在跑」，
-    // 级联出一串与本次改动无关的假失败。所以在这里兜一次底
-    const leftOver = await (await fetch(`${PLATFORM}/api/projects/default/scenario`)).json();
-    if (leftOver.active) {
-      await fetch(`${PLATFORM}/api/projects/default/scenario/stop`, { method: 'POST' })
-        .catch(() => {});
-      fail(`场景 ${leftOver.active} 没能从页面上结束，已在收尾时直接调接口停掉`);
-    }
-
-    // 场景快照不参与门禁判定 —— 它是过去某一轮的独占覆盖，与「这次能不能合并」无关
-    await page.click('[data-testid="nav-gate"]');
-    const refused = await waitFor(page, () => !!document.querySelector('[data-testid="gate-archived"]'),
-      null, 10000);
-    if (refused < 0) {
-      fail('看着场景快照时，门禁页没有说明「不参与判定」');
+    // 清零按钮在录制期间必须禁用：不禁用的话点下去只会被服务端 409，
+    // 而那条错误只闪一下，人看到的是「清零好像没生效」
+    await page.click('[data-testid="nav-coloring"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]'),
+        null, 8000) < 0) die('打不开代码染色视图');
+    if (await waitFor(page, resetDisabled, null, SC_WAIT) < 0) {
+      fail('场景进行中，清零按钮却没有禁用 —— 点下去只会被服务端 409');
     } else {
-      pass('场景快照下门禁明确拒判，而不是给一个与合并无关的结论');
+      pass('场景进行中时清零按钮已禁用，与服务端的 409 一致');
     }
 
-    // 在门禁页<b>原地</b>把数据源切回实时（不离开这一页）。组件不会因此重新挂载，
-    // 若不重判，页面会永久停在「判定中…」且一张判定卡都没有 ——
-    // 而这一页刻意不轮询，它自己不会好起来
-    await page.click('[data-testid="scenario-view"]');
-    const backLive = await page.evaluate(() => {
-      // 只认可见的那个下拉：Element Plus 会把别处 select 的下拉留在 DOM 里
-      const li = [...document.querySelectorAll('.el-select-dropdown__item')]
-        .filter(e => e.offsetParent !== null)
-        .find(e => e.innerText.trim().startsWith('实时'));
-      if (!li) return false;
-      li.click();
-      return true;
-    });
-    if (!backLive) {
-      fail('顶栏数据源里没有「实时」这一项');
-    } else if (await waitFor(page,
-        () => document.querySelectorAll('[data-testid="gate-card"]').length === 2, null, 30000) < 0) {
-      const at = await page.evaluate(textOf, '[data-testid="judged-at"]');
-      fail(`在门禁页把数据源切回实时后没有重判（「${at}」，0 张判定卡）—— 这一页不轮询，它自己不会好`);
+    // 场景结束后，页面必须<b>自己</b>跟上。这里刻意不刷新：
+    // 只在进入项目时取一次的话，红点会一直挂着、清零按钮永久点不动，
+    // tooltip 还写着「场景进行中不能清零」—— 只有整页刷新才解得开，而人不会想到去刷新。
+    // 顺带也把场景收干净：留着的话下一次 verify 里 e2e_scenario.py 的 start
+    // 会撞「已有场景在跑」，级联出一串与本次改动无关的假失败
+    const scStop = await fetch(`${SC_API}/stop`, { method: 'POST' });
+    if (!scStop.ok) die(`经 API 结束场景失败（HTTP ${scStop.status}），后面的清零断言必然假失败`);
+    // 判据必须整个写在这个函数体里：page.evaluate 是把函数序列化过去执行的，
+    // 闭包里的 resetDisabled 在浏览器侧压根不存在，引用它只会静默变成一次求值失败
+    const recOff = await waitFor(page, () => {
+      if (document.querySelectorAll('[data-testid="recording"]').length !== 0) return false;
+      const e = document.querySelector('[data-testid="btn-reset"]');
+      const b = e && (e.tagName === 'BUTTON' ? e : e.querySelector('button'));
+      return !!b && !b.disabled;
+    }, null, SC_WAIT);
+    if (recOff < 0) {
+      const still = await page.evaluate(countOf, '[data-testid="recording"]');
+      fail(`场景已结束，页面却没跟上（仍有 ${still} 个「进行中」/ 清零按钮仍禁用）—— `
+        + '不刷新就解不开的话，这个控件对人来说就是废的');
     } else {
-      pass('在门禁页原地把数据源切回实时会立即重判，不会停在空白的「判定中…」');
+      pass(`场景结束后 ${(recOff / 1000).toFixed(1)}s 内页面自己跟上：提示消失、清零按钮恢复可用`);
     }
-
-    // 归档表的「查看覆盖」是这张表唯一的动作，也走一遍
-    await page.click('[data-testid="nav-scenarios"]');
-    await waitFor(page, () => !!document.querySelector('[data-testid="btn-view-scenario"]'), null, 8000);
-    await page.click('[data-testid="btn-view-scenario"]');
-    if (await waitFor(page, () => !!document.querySelector('[data-testid="btn-back-live"]'),
-        null, 15000) < 0) {
-      fail('点了归档场景的「查看覆盖」，数据源没有切过去');
-    } else {
-      pass('归档表的「查看覆盖」把数据源切到了那个场景');
-    }
-
-    // 切回实时，后面的断言仍按实时口径来
-    await page.click('[data-testid="btn-back-live"]');
-    await sleep(3000);
+    const leftOver = await (await fetch(SC_API)).json();
+    if (leftOver.active) die(`场景 ${leftOver.active} 没停掉，会拖累下一次 verify 的 e2e_scenario`);
 
     // ---------- 4g · 覆盖门禁：两种口径并排 ----------
     // 全量说的是存量水位，增量说的是「这次改的代码测没测」——
@@ -1128,6 +1088,15 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
         pass(`设置页改基线立即生效：HEAD~1 → ${after.baseline}（${(saved / 1000).toFixed(1)}s）`);
       }
     }
+
+    // 删之前必须真的重载一次页面。保存成功时 settings 已经 emit('saved') 跳回了列表页，
+    // 但<b>回列表页并不关 WebSocket</b>（connectWs 只在 setProject 里调），
+    // 那条连接仍挂在这个项目上，onmessage 照样对它打 /coverage/gate 与 /coverage/file ——
+    // 项目一删就全是 404，会被结尾「全程没有意外的 4xx」抓个正着，且只在时序赶巧时出现。
+    // reload 之后 hash 是 #/projects，syncRoute 判定不在项目内，压根不会再建连接
+    await page.reload({ waitUntil: 'networkidle2', timeout: 30000 });
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-projects"]'),
+        null, 15000) < 0) die('删项目前没能退回项目列表');
 
     // 用例要能重复跑：不删掉的话，下一次会撞「标识已被占用」而失败，
     // 而报出来的原因与被测功能毫无关系

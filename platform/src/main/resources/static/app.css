@@ -74,14 +74,6 @@ body {
 .topbar .overall { font-family: var(--mono); color: var(--el-text-color-primary); font-size: 13px; }
 .spacer { margin-left: auto; }
 
-/* 口径栏独立一行：它决定下面每个数字的含义（实时累计 还是 某个场景的定格快照），
-   所以只挂在会显示数字的视图上。录制操作在「测试场景」视图里，不在这条上 */
-.scenariobar {
-  display: flex; align-items: center; gap: 10px; padding: 9px 18px; font-size: 13px;
-  background: var(--el-bg-color); border-bottom: 1px solid var(--el-border-color-lighter);
-  flex-wrap: wrap;
-}
-.scenariobar label { color: var(--el-text-color-secondary); }
 .rec { color: var(--el-color-danger); display: inline-flex; align-items: center; gap: 6px; }
 .rec i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
 

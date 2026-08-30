@@ -135,6 +135,12 @@ def main():
     # 上一轮若中途失败会留下项目，先清干净，否则这一轮建同名项目必然 409
     cleanup()
 
+    # 跑之前平台上有哪些项目。判据必须是「我建的都删干净了、别人的一个没动」，
+    # 不能是「只剩 default」—— 这个平台存在的意义就是让人建项目，
+    # 页面上手工建过一个，这条断言就假失败，而失败信息一个字都不指向真正的原因
+    preexisting = sorted(p["id"] for p in
+                         must(*http(f"{PLATFORM}/api/projects"), what="项目列表")["projects"])
+
     base = must(*http(f"{PLATFORM}/api/projects/default"), what="读取默认项目配置")
     all_instances = base["instances"]
     jvmgo = [i for i in all_instances if i.startswith("java://") or i.startswith("go://")]
@@ -355,8 +361,10 @@ def main():
     check(st == 404, f"删掉之后再查返回 404：{body.get('error')}", f"删掉的项目还在：{st} {body}")
 
     lst = must(*http(f"{PLATFORM}/api/projects"), what="项目列表")
-    ids = [p["id"] for p in lst["projects"]]
-    check(ids == ["default"], f"只剩默认项目：{ids}", f"项目列表不对：{ids}")
+    ids = sorted(p["id"] for p in lst["projects"])
+    check(ids == preexisting,
+          f"两个项目都删干净了，平台上原有的 {len(preexisting)} 个项目一个没动：{ids}",
+          f"删完之后项目列表是 {ids}，跑之前是 {preexisting}")
 
     final = must(*http(f"{PLATFORM}/api/coverage/summary"), what="默认项目 summary")
     check(final["probeStatus"] == "CONNECTED" and langs_of(final) == {"java", "go", "cpp", "rust"},

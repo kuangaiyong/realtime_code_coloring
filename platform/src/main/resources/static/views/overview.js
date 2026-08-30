@@ -61,8 +61,7 @@ export const Overview = {
     const scope = computed(() => {
       const s = d.value;
       if (!s) return '—';
-      return s.scenarioId ? '场景 ' + s.scenarioId
-        : s.mode === 'incremental' ? '增量口径' : '全量口径';
+      return s.mode === 'incremental' ? '增量口径' : '全量口径';
     });
 
     /**
@@ -73,8 +72,6 @@ export const Overview = {
      * 后者该补测试。
      */
     const gateNote = computed(() => {
-      // 场景快照是过去某一轮的独占覆盖，本就不参与门禁，这里不能挂一句结论上去
-      if (store.viewScenario) return null;
       if (store.gateError) return { text: '门禁判不了', level: 'w' };
       const g = store.gate;
       if (!g) return null;
@@ -245,8 +242,7 @@ export const Overview = {
       <h2>覆盖率门禁</h2>
       <el-button size="small" data-testid="btn-gate-detail" @click="toGate">查看详情</el-button>
     </div>
-    <div v-if="store.viewScenario" class="empty">场景快照不参与门禁判定</div>
-    <div v-else-if="store.gateError" class="gate undecided" data-testid="gate">
+    <div v-if="store.gateError" class="gate undecided" data-testid="gate">
       <span class="verdict" data-testid="gate-verdict">无法判定</span>
       <span class="why">{{ store.gateError }}</span>
     </div>
