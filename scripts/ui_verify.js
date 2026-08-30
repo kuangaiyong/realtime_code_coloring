@@ -1013,6 +1013,39 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
     await page.click('[data-testid="wz-next"]');            // 3 → 4（连探针）
     if (await waitFor(page, () => /第 4 /.test(document.querySelector('.card-head .sub').innerText),
         null, 60000) < 0) die(`向导卡在第 3 步：${await stepText()}`);
+    // 先走一遍<b>真实踩到过的那条错路</b>：产物目录指向平台自己的 target/classes。
+    // 它确实存在，所以「目录是否有效」这一项照旧通过 —— 光靠它挡不住。
+    // 建出来的项目会满屏「源码读取失败」，而没有任何一处说得清问题在配置上，
+    // 而向导本就是唯一能在这个时点挡下来的地方
+    await fill('wz-classesDir', 'target/classes');   // 相对平台安装目录 → 平台自己的产物
+    await fill('wz-javaSourceRoot', seed.javaSourceRoot);
+    await page.click('[data-testid="wz-next"]');
+    // 等「验完了」而不是定长 sleep：这一步后端要真去连全部探针，
+    // 超过定长就会把「还没验完」读成「被拦住」而误报 pass（自检表只在第 6 步有，
+    // 这一步的结论是走 ElMessage 弹出来的）
+    // 不能用 offsetParent 判 .el-message 是否可见：它是 position: fixed，
+    // 而 fixed 元素的 offsetParent 按规范就是 null（这一条是跑出来才发现的）
+    const settled = await waitFor(page, () =>
+      /第 5 /.test(document.querySelector('.card-head .sub').innerText)
+      || document.querySelectorAll('.el-message').length > 0,
+      null, 60000);
+    if (settled < 0) {
+      fail('填了错的产物目录后，向导既没前进也没给出提示 —— 人不知道发生了什么');
+    } else if (/第 5 /.test(String(await stepText()))) {
+      fail('产物目录指向了另一个工程（平台自己的 target/classes），向导却放行了 —— '
+        + '建出来只会满屏「源码读取失败」，而没有一处说得清问题在配置上');
+    } else {
+      const why = await page.evaluate(() => [...document.querySelectorAll('.el-message')]
+        .map(e => e.innerText.trim()).join(' | '));
+      // 拦住了还不够，得说清是哪一项：只说「路径无效」会把人引去找一个没问题的目录
+      if (!/同一个工程|一个都找不到/.test(why)) {
+        fail(`向导拦住了，但没说清为什么：「${why}」—— 目录本身是有效的，人会去找一个没问题的目录`);
+      } else {
+        pass('产物目录指向另一个工程时向导当场拦住，并说清了是「产物与源码不是同一个工程」');
+      }
+      await page.evaluate(() => document.querySelectorAll('.el-message').forEach(e => e.remove()));
+    }
+
     await fill('wz-classesDir', seed.classesDir);
     await fill('wz-javaSourceRoot', seed.javaSourceRoot);
     await page.click('[data-testid="wz-next"]');            // 4 → 5（验路径）

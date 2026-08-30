@@ -40,6 +40,20 @@ public class GitService {
     }
 
     /**
+     * 这个目录所属 git 仓库的根。
+     *
+     * <p><b>它必须与配置的 repo-dir 是同一个目录。</b>git 在子目录里照常工作，
+     * 但 {@code diff --name-only} 交出来的路径始终以<b>仓库根</b>为基准 ——
+     * 拿 {@code <repo>/demo-service} 当 repo-dir 时，git 说
+     * {@code demo-service/src/main/java/...}，而 IR 里是 {@code src/main/java/...}，
+     * 两边永远交不上。表现不是报错，是<b>增量范围恒为空</b>：门禁每次都回
+     * 「这次没改任何可执行代码」并放行，CI 从此挡不住任何东西。
+     */
+    public String topLevel() throws IOException {
+        return run("rev-parse", "--show-toplevel").strip();
+    }
+
+    /**
      * 一个可以填进「增量基线」的候选。
      *
      * @param ref    直接填进配置的那个字符串

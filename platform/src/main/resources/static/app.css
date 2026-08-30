@@ -257,6 +257,11 @@ table.tbl td.actions { white-space: nowrap; }
 .fld:has(> .baseline-field) { align-items: flex-start; }
 .baseline-field { max-width: 520px; flex: 1; }
 .fld-hint { margin-top: 4px; font-size: 12px; line-height: 1.6; color: var(--el-text-color-secondary); }
+/* 输入框下面挂一行常驻说明。不做 placeholder：一打字就没了，
+   而「这个相对路径以谁为基准」恰恰要在填的过程中看得见 */
+.fld-stacked { align-items: flex-start; }
+.fld-stacked > label { padding-top: 6px; }
+.fld-body { max-width: 520px; flex: 1; min-width: 0; }
 .wz-foot { display: flex; align-items: center; gap: 8px; padding: 12px 18px;
            border-top: 1px solid var(--el-border-color-lighter); }
 /* 走过的步骤要与「还没到」区分开，否则六个圈看起来一模一样，不知道自己在哪 */
