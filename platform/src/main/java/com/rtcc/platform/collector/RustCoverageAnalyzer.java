@@ -102,7 +102,8 @@ public class RustCoverageAnalyzer {
                 if (kv.length >= 2) {
                     long count = Long.parseLong(kv[1].strip());
                     current.add(new FileCoverage.LineCoverage(
-                            Integer.parseInt(kv[0].strip()), count > 0 ? "COVERED" : "MISSED"));
+                            Integer.parseInt(kv[0].strip()), count > 0 ? "COVERED" : "MISSED",
+                            null, null));
                 }
             } else if (line.startsWith("end_of_record")) {
                 current = null;
@@ -133,6 +134,7 @@ public class RustCoverageAnalyzer {
                     slash < 0 ? path : path.substring(slash + 1),
                     covered, missed,
                     covered * 100d / lines.size(),
+                    null, null, null, null,
                     lines));
         });
         return result;

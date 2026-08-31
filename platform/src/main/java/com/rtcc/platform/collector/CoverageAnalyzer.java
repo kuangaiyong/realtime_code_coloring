@@ -47,7 +47,7 @@ public class CoverageAnalyzer {
                 if (status == null) {
                     continue;
                 }
-                lines.add(new FileCoverage.LineCoverage(i, status));
+                lines.add(new FileCoverage.LineCoverage(i, status, null, null));
                 if ("MISSED".equals(status)) {
                     missed++;
                 } else {
@@ -63,6 +63,7 @@ public class CoverageAnalyzer {
                     covered,
                     missed,
                     total == 0 ? 0d : covered * 100d / total,
+                    null, null, null, null,
                     lines
             ));
         }

@@ -1084,7 +1084,8 @@ public class ProjectRuntime {
         int missed = (int) kept.stream().filter(l -> "MISSED".equals(l.status())).count();
         int covered = kept.size() - missed;
         double ratio = kept.isEmpty() ? 0d : covered * 100d / kept.size();
-        return new FileCoverage(f.path(), f.packageName(), f.sourceFileName(), covered, missed, ratio, kept);
+        return new FileCoverage(f.path(), f.packageName(), f.sourceFileName(), covered, missed, ratio,
+                f.coveredBranches(), f.missedBranches(), f.coveredMethods(), f.missedMethods(), kept);
     }
 
     private double overallRatio(Map<String, FileCoverage> snap) {

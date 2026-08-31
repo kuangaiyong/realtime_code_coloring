@@ -194,7 +194,7 @@ public class CppCoverageAnalyzer {
             if (current == null || "-".equals(count)) {
                 continue; // "-" 是非可执行行，与 JaCoCo 的 EMPTY 一样不进 IR
             }
-            current.add(new FileCoverage.LineCoverage(no, status(count)));
+            current.add(new FileCoverage.LineCoverage(no, status(count), null, null));
         }
         if (byFile.isEmpty()) {
             throw new IOException("gcov 没有输出任何源码的覆盖数据。"
@@ -215,6 +215,7 @@ public class CppCoverageAnalyzer {
                     slash < 0 ? path : path.substring(slash + 1),
                     covered, missed,
                     lines.isEmpty() ? 0d : covered * 100d / lines.size(),
+                    null, null, null, null,
                     lines));
         });
         return result;

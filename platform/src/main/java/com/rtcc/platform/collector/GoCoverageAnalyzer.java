@@ -160,7 +160,7 @@ public class GoCoverageAnalyzer {
                 // Go 给的是执行次数，而 IR 只区分跑没跑过，与 JaCoCo 的布尔探针对齐。
                 // Go 没有 PARTIAL 这一档：块要么进过要么没进过
                 boolean hit = e.getValue() > 0;
-                ls.add(new FileCoverage.LineCoverage(e.getKey(), hit ? "COVERED" : "MISSED"));
+                ls.add(new FileCoverage.LineCoverage(e.getKey(), hit ? "COVERED" : "MISSED", null, null));
                 if (hit) {
                     covered++;
                 } else {
@@ -175,6 +175,7 @@ public class GoCoverageAnalyzer {
                     slash < 0 ? path : path.substring(slash + 1),
                     covered, missed,
                     total == 0 ? 0d : covered * 100d / total,
+                    null, null, null, null,
                     ls));
         });
         return result;
