@@ -88,6 +88,10 @@ public class RustCoverageAnalyzer {
         String root = props.getRustSourceRoot().replace('\\', '/');
 
         Map<String, List<FileCoverage.LineCoverage>> byFile = new LinkedHashMap<>();
+        // FNF/FNH 是文件级汇总，直接用；不从 FN/FNDA 逐条累加 ——
+        // 泛型单态化会让同一个函数出现多条 FN 记录，逐条累加会把分母放大
+        Map<String, int[]> fnByFile = new LinkedHashMap<>();
+        String currentPath = null;
         List<FileCoverage.LineCoverage> current = null;
         int files = 0;
         for (String line : lcov.split("\r?\n")) {
@@ -95,8 +99,15 @@ public class RustCoverageAnalyzer {
                 files++;
                 String rel = toRepoRelative(line.substring(3).strip(), repo);
                 // 只统计 Rust 源码根之下的文件：依赖库的代码不是被测对象
-                current = rel != null && rel.startsWith(root + "/")
-                        ? byFile.computeIfAbsent(rel, k -> new ArrayList<>()) : null;
+                boolean wanted = rel != null && rel.startsWith(root + "/");
+                currentPath = wanted ? rel : null;
+                current = wanted ? byFile.computeIfAbsent(rel, k -> new ArrayList<>()) : null;
+            } else if (line.startsWith("FNF:") && currentPath != null) {
+                fnByFile.computeIfAbsent(currentPath, k -> new int[2])[0] =
+                        Integer.parseInt(line.substring(4).strip());
+            } else if (line.startsWith("FNH:") && currentPath != null) {
+                fnByFile.computeIfAbsent(currentPath, k -> new int[2])[1] =
+                        Integer.parseInt(line.substring(4).strip());
             } else if (line.startsWith("DA:") && current != null) {
                 String[] kv = line.substring(3).split(",");
                 if (kv.length >= 2) {
@@ -107,6 +118,7 @@ public class RustCoverageAnalyzer {
                 }
             } else if (line.startsWith("end_of_record")) {
                 current = null;
+                currentPath = null;
             }
         }
         // llvm-cov 可以正常退出却什么都没输出。静默放过的话界面上 Rust 直接消失，
@@ -127,6 +139,8 @@ public class RustCoverageAnalyzer {
             }
             int missed = (int) lines.stream().filter(l -> "MISSED".equals(l.status())).count();
             int covered = lines.size() - missed;
+            // fn[0]=FNF 函数总数，fn[1]=FNH 命中数
+            int[] fn = fnByFile.getOrDefault(path, new int[2]);
             int slash = path.lastIndexOf('/');
             result.put(path, new FileCoverage(
                     path,
@@ -134,7 +148,11 @@ public class RustCoverageAnalyzer {
                     slash < 0 ? path : path.substring(slash + 1),
                     covered, missed,
                     covered * 100d / lines.size(),
-                    null, null, null, null,
+                    // 分支恒为 null：实测 BRF:0，rustc stable 的 -C instrument-coverage
+                    // 不生成分支数据（要 nightly 的 -Z coverage-options=branch）。
+                    // 填 0 会让页面显示「Rust 分支覆盖 0%」，读的人以为一个都没测
+                    null, null,
+                    fn[1], fn[0] - fn[1],
                     lines));
         });
         return result;

@@ -163,4 +163,44 @@ class RustCoverageAnalyzerTest {
         // 走到了调工具这一步（而不是提前因产物缺失退出），说明前置校验的顺序是对的
         assertThrows(IOException.class, () -> new RustCoverageAnalyzer(p, platform).analyze(ONE_DUMP));
     }
+
+    /**
+     * llvm-cov export --format=lcov 的真实输出片段。
+     * FNF/FNH 是函数总数与命中数；BRF:0 是实测结果 —— rustc stable 的
+     * -C instrument-coverage 不生成分支数据，要 nightly 的 -Z coverage-options=branch
+     */
+    private String lcovWithFunctions(Path repo) {
+        return String.join("\n",
+                "SF:" + repo.resolve("demo-service-rust/src/order.rs"),
+                "FN:20,_RNvCs2r1QDoXLnWk_17demo_service_rust11read_target",
+                "FN:52,_RNvCs2r1QDoXLnWk_17demo_service_rust6handle",
+                "FNDA:3,_RNvCs2r1QDoXLnWk_17demo_service_rust11read_target",
+                "FNDA:0,_RNvCs2r1QDoXLnWk_17demo_service_rust6handle",
+                "FNF:2",
+                "FNH:1",
+                "BRF:0",
+                "BRH:0",
+                "DA:20,3",
+                "DA:21,0",
+                "LF:2",
+                "LH:1",
+                "end_of_record");
+    }
+
+    @Test
+    void Rust拿得到方法数但拿不到分支(@TempDir Path repo) throws Exception {
+        RustCoverageAnalyzer a = new RustCoverageAnalyzer(props(repo, "x.exe"), new CoverageProperties());
+
+        FileCoverage f = a.parse(lcovWithFunctions(repo)).get("demo-service-rust/src/order.rs");
+        assertNotNull(f, "没解析出文件");
+
+        assertEquals(1, f.coveredMethods(), "FNH:1 —— 一个函数跑过");
+        assertEquals(1, f.missedMethods(), "FNF:2 减去 FNH:1");
+
+        // rustc stable 压根不生成分支数据，必须是 null 而不是 0 ——
+        // 填 0 会让页面显示「Rust 分支覆盖 0%」，读的人以为一个分支都没测
+        assertNull(f.coveredBranches(), "stable 不生成分支数据，必须是 null");
+        assertNull(f.missedBranches(), "stable 不生成分支数据，必须是 null");
+        assertNull(f.lines().get(0).coveredBranches(), "行级同理");
+    }
 }
