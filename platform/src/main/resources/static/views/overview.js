@@ -1,5 +1,5 @@
-import { store, loadBuildTrend, loadPerInstance, openFile, hasData } from '../store.js';
-import { pctClass, LANG } from '../api.js';
+import { store, loadBuildTrend, openFile, hasData } from '../store.js';
+import { pctClass } from '../api.js';
 
 const { computed } = Vue;
 
@@ -157,28 +157,6 @@ export const Overview = {
       if (next === 'build') await loadBuildTrend();
     }
 
-    // ---- 被测实例 ----
-    const instEmpty = computed(() =>
-      // 场景快照是定格数据，服务端不返回实例列表。写成「无实例」会被读成全部掉线
-      d.value && d.value.probeStatus === 'ARCHIVED'
-        ? '场景快照不含实例信息（数据已定格）' : '尚无实例');
-
-    /** 各实例分别的覆盖：按 endpoint 索引，没加载过就是 null（表格少三列） */
-    const perInstMap = computed(() =>
-      store.perInst ? new Map(store.perInst.map(r => [r.endpoint, r])) : null);
-
-    function langOf(endpoint) {
-      const l = String(endpoint).split('://')[0];
-      return LANG[l] || l;
-    }
-
-    function perInstOf(endpoint) {
-      const m = perInstMap.value;
-      if (!m) return null;
-      const r = m.get(endpoint);
-      return r && r.overallRatio !== null && r.overallRatio !== undefined ? r : undefined;
-    }
-
     // ---- 排行 ----
     // 「覆盖率最低」与「未覆盖行最多」不是一回事：一个 0% 的小文件和一个 60% 却缺 500 行的
     // 大文件，该先补哪个取决于问的是哪个问题。所以两种排序都留着，而不是替用户选一个
@@ -220,8 +198,7 @@ export const Overview = {
     }
 
     return {
-      store, stats, collectedAt, trendView, setTrendScope,
-      inst, instEmpty, perInstMap, perInstOf, langOf, loadPerInstance, toGate,
+      store, stats, collectedAt, trendView, setTrendScope, toGate,
       ranked, jumpTo, pctClass, exportCsv
     };
   },
@@ -292,58 +269,6 @@ export const Overview = {
         </div>
       </div>
     </div>
-  </div>
-
-  <div class="card">
-    <div class="card-head">
-      <h2>被测实例</h2>
-      <el-button size="small" :loading="store.perInstLoading" data-testid="btn-per-inst"
-                 title="对每个实例各跑一次归一化，开销与实例数成正比，所以不随轮询自动做"
-                 @click="loadPerInstance">
-        {{ store.perInst ? '重新加载各实例覆盖' : '加载各实例覆盖' }}
-      </el-button>
-      <span class="sub">{{ collectedAt }}</span>
-    </div>
-    <div v-if="!inst.length" class="empty">{{ instEmpty }}</div>
-    <template v-else>
-      <div class="tbl-wrap">
-        <table class="tbl" data-testid="inst-table">
-          <thead><tr>
-            <th>探针地址</th><th>语言</th><th>状态</th><th>构建版本</th>
-            <template v-if="perInstMap"><th>该实例行覆盖率</th><th>已覆盖</th><th>未覆盖</th></template>
-            <th>说明</th>
-          </tr></thead>
-          <tbody>
-            <tr v-for="i in inst" :key="i.endpoint" data-testid="inst-row" :data-endpoint="i.endpoint">
-              <td class="mono">{{ i.endpoint }}</td>
-              <td>{{ langOf(i.endpoint) }}</td>
-              <td><span class="tag" :class="i.status === 'CONNECTED' ? 'ok' : 'err'">{{ i.status }}</span></td>
-              <!-- dirty 单独标出来：版本不一致的横幅只说「有实例对不上」，
-                   不点名的话得去翻各实例的启动参数才知道是哪一台脏了 -->
-              <td class="mono">
-                {{ i.buildCommit ? i.buildCommit.substring(0, 8) : '—' }}
-                <span v-if="i.dirty" class="tag warn"
-                      title="该实例构建时被测源码有未提交改动，增量口径不可用">dirty</span>
-              </td>
-              <template v-if="perInstMap">
-                <template v-if="perInstOf(i.endpoint)">
-                  <td><span class="pc mono" :class="pctClass(perInstOf(i.endpoint).overallRatio)">{{ perInstOf(i.endpoint).overallRatio }}%</span></td>
-                  <td class="mono">{{ perInstOf(i.endpoint).coveredLines }}</td>
-                  <td class="mono">{{ perInstOf(i.endpoint).missedLines }}</td>
-                </template>
-                <template v-else><td class="mono">—</td><td class="mono">—</td><td class="mono">—</td></template>
-              </template>
-              <td><span v-if="i.error" style="color:var(--el-color-danger)">{{ i.error }}</span></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div v-if="perInstMap" class="legend"
-           style="border-bottom:none;border-top:1px solid var(--el-border-color-lighter)">
-        各实例覆盖取自 {{ store.perInstAt }} 的定格值，不随轮询刷新；这几列<strong>不能相加当聚合用</strong>
-        —— 两台各覆盖同一行的不同分支时，按实例算是 PARTIAL、合并算才是 COVERED。聚合值以顶栏为准。
-      </div>
-    </template>
   </div>
 
   <div class="card">

@@ -1,5 +1,5 @@
-import { store } from '../store.js';
-import { esc, copyText, LANG } from '../api.js';
+import { store, loadPerInstance } from '../store.js';
+import { esc, copyText, LANG, pctClass } from '../api.js';
 
 const { computed, ref, watch } = Vue;
 
@@ -242,9 +242,27 @@ export const Onboard = {
       return '<span style="color:var(--el-color-success)">已接入，无需再做什么</span>';
     }
 
+    /**
+     * 各实例分别的覆盖。<b>按需拉取</b>：对每个实例各跑一次归一化，
+     * 开销与实例数成正比，所以不随轮询自动做。没加载过时后三列显示「—」。
+     *
+     * 这三列原先在总览页的「被测实例」表上，而那张表的前四列与本表完全重复。
+     * 同一批实例的状态散在两个视图里，想知道「6301 现在怎么了」得两边都看。
+     */
+    const perInstMap = computed(() =>
+      store.perInst ? new Map(store.perInst.map(r => [r.endpoint, r])) : null);
+
+    function perInstOf(endpoint) {
+      const m = perInstMap.value;
+      if (!m) return null;
+      const r = m.get(endpoint);
+      return r && r.overallRatio !== null && r.overallRatio !== undefined ? r : undefined;
+    }
+
     return {
       lang, o, cmdHtml, epNote, ymlSnippet, copyLabel, doCopy,
-      src, inst, checkMeta, checkEmpty, langOf, todo
+      src, inst, checkMeta, checkEmpty, langOf, todo,
+      store, perInstMap, perInstOf, loadPerInstance, pctClass
     };
   },
   template: `
@@ -302,6 +320,11 @@ export const Onboard = {
   <div class="card">
     <div class="card-head">
       <h2>接入自检</h2>
+      <el-button size="small" :loading="store.perInstLoading" data-testid="btn-per-inst"
+                 title="对每个实例各跑一次归一化，开销与实例数成正比，所以不随轮询自动做"
+                 @click="loadPerInstance">
+        {{ store.perInst ? '重新加载各实例覆盖' : '加载各实例覆盖' }}
+      </el-button>
       <span class="sub">{{ checkMeta }}</span>
     </div>
     <template v-if="!inst.length">
@@ -317,7 +340,9 @@ export const Onboard = {
       <div class="tbl-wrap">
         <table class="tbl" data-testid="ob-check-table">
           <thead><tr>
-            <th>探针地址</th><th>语言</th><th>接上没有</th><th>自报构建版本</th><th>下一步</th>
+            <th>探针地址</th><th>语言</th><th>接上没有</th><th>自报构建版本</th>
+            <template v-if="perInstMap"><th>该实例行覆盖率</th><th>已覆盖</th><th>未覆盖</th></template>
+            <th>下一步</th>
           </tr></thead>
           <tbody>
             <tr v-for="i in inst" :key="i.endpoint" data-testid="ob-check-row" :data-endpoint="i.endpoint">
@@ -328,10 +353,23 @@ export const Onboard = {
                 {{ i.buildCommit ? i.buildCommit.substring(0, 8) : '—' }}
                 <span v-if="i.dirty" class="tag err">dirty</span>
               </td>
+              <template v-if="perInstMap">
+                <template v-if="perInstOf(i.endpoint)">
+                  <td><span class="pc mono" :class="pctClass(perInstOf(i.endpoint).overallRatio)">{{ perInstOf(i.endpoint).overallRatio }}%</span></td>
+                  <td class="mono">{{ perInstOf(i.endpoint).coveredLines }}</td>
+                  <td class="mono">{{ perInstOf(i.endpoint).missedLines }}</td>
+                </template>
+                <template v-else><td class="mono">—</td><td class="mono">—</td><td class="mono">—</td></template>
+              </template>
               <td v-html="todo(i)"></td>
             </tr>
           </tbody>
         </table>
+      </div>
+      <div v-if="perInstMap" class="legend"
+           style="border-bottom:none;border-top:1px solid var(--el-border-color-lighter)">
+        各实例覆盖取自 {{ store.perInstAt }} 的定格值，不随轮询刷新；这几列<strong>不能相加当聚合用</strong>
+        —— 两台各覆盖同一行的不同分支时，按实例算是 PARTIAL、合并算才是 COVERED。聚合值以顶栏为准。
       </div>
     </template>
   </div>
