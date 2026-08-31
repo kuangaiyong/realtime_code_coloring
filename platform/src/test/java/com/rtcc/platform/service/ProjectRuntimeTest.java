@@ -184,4 +184,33 @@ class ProjectRuntimeTest {
         assertNull(cut.coveredBranches(), "Go 没有分支概念，裁剪后仍该是 null");
         assertNull(cut.missedBranches(), "Go 没有分支概念，裁剪后仍该是 null");
     }
+
+    /**
+     * 分支不做跨语言汇总。实测 C++ 一个 demo 有 359 条分支（滤掉 throw 后 239 条），
+     * 而源码里真正的条件语句只有 32 处 —— 与 Java 差一个数量级。
+     * 汇总出来的百分比等于在报告 C++ 的异常处理路径覆盖率。
+     */
+    @Test
+    void 分支按语言分开汇总不给跨语言总数() {
+        Map<String, FileCoverage> snap = Map.of(
+                "demo-service/src/main/java/A.java", new FileCoverage(
+                        "demo-service/src/main/java/A.java", "a", "A.java", 5, 5, 50d,
+                        10, 6, 3, 1, List.of()),
+                "demo-service-cpp/order.cpp", new FileCoverage(
+                        "demo-service-cpp/order.cpp", "demo-service-cpp", "order.cpp", 5, 5, 50d,
+                        27, 212, 4, 7, List.of()),
+                "demo-service-go/main.go", new FileCoverage(
+                        "demo-service-go/main.go", "demo-service-go", "main.go", 5, 5, 50d,
+                        null, null, null, null, List.of()));
+
+        Map<String, Map<String, Integer>> byLang = ProjectRuntime.branchesByLanguage(snap);
+
+        assertEquals(10, byLang.get("java").get("covered"));
+        assertEquals(6, byLang.get("java").get("missed"));
+        assertEquals(27, byLang.get("cpp").get("covered"));
+        assertEquals(212, byLang.get("cpp").get("missed"));
+        assertFalse(byLang.containsKey("go"), "Go 不提供分支，不该出现在这张表里 —— "
+                + "出现了就意味着页面上会显示一个 0%，而那是假的");
+        assertFalse(byLang.containsKey("rust"), "Rust 不提供分支，同理");
+    }
 }

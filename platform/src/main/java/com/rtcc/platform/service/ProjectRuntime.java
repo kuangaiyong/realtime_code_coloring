@@ -809,12 +809,31 @@ public class ProjectRuntime {
                     m.put("coveredLines", f.coveredLines());
                     m.put("missedLines", f.missedLines());
                     m.put("ratio", round(f.ratio()));
+                    // null 表示这门语言不提供该指标，前端据此显示「不提供」而不是 0%
+                    m.put("coveredBranches", f.coveredBranches());
+                    m.put("missedBranches", f.missedBranches());
+                    m.put("coveredMethods", f.coveredMethods());
+                    m.put("missedMethods", f.missedMethods());
                     if (added != null) {
                         m.put("changeType", added.contains(f.path()) ? "ADDED" : "MODIFIED");
                     }
                     files.add(m);
                 });
         res.put("overallRatio", round(overallRatio(snap)));
+        // 方法可以跨语言汇总：「一个函数」这个口径在 Java / C++ / Rust 三者间大致一致，
+        // 不像分支那样差一个数量级。不提供的语言（Go）不计入分母
+        int cm = 0, mm = 0;
+        boolean anyMethods = false;
+        for (FileCoverage f : snap.values()) {
+            if (f.coveredMethods() != null) {
+                cm += f.coveredMethods();
+                mm += f.missedMethods();
+                anyMethods = true;
+            }
+        }
+        res.put("coveredMethods", anyMethods ? cm : null);
+        res.put("missedMethods", anyMethods ? mm : null);
+        res.put("branchesByLanguage", branchesByLanguage(snap));
         res.put("files", files);
         return res;
     }
@@ -842,7 +861,11 @@ public class ProjectRuntime {
         }
 
         Map<Integer, String> statusByLine = new HashMap<>();
-        cov.lines().forEach(l -> statusByLine.put(l.line(), l.status()));
+        Map<Integer, FileCoverage.LineCoverage> byLine = new HashMap<>();
+        cov.lines().forEach(l -> {
+            statusByLine.put(l.line(), l.status());
+            byLine.put(l.line(), l);
+        });
 
         List<Map<String, Object>> rows = new ArrayList<>();
         // IR 里的路径以仓库根为基准，多语言各自的源码根都在其下
@@ -854,6 +877,11 @@ public class ProjectRuntime {
                 row.put("line", i + 1);
                 row.put("text", srcLines.get(i));
                 row.put("status", statusByLine.getOrDefault(i + 1, "EMPTY"));
+                // 源码区菱形标记的数据来源。没有这一行的记录（EMPTY 行）或这门语言
+                // 不提供分支时都是 null —— 前端据此不画菱形，而不是画一个 0/0
+                FileCoverage.LineCoverage lc = byLine.get(i + 1);
+                row.put("coveredBranches", lc == null ? null : lc.coveredBranches());
+                row.put("missedBranches", lc == null ? null : lc.missedBranches());
                 if (inDiff != null) {
                     // 基线之后没动过的行仍要显示，但在增量视图里应被淡化而非染色
                     row.put("inDiff", inDiff.contains(i + 1));
@@ -1105,6 +1133,40 @@ public class ProjectRuntime {
         }
         return new FileCoverage(f.path(), f.packageName(), f.sourceFileName(), covered, missed, ratio,
                 cb, mb, null, null, kept);
+    }
+
+    /**
+     * 分支按语言分开汇总，<b>不给跨语言总数</b>。
+     *
+     * 实测 C++ 一个几百行的 demo 有 359 条分支（滤掉 (throw) 后仍有 239 条），
+     * 而源码里真正的条件语句只有 32 处 —— C++ 里每个可能抛异常的操作都会生成分支，
+     * 分母与 Java 差一个数量级。汇总出来的百分比等于在报告 C++ 的异常处理路径覆盖率，
+     * 与「我的 if 测到了吗」没有关系。同一语言内部纵向可比，这已经是分支覆盖率真正的用法。
+     *
+     * 不提供分支的语言（Go / Rust）根本不进这张表 —— 进来就意味着页面上会显示一个 0%。
+     */
+    static Map<String, Map<String, Integer>> branchesByLanguage(Map<String, FileCoverage> snap) {
+        Map<String, int[]> acc = new LinkedHashMap<>();
+        snap.values().forEach(f -> {
+            if (f.coveredBranches() == null) {
+                return;
+            }
+            int[] a = acc.computeIfAbsent(languageOf(f.path()), k -> new int[2]);
+            a[0] += f.coveredBranches();
+            a[1] += f.missedBranches();
+        });
+        Map<String, Map<String, Integer>> res = new LinkedHashMap<>();
+        acc.forEach((lang, a) -> res.put(lang, Map.of("covered", a[0], "missed", a[1])));
+        return res;
+    }
+
+    /** 按源文件后缀判定语言。与 e2e 脚本里 langs_of 的判定口径保持一致 */
+    private static String languageOf(String path) {
+        if (path.endsWith(".java")) return "java";
+        if (path.endsWith(".go")) return "go";
+        if (path.endsWith(".rs")) return "rust";
+        if (path.endsWith(".cpp") || path.endsWith(".h")) return "cpp";
+        return "other";
     }
 
     private double overallRatio(Map<String, FileCoverage> snap) {
