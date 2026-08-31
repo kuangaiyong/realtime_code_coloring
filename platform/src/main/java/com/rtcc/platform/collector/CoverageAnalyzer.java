@@ -43,11 +43,16 @@ public class CoverageAnalyzer {
             List<FileCoverage.LineCoverage> lines = new ArrayList<>();
             int covered = 0, missed = 0;
             for (int i = sf.getFirstLine(); i <= sf.getLastLine(); i++) {
-                String status = statusOf(sf.getLine(i).getStatus());
+                ILine line = sf.getLine(i);
+                String status = statusOf(line.getStatus());
                 if (status == null) {
                     continue;
                 }
-                lines.add(new FileCoverage.LineCoverage(i, status, null, null));
+                // 行级分支是源码区菱形标记的数据来源。没有分支的行拿到的是 0/0，
+                // 不是 null —— null 在 IR 里的含义是「这门语言不提供」，而 Java 提供
+                ICounter bc = line.getBranchCounter();
+                lines.add(new FileCoverage.LineCoverage(i, status,
+                        bc.getCoveredCount(), bc.getMissedCount()));
                 if ("MISSED".equals(status)) {
                     missed++;
                 } else {
@@ -56,6 +61,10 @@ public class CoverageAnalyzer {
             }
 
             int total = covered + missed;
+            // 文件级的三组计数各取各的，不从行级累加：JaCoCo 已按源文件把外部类、
+            // 内部类、匿名类聚合好了，自行累加会在同一行同时属于两个类时重复计入
+            ICounter fileBranches = sf.getBranchCounter();
+            ICounter fileMethods = sf.getMethodCounter();
             result.put(path, new FileCoverage(
                     path,
                     sf.getPackageName().replace('/', '.'),
@@ -63,7 +72,8 @@ public class CoverageAnalyzer {
                     covered,
                     missed,
                     total == 0 ? 0d : covered * 100d / total,
-                    null, null, null, null,
+                    fileBranches.getCoveredCount(), fileBranches.getMissedCount(),
+                    fileMethods.getCoveredCount(), fileMethods.getMissedCount(),
                     lines
             ));
         }

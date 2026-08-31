@@ -96,4 +96,50 @@ class CoverageAnalyzerTest {
             assertEquals(total, f.lines().size(), f.path() + " 行数与统计口径不一致");
         });
     }
+
+    /**
+     * 分支覆盖是这次要补的核心指标。用平台自身的字节码做被分析对象，
+     * 空 ExecutionDataStore 表示「探针一次都没命中」——此时分支必须是
+     * 「有分母、分子为 0」，而不是 null：Java 侧每一行都问得出这个问题。
+     */
+    @Test
+    void Java侧分支与方法永远有值而不是null() throws Exception {
+        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), classesDir(), null);
+
+        FileCoverage f = result.get("com/rtcc/platform/collector/ProbeEndpoint.java");
+        assertNotNull(f, "未分析到 ProbeEndpoint.java");
+
+        assertNotNull(f.coveredBranches(), "Java 拿得到分支，不该是 null");
+        assertNotNull(f.missedBranches(), "Java 拿得到分支，不该是 null");
+        assertEquals(0, f.coveredBranches(), "没有执行数据时不该有已覆盖分支");
+        assertTrue(f.missedBranches() > 0,
+                "ProbeEndpoint 里有 if / switch，未覆盖分支数应大于 0，实际 " + f.missedBranches());
+
+        assertNotNull(f.coveredMethods(), "Java 拿得到方法数，不该是 null");
+        assertEquals(0, f.coveredMethods(), "没有执行数据时不该有已覆盖方法");
+        assertTrue(f.missedMethods() > 0, "应识别出未覆盖的方法，实际 " + f.missedMethods());
+    }
+
+    /**
+     * 行级分支是源码区菱形标记的数据来源。没有分支的行必须是 0/0 而不是 null ——
+     * null 在前端表示「这门语言不提供」，会让整列菱形消失
+     */
+    @Test
+    void 行级分支在没有分支的行上是零而不是null() throws Exception {
+        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), classesDir(), null);
+
+        boolean sawBranchLine = false;
+        for (FileCoverage f : result.values()) {
+            for (FileCoverage.LineCoverage l : f.lines()) {
+                assertNotNull(l.coveredBranches(),
+                        "Java 的行级分支不该是 null：" + f.path() + ":" + l.line());
+                assertNotNull(l.missedBranches(),
+                        "Java 的行级分支不该是 null：" + f.path() + ":" + l.line());
+                if (l.missedBranches() > 0) {
+                    sawBranchLine = true;
+                }
+            }
+        }
+        assertTrue(sawBranchLine, "整个平台的字节码里应至少有一行带未覆盖分支");
+    }
 }
