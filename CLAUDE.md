@@ -71,6 +71,7 @@
 | 14 | 多项目隔离 | `scripts/e2e_project.py`、`scripts/ws_verify.js` | 两个项目的覆盖快照 / 场景 / 趋势 / WebSocket 推送互不串；两项目文件集合不相交且并集等于默认项目；同一 commit 下趋势记录各自独立 |
 | 15 | 页面上建出一个能采数的项目 | `scripts/ui_verify.js` | 真实 Chrome 走完 6 步向导：每步当场验、第 6 步自检全过才建得成；建完**立刻**有覆盖数据（不是等下一个轮询周期）；用例自己收尾删项目，可重复跑 |
 | 16 | 采集事件可追溯 | `scripts/ui_verify.js` | 真停一台实例：事件流里出现 PARTIAL 并**点名是哪台**，拉回来后出现 CONNECTED（区间闭合）；**只记状态变化**，不把每轮采集刷进去；库不可用时明确报原因而非回空列表 |
+| 17 | 多语言指标能力差异如实呈现 | `scripts/ui_verify.js`、各语言 E2E | 四种语言各自该有的指标有、该缺的明确标为「不提供」而非补零（Go 分支与方法均为 `null`，Rust 分支为 `null`）；`branchesByLanguage` 里不出现拿不到分支的语言；分支不做跨语言汇总 |
 
 > **四种语言的多实例聚合走的是四条代码路径**，因此 #8 需要四个脚本各测一次：
 > Java 在 exec 层按探针取或，Go 把多份 meta/counters 交给 `covdata` 按块求和，
@@ -139,7 +140,9 @@ C++ 没有这个问题：gcov 直接给出「本行无代码」（输出里的 `
 
 Rust 介于两者之间：`llvm-cov export --format=lcov` 的 `DA:` 记录只列可执行行，
 空行与注释压根不出现，所以 EMPTY 是天然的、无需像 Go 那样另行剔除；
-但它不输出 `BRDA` 分支记录，因此没有 PARTIAL。
+但 rustc **stable** 的 `-C instrument-coverage` 不生成分支数据（实测 `BRF:0`），
+因此没有 PARTIAL —— 注意<b>不是 lcov 格式不支持</b>：`llvm-cov export` 默认就会导出分支
+（故有 `--skip-branches` 开关），要分支得上 nightly 的 `-Z coverage-options=branch`。
 **四种语言里 Go 与 Rust 是三态，Java 与 C++ 是四态。**
 
 ### P3 验收标准的执行情况（如实记录）
@@ -217,7 +220,7 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 | 语言 | 平台调用的工具 | 配置项（默认取 PATH） |
 |---|---|---|
 | Go | `go tool covdata textfmt` | `coverage.go-tool` |
-| C++ | `gcov -t -r`、`gcov-tool merge` | `coverage.gcov-tool`、`coverage.gcov-merge-tool` |
+| C++ | `gcov -t -r -b -c`、`gcov-tool merge` | `coverage.gcov-tool`、`coverage.gcov-merge-tool` |
 | Rust | `llvm-profdata merge -sparse`、`llvm-cov export --format=lcov` | `coverage.llvm-profdata-tool`、`coverage.llvm-cov-tool` |
 
 **Rust 的两个工具版本必须与 rustc 匹配**，系统上随便一个 LLVM 往往对不上，
@@ -309,8 +312,8 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 | 归一化 · Java | 4–6ms | JaCoCo 在进程内做，不起外部进程 |
 | 归一化 · Go | 116–131ms | 走预编译的 covdata（见下）。经 `go tool` 时是 2.2–6.0s |
 | 归一化 · Rust | 112–138ms | `llvm-profdata` + `llvm-cov` |
-| 归一化 · C++ | 164–171ms | `gcov-tool merge` + `gcov`，现在是四者里最慢的 |
-| 归一化 合计 | 158–172ms | 四种语言并行，等于**最慢的那个**而非四者之和 |
+| 归一化 · C++ | 211–260ms | `gcov-tool merge` + `gcov -b -c`，四者里最慢的。加 `-b -c` 取分支比原先多 50–90ms |
+| 归一化 合计 | 215–265ms | 四种语言并行，等于**最慢的那个**（C++）而非四者之和 |
 
 **Go 那一项曾经独占 2.2–6.0s**，原因是 Go 1.26 里 `covdata` 没有预编译产物
 （`go tool` 的列表里没有它，`GOTOOLDIR` 下也没有，只有 `$GOROOT/src/cmd/covdata` 源码），
