@@ -34,6 +34,11 @@ public class CppCoverageAnalyzer {
     /** gcov -t 的每一行：{@code <计数>:<行号>:<源码>}，行号 0 的是 Source/Graph/Data 这些元信息 */
     private static final Pattern ROW = Pattern.compile("^\\s*([^:]+):\\s*(\\d+):(.*)$");
 
+    /** {@code branch  0 taken 2 (fallthrough)} / {@code branch  1 never executed} */
+    private static final Pattern BRANCH = Pattern.compile("^branch\\s+\\d+\\s+(.+)$");
+    /** {@code function _ZN5Order3payEi called 3 returned 100% blocks executed 75%} */
+    private static final Pattern FUNCTION = Pattern.compile("^function\\s+\\S+\\s+called\\s+(\\d+)\\s.*$");
+
     private final ProjectConfig props;
     /** 工具链可执行文件的路径是部署机器的属性，换机器才改，与项目无关，因此仍从平台配置取 */
     private final CoverageProperties platform;
@@ -130,7 +135,9 @@ public class CppCoverageAnalyzer {
      * 工作目录必须是 C++ 源码根：.gcno 里记的源码名是编译时的相对名。
      */
     private String runGcov(Path profileDir, List<Path> gcno) throws IOException {
-        List<String> cmd = new ArrayList<>(List.of(platform.getGcovTool(), "-t", "-r",
+        // -b 输出分支明细，-c 让分支给出执行次数而不是百分比（百分比在「0 次」与
+        // 「未执行」之间分不清）。二者是分支覆盖率的唯一来源
+        List<String> cmd = new ArrayList<>(List.of(platform.getGcovTool(), "-t", "-r", "-b", "-c",
                 "-o", profileDir.toAbsolutePath().toString()));
         gcno.forEach(p -> cmd.add(p.getFileName().toString()));
         Path cwd = Path.of(props.getRepoDir(), props.getCppSourceRoot());
@@ -172,13 +179,51 @@ public class CppCoverageAnalyzer {
         return out;
     }
 
-    private Map<String, FileCoverage> parse(String gcovOut, String root) throws IOException {
+    /** 包级可见是为了让测试直接喂真实的 gcov 输出文本 —— 起一次真实 gcov 要有 .gcno 与 .gcda */
+    Map<String, FileCoverage> parse(String gcovOut, String root) throws IOException {
         Map<String, List<FileCoverage.LineCoverage>> byFile = new LinkedHashMap<>();
+        // 逐文件的方法计数。function 行同样不带行号，只能按「当前是哪个文件」归集
+        Map<String, int[]> methodsByFile = new LinkedHashMap<>();
+        String currentPath = null;
         List<FileCoverage.LineCoverage> current = null;
+        // gcov 的 branch 行不带行号，跟在它所属的源码行之后。必须记住最近一条源码行，
+        // 否则分支全部落空 —— 而「一条分支都没有」与「这门语言不提供」长得一模一样
+        int lastLineIdx = -1;
+
         for (String line : gcovOut.split("\r?\n")) {
+            Matcher br = BRANCH.matcher(line);
+            if (br.matches()) {
+                String rest = br.group(1);
+                // (throw) 是编译器为可能抛异常的操作生成的路径，不是源码里写的条件。
+                // 实测一个几百行的 demo 有 359 条分支，其中 120 条是 throw，
+                // 而源码里真正的条件语句只有 32 处
+                if (rest.contains("(throw)") || current == null || lastLineIdx < 0) {
+                    continue;
+                }
+                boolean taken = rest.startsWith("taken") && !rest.startsWith("taken 0");
+                FileCoverage.LineCoverage old = current.get(lastLineIdx);
+                current.set(lastLineIdx, new FileCoverage.LineCoverage(
+                        old.line(), old.status(),
+                        old.coveredBranches() + (taken ? 1 : 0),
+                        old.missedBranches() + (taken ? 0 : 1)));
+                continue;
+            }
+            Matcher fn = FUNCTION.matcher(line);
+            if (fn.matches()) {
+                if (currentPath != null) {
+                    int[] fm = methodsByFile.computeIfAbsent(currentPath, k -> new int[2]);
+                    if (Long.parseLong(fn.group(1)) > 0) {
+                        fm[0]++;
+                    } else {
+                        fm[1]++;
+                    }
+                }
+                continue;
+            }
+
             Matcher m = ROW.matcher(line);
             if (!m.matches()) {
-                continue; // branch/call 明细行，本切片不用
+                continue; // call 明细等其余行本切片不用
             }
             String count = m.group(1).strip();
             int no = Integer.parseInt(m.group(2));
@@ -186,15 +231,18 @@ public class CppCoverageAnalyzer {
                 String text = m.group(3);
                 if (text.startsWith("Source:")) {
                     String src = text.substring("Source:".length()).strip().replace('\\', '/');
-                    current = byFile.computeIfAbsent(
-                            root.replace('\\', '/') + "/" + src, k -> new ArrayList<>());
+                    currentPath = root.replace('\\', '/') + "/" + src;
+                    current = byFile.computeIfAbsent(currentPath, k -> new ArrayList<>());
+                    lastLineIdx = -1;
                 }
                 continue;
             }
             if (current == null || "-".equals(count)) {
+                lastLineIdx = -1; // 非可执行行，后面若跟着 branch 行也无处可归
                 continue; // "-" 是非可执行行，与 JaCoCo 的 EMPTY 一样不进 IR
             }
-            current.add(new FileCoverage.LineCoverage(no, status(count), null, null));
+            current.add(new FileCoverage.LineCoverage(no, status(count), 0, 0));
+            lastLineIdx = current.size() - 1;
         }
         if (byFile.isEmpty()) {
             throw new IOException("gcov 没有输出任何源码的覆盖数据。"
@@ -208,6 +256,9 @@ public class CppCoverageAnalyzer {
             }
             int missed = (int) lines.stream().filter(l -> "MISSED".equals(l.status())).count();
             int covered = lines.size() - missed;
+            int cb = lines.stream().mapToInt(FileCoverage.LineCoverage::coveredBranches).sum();
+            int mb = lines.stream().mapToInt(FileCoverage.LineCoverage::missedBranches).sum();
+            int[] fm = methodsByFile.getOrDefault(path, new int[2]);
             int slash = path.lastIndexOf('/');
             result.put(path, new FileCoverage(
                     path,
@@ -215,7 +266,7 @@ public class CppCoverageAnalyzer {
                     slash < 0 ? path : path.substring(slash + 1),
                     covered, missed,
                     lines.isEmpty() ? 0d : covered * 100d / lines.size(),
-                    null, null, null, null,
+                    cb, mb, fm[0], fm[1],
                     lines));
         });
         return result;
