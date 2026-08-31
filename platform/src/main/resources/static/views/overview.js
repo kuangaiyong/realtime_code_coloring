@@ -1,5 +1,4 @@
-import { store, loadBuildTrend, openFile, hasData } from '../store.js';
-import { pctClass } from '../api.js';
+import { store, loadBuildTrend, hasData } from '../store.js';
 
 const { computed } = Vue;
 
@@ -19,19 +18,6 @@ function svgPoints(values) {
   };
 }
 
-/** CSV 单元格。逗号、引号、换行都必须裹起来，否则一个包名里的逗号就把列错开了 */
-function cell(v) {
-  const t = String(v == null ? '' : v);
-  return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
-}
-
-/** 文件名里的时间戳。用本地时间：导出的人是按自己的钟去找那份文件的 */
-function stamp() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, '0');
-  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
-}
-
 /**
  * 横轴两端的刻度文字。
  *
@@ -49,13 +35,17 @@ function axisLabels(from, to) {
   return { from: md(a), to: md(b) };
 }
 
-/** 总览看板：统计口径 → 门禁结论 → 覆盖率变化 → 被测实例 → 覆盖率排行 */
+/**
+ * 总览看板：三指标水位 + 覆盖率变化。
+ *
+ * 门禁结论在「覆盖门禁」页、实例状态在「服务接入」页、文件明细在「代码染色」页 ——
+ * 同一件事原先在两处各写一遍，改起来必然有一处跟不上。这一页只回答一个问题：
+ * <b>这个项目整体测得怎么样</b>。
+ */
 export const Overview = {
   setup() {
     const d = computed(() => store.summary);
     const files = computed(() => (d.value && d.value.files) || []);
-    const inst = computed(() => (d.value && d.value.instances) || []);
-
     // 看板的数字随口径变，不标出来会被当成全量：增量下的「未覆盖 12 行」
     // 和全量下的「未覆盖 12 行」是完全不同的两件事
     const scope = computed(() => {
@@ -64,47 +54,70 @@ export const Overview = {
       return s.mode === 'incremental' ? '增量口径' : '全量口径';
     });
 
+    /** 语言显示名。分支要按语言分行，得把 java/cpp 这种键换成人读的写法 */
+    const LANG_NAME = { java: 'Java', cpp: 'C++', go: 'Go', rust: 'Rust' };
+
+    /** 这个项目里有没有这门语言的文件。没有就不必解释它为什么没有分支 */
+    function hasLang(k) {
+      const ext = { go: '.go', rust: '.rs', java: '.java', cpp: '.cpp' }[k];
+      return files.value.some(f => f.path.endsWith(ext));
+    }
+
     /**
-     * 门禁结论跟着覆盖率那个数字走。
+     * 分支水位：<b>按语言分行，不给跨语言总数</b>。
      *
-     * 看的人要的是「这个数字够不够」，而不是先记住 3.6%、再滚到下面一张卡里找阈值。
-     * 三态照旧分开：判不了是黄的，与「不通过」的红分开 —— 前者该找人看平台，
-     * 后者该补测试。
+     * 实测 C++ 一个 demo 有 239 条分支（已滤掉编译器为异常路径生成的），
+     * 而同规模的 Java 只有 28 条 —— C++ 里每个可能抛异常的操作都会生成分支，
+     * 分母差一个数量级。汇总出来的百分比等于在报告 C++ 的异常处理路径覆盖率，
+     * 与「我的 if 测到了吗」没有关系。同一语言内部纵向可比，这才是分支覆盖率的用法。
      */
-    const gateNote = computed(() => {
-      if (store.gateError) return { text: '门禁判不了', level: 'w' };
-      const g = store.gate;
-      if (!g) return null;
-      return g.passed
-        ? { text: '门槛 ' + g.threshold + '% 已达标', level: 's' }
-        : { text: '门槛 ' + g.threshold + '% 未达标', level: 'd' };
+    const branchRows = computed(() => {
+      const by = (d.value && d.value.branchesByLanguage) || {};
+      const rows = Object.keys(by).map(k => {
+        const c = by[k].covered, m = by[k].missed, t = c + m;
+        return {
+          lang: LANG_NAME[k] || k,
+          pct: t === 0 ? '—' : (Math.round(c * 1000 / t) / 10) + '%',
+          detail: c + '/' + t
+        };
+      });
+      // 拿不到分支的语言不在 branchesByLanguage 里，但页面上必须说出来 ——
+      // 整格不提它们，会被读成「这几种语言的分支全没测」
+      const absent = ['go', 'rust'].filter(k => !(k in by) && hasLang(k));
+      if (absent.length) {
+        rows.push({ lang: absent.map(k => LANG_NAME[k]).join(' · '), pct: '不提供', detail: '', muted: true });
+      }
+      return rows;
     });
 
-    const stats = computed(() => {
+    /** 方法水位。与分支不同，这个跨语言汇总 ——「一个函数」的口径三种语言大致一致 */
+    const methodStat = computed(() => {
       const s = d.value;
-      // 探针够不到时顶栏显示「—」，看板这几个数字也必须一起变成「—」
+      if (!hasData(s) || s.coveredMethods === null || s.coveredMethods === undefined) {
+        return { v: '—', sub: '' };
+      }
+      const t = s.coveredMethods + s.missedMethods;
+      return {
+        v: s.coveredMethods + ' / ' + t,
+        sub: t === 0 ? '' : (Math.round(s.coveredMethods * 1000 / t) / 10) + '%'
+      };
+    });
+
+    const lineStat = computed(() => {
+      const s = d.value;
+      // 探针够不到时顶栏显示「—」，这几个数字也必须一起变成「—」
       const ok = hasData(s);
       const covered = files.value.reduce((a, f) => a + f.coveredLines, 0);
       const missed = files.value.reduce((a, f) => a + f.missedLines, 0);
-      const live = inst.value.filter(i => i.status === 'CONNECTED').length;
-      return [
-        { k: '统计口径', v: scope.value },
-        { k: '行覆盖率', v: ok ? s.overallRatio : '—', unit: ok ? '%' : '', note: gateNote.value },
-        { k: '已覆盖行', v: ok ? covered : '—' },
-        { k: '未覆盖行', v: ok ? missed : '—' },
-        { k: '源文件', v: files.value.length, unit: ' 个' },
-        { k: '在线实例', v: inst.value.length ? live : '—', unit: inst.value.length ? '/' + inst.value.length : '' }
-      ];
+      return {
+        v: ok ? s.overallRatio : '—',
+        unit: ok ? '%' : '',
+        sub: ok ? covered + ' / ' + (covered + missed) + ' 行' : ''
+      };
     });
 
     const collectedAt = computed(() => d.value && d.value.lastCollectedAt
       ? '最后采集 ' + new Date(d.value.lastCollectedAt).toLocaleTimeString() : '');
-
-    // ---- 门禁 ----
-    /** 详情在独立视图里。模板表达式里写不了 location，得从这儿暴露 */
-    function toGate() {
-      location.hash = '#/p/' + encodeURIComponent(store.projectId) + '/gate';
-    }
 
     // ---- 曲线 ----
     const buildNote = '每个构建一个点，取该构建观测到的峰值';
@@ -157,82 +170,42 @@ export const Overview = {
       if (next === 'build') await loadBuildTrend();
     }
 
-    // ---- 排行 ----
-    // 「覆盖率最低」与「未覆盖行最多」不是一回事：一个 0% 的小文件和一个 60% 却缺 500 行的
-    // 大文件，该先补哪个取决于问的是哪个问题。所以两种排序都留着，而不是替用户选一个
-    const ranked = computed(() => files.value.slice().sort(store.rankBy === 'missed'
-      ? (a, b) => b.missedLines - a.missedLines || a.ratio - b.ratio
-      : (a, b) => a.ratio - b.ratio || b.missedLines - a.missedLines));
-
-    /**
-     * 导出当前排行为 CSV。覆盖率报告要给人看、要贴进周报，光在页面上看不够。
-     *
-     * <b>口径必须写进文件名</b>：增量口径下的 47 行未覆盖和全量口径下的 47 行
-     * 是完全不同的两件事，而导出的表格里看不出区别 —— 隔几天再打开就成了一份
-     * 说不清是什么的数字。
-     */
-    function exportCsv() {
-      const head = ['#', '文件', '包名', '路径', '行覆盖率(%)', '已覆盖行', '未覆盖行'];
-      const rows = ranked.value.map((f, n) =>
-        [n + 1, f.sourceFileName, f.packageName, f.path, f.ratio, f.coveredLines, f.missedLines]);
-      const csv = [head, ...rows].map(r => r.map(cell).join(',')).join('\r\n');
-      // BOM 不能省：没有它 Excel 会按本地代码页解，中文列名直接是乱码
-      const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = '覆盖率-' + scope.value.replace(/\s/g, '') + '-' + stamp() + '.csv';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      // 不撤销的话这块内存要挂到页面关掉为止；导几次就是几份文件的量
-      setTimeout(() => URL.revokeObjectURL(url), 0);
-    }
-
-    /** 排行的用处是「找到该补的文件、然后去看它」，所以点文件名直接跳进染色视图 */
-    function jumpTo(path) {
-      // 路由是两级的：只写 #/coloring 匹配不上 #/p/<id>/<view>，
-      // 结果不是跳去染色而是退回项目列表
-      location.hash = '#/p/' + encodeURIComponent(store.projectId) + '/coloring';
-      openFile(path);
-    }
-
     return {
-      store, stats, collectedAt, trendView, setTrendScope, toGate,
-      ranked, jumpTo, pctClass, exportCsv
+      store, files, scope, lineStat, branchRows, methodStat,
+      collectedAt, trendView, setTrendScope
     };
   },
   template: `
 <div class="view" data-testid="view-overview">
   <div class="stats">
-    <div class="stat" v-for="s in stats" :key="s.k">
-      <div class="k">{{ s.k }}</div>
-      <div class="v">{{ s.v }}<small v-if="s.unit">{{ s.unit }}</small></div>
-      <div v-if="s.note" class="note-line" :class="s.note.level" data-testid="stat-gate">{{ s.note.text }}</div>
+    <div class="stat">
+      <div class="k">行覆盖 · {{ scope }}</div>
+      <div class="v" data-testid="stat-lines">{{ lineStat.v }}<small v-if="lineStat.unit">{{ lineStat.unit }}</small></div>
+      <div class="sub-line">{{ lineStat.sub }}</div>
     </div>
-  </div>
-
-  <!-- 门禁在这里只留一句结论：判定详情、增量与全量的对比、CI 接入命令都在
-       「覆盖门禁」那一页。同一件事在两处各写一遍，改起来必然有一处跟不上 -->
-  <div class="card">
-    <div class="card-head">
-      <h2>覆盖率门禁</h2>
-      <el-button size="small" data-testid="btn-gate-detail" @click="toGate">查看详情</el-button>
+    <div class="stat">
+      <!-- 分支按语言分行给。两种语言的分支百分比不能相互比较，原因写在悬停里 -->
+      <div class="k">分支覆盖 <span class="hint"
+        title="C++ 的分支由 gcov 给出，包含编译器为可能抛异常的操作生成的路径，分母天然比 Java 大。不要拿两种语言的分支百分比相互比较。">?</span></div>
+      <div data-testid="stat-branches">
+        <div v-if="!branchRows.length" class="v">—</div>
+        <div v-for="r in branchRows" :key="r.lang" class="lang-row" :class="{ muted: r.muted }">
+          <span class="lg">{{ r.lang }}</span>
+          <span class="pv">{{ r.pct }}</span>
+          <span class="dt">{{ r.detail }}</span>
+        </div>
+      </div>
     </div>
-    <div v-if="store.gateError" class="gate undecided" data-testid="gate">
-      <span class="verdict" data-testid="gate-verdict">无法判定</span>
-      <span class="why">{{ store.gateError }}</span>
+    <div class="stat">
+      <div class="k">方法覆盖</div>
+      <div class="v" data-testid="stat-methods">{{ methodStat.v }}</div>
+      <div class="sub-line">{{ methodStat.sub }}</div>
     </div>
-    <div v-else-if="store.gate" class="gate" :class="store.gate.passed ? 'pass' : 'block'"
-         data-testid="gate">
-      <span class="verdict" data-testid="gate-verdict">{{ store.gate.passed ? '通过' : '不通过' }}</span>
-      <span class="why">{{ store.gate.reason }}</span>
-      <span class="num" data-testid="gate-actual">
-        <template v-if="store.gate.actual === null">—</template>
-        <template v-else>{{ store.gate.actual }}<small>%</small></template>
-      </span>
+    <div class="stat">
+      <div class="k">源文件</div>
+      <div class="v">{{ files.length }}<small> 个</small></div>
+      <div class="sub-line">{{ collectedAt }}</div>
     </div>
-    <div v-else class="empty">等待判定…</div>
   </div>
 
   <div class="card">
@@ -271,44 +244,5 @@ export const Overview = {
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-head">
-      <h2>覆盖率排行</h2>
-      <el-button size="small" :disabled="!ranked.length" data-testid="btn-export"
-                 title="导出当前口径下的全部文件；口径写在文件名里" @click="exportCsv">导出 CSV</el-button>
-      <div class="seg" style="margin-left:auto">
-        <button :class="{ on: store.rankBy === 'ratio' }"
-                data-testid="rank-ratio" @click="store.rankBy = 'ratio'">覆盖率最低</button>
-        <button :class="{ on: store.rankBy === 'missed' }"
-                data-testid="rank-missed" @click="store.rankBy = 'missed'">未覆盖行最多</button>
-      </div>
-    </div>
-    <div v-if="!ranked.length" class="empty">尚无数据</div>
-    <div v-else class="tbl-wrap">
-      <table class="tbl" data-testid="rank-table">
-        <thead><tr>
-          <th style="width:34px">#</th><th>文件</th><th style="width:170px">行覆盖率</th>
-          <th style="width:84px">已覆盖</th><th style="width:84px">未覆盖</th>
-        </tr></thead>
-        <tbody>
-          <tr v-for="(f, n) in ranked" :key="f.path">
-            <td class="mono">{{ n + 1 }}</td>
-            <td>
-              <span class="rank-name" :title="f.path" @click="jumpTo(f.path)">{{ f.sourceFileName }}</span>
-              <div style="font-size:12px;color:var(--el-text-color-secondary)">{{ f.packageName }}</div>
-            </td>
-            <td>
-              <div style="display:flex;align-items:center;gap:8px">
-                <div class="bar-track"><div class="bar-fill" :class="pctClass(f.ratio)" :style="{ width: f.ratio + '%' }"></div></div>
-                <span class="pc mono" :class="pctClass(f.ratio)">{{ f.ratio }}%</span>
-              </div>
-            </td>
-            <td class="mono">{{ f.coveredLines }}</td>
-            <td class="mono">{{ f.missedLines }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
 </div>`
 };
