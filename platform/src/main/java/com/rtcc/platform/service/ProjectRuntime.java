@@ -1078,14 +1078,33 @@ public class ProjectRuntime {
     }
 
     private FileCoverage restrictOne(FileCoverage f, Set<Integer> wanted) {
+        return restrictOneForTest(f, wanted);
+    }
+
+    /**
+     * 把一个文件裁剪到只剩 wanted 里的行。静态且包级可见，供单测直接验证 ——
+     * 它是纯函数，为测它去起一整个 ProjectRuntime（要连探针、要 git 仓库）不值当。
+     *
+     * 分支从保留下来的行累加；<b>方法置空</b> —— 一个方法通常只有几行落在 diff 里，
+     * 「这个方法覆盖了没有」在增量口径下答不上来，透传全量的方法数会被读成
+     * 「这次改动的方法覆盖率」。
+     */
+    static FileCoverage restrictOneForTest(FileCoverage f, Set<Integer> wanted) {
         List<FileCoverage.LineCoverage> kept = f.lines().stream()
                 .filter(l -> wanted.contains(l.line()))
                 .toList();
         int missed = (int) kept.stream().filter(l -> "MISSED".equals(l.status())).count();
         int covered = kept.size() - missed;
         double ratio = kept.isEmpty() ? 0d : covered * 100d / kept.size();
+        // 原文件不提供分支时（Go / Rust）保持 null —— 累加成 0 等于把
+        // 「没有分支这回事」说成「有分支但一个都没测」
+        Integer cb = null, mb = null;
+        if (f.coveredBranches() != null) {
+            cb = kept.stream().mapToInt(l -> l.coveredBranches() == null ? 0 : l.coveredBranches()).sum();
+            mb = kept.stream().mapToInt(l -> l.missedBranches() == null ? 0 : l.missedBranches()).sum();
+        }
         return new FileCoverage(f.path(), f.packageName(), f.sourceFileName(), covered, missed, ratio,
-                f.coveredBranches(), f.missedBranches(), f.coveredMethods(), f.missedMethods(), kept);
+                cb, mb, null, null, kept);
     }
 
     private double overallRatio(Map<String, FileCoverage> snap) {
