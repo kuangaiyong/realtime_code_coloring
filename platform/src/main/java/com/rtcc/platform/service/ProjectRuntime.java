@@ -1131,8 +1131,10 @@ public class ProjectRuntime {
             cb = kept.stream().mapToInt(l -> l.coveredBranches() == null ? 0 : l.coveredBranches()).sum();
             mb = kept.stream().mapToInt(l -> l.missedBranches() == null ? 0 : l.missedBranches()).sum();
         }
+        // 方法明细同样只在全量口径下有意义：一个方法只有几行落在 diff 里，
+        // 「这个方法覆盖了没有」答不上来，透传全量的明细会被读成这次改动的结果
         return new FileCoverage(f.path(), f.packageName(), f.sourceFileName(), covered, missed, ratio,
-                cb, mb, null, null, kept);
+                cb, mb, null, null, null, kept);
     }
 
     /**

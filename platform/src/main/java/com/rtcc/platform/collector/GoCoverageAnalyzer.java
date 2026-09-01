@@ -176,6 +176,7 @@ public class GoCoverageAnalyzer {
                     covered, missed,
                     total == 0 ? 0d : covered * 100d / total,
                     null, null, null, null,
+                    null,
                     ls));
         });
         return result;

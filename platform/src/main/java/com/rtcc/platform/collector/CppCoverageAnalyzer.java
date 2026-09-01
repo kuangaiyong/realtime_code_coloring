@@ -267,6 +267,7 @@ public class CppCoverageAnalyzer {
                     covered, missed,
                     lines.isEmpty() ? 0d : covered * 100d / lines.size(),
                     cb, mb, fm[0], fm[1],
+                    null,
                     lines));
         });
         return result;

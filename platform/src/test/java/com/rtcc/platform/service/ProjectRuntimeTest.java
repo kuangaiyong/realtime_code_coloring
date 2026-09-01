@@ -154,7 +154,7 @@ class ProjectRuntimeTest {
     void 增量裁剪后分支按保留行累加而方法置空() {
         FileCoverage full = new FileCoverage(
                 "a/B.java", "a", "B.java", 3, 1, 75d,
-                6, 2, 4, 1,
+                6, 2, 4, 1, null,
                 List.of(new FileCoverage.LineCoverage(10, "COVERED", 2, 0),
                         new FileCoverage.LineCoverage(11, "PARTIAL", 1, 1),
                         new FileCoverage.LineCoverage(12, "COVERED", 3, 1),
@@ -175,7 +175,7 @@ class ProjectRuntimeTest {
     void 不提供分支的语言裁剪后仍是空而不是零() {
         FileCoverage go = new FileCoverage(
                 "demo-service-go/main.go", "demo-service-go", "main.go", 1, 1, 50d,
-                null, null, null, null,
+                null, null, null, null, null,
                 List.of(new FileCoverage.LineCoverage(10, "COVERED", null, null),
                         new FileCoverage.LineCoverage(11, "MISSED", null, null)));
 
@@ -195,13 +195,13 @@ class ProjectRuntimeTest {
         Map<String, FileCoverage> snap = Map.of(
                 "demo-service/src/main/java/A.java", new FileCoverage(
                         "demo-service/src/main/java/A.java", "a", "A.java", 5, 5, 50d,
-                        10, 6, 3, 1, List.of()),
+                        10, 6, 3, 1, null, List.of()),
                 "demo-service-cpp/order.cpp", new FileCoverage(
                         "demo-service-cpp/order.cpp", "demo-service-cpp", "order.cpp", 5, 5, 50d,
-                        27, 212, 4, 7, List.of()),
+                        27, 212, 4, 7, null, List.of()),
                 "demo-service-go/main.go", new FileCoverage(
                         "demo-service-go/main.go", "demo-service-go", "main.go", 5, 5, 50d,
-                        null, null, null, null, List.of()));
+                        null, null, null, null, null, List.of()));
 
         Map<String, Map<String, Integer>> byLang = ProjectRuntime.branchesByLanguage(snap);
 

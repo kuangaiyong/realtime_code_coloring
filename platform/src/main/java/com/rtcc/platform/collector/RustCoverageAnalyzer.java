@@ -153,6 +153,7 @@ public class RustCoverageAnalyzer {
                     // 填 0 会让页面显示「Rust 分支覆盖 0%」，读的人以为一个都没测
                     null, null,
                     fn[1], fn[0] - fn[1],
+                    null,
                     lines));
         });
         return result;

@@ -74,6 +74,7 @@ public class CoverageAnalyzer {
                     total == 0 ? 0d : covered * 100d / total,
                     fileBranches.getCoveredCount(), fileBranches.getMissedCount(),
                     fileMethods.getCoveredCount(), fileMethods.getMissedCount(),
+                    null,
                     lines
             ));
         }
