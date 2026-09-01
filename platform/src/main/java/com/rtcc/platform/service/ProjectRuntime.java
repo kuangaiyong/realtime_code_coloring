@@ -896,6 +896,20 @@ public class ProjectRuntime {
         res.put("ratio", round(cov.ratio()));
         res.put("coveredLines", cov.coveredLines());
         res.put("missedLines", cov.missedLines());
+        // 方法明细挂在这里而不是 summary：summary 每 3 秒经 WS 推一次，实测 3759 字节，
+        // 九个文件的方法明细约 +3920 字节会让每轮推送翻倍；而报表只在钻进某个文件时
+        // 才需要它，那正是打开这个接口的时机。null 表示这门语言不提供，
+        // 增量口径下也是 null（见 restrictOneForTest：方法在那个口径下答不上来）
+        res.put("methods", cov.methods() == null ? null : cov.methods().stream().map(m -> {
+            Map<String, Object> mm = new LinkedHashMap<>();
+            mm.put("name", m.name());
+            mm.put("firstLine", m.firstLine());
+            mm.put("coveredLines", m.coveredLines());
+            mm.put("missedLines", m.missedLines());
+            mm.put("coveredBranches", m.coveredBranches());
+            mm.put("missedBranches", m.missedBranches());
+            return mm;
+        }).toList());
         res.put("rows", rows);
         return res;
     }
