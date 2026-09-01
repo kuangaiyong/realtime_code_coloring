@@ -10,17 +10,64 @@
  */
 
 :root {
-  --radius: 4px;
-  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  --sans: "Helvetica Neue", Helvetica, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-  --aside-w: 208px;
-  --topbar-h: 56px;
+  --radius: 10px;
+  /* 字体栈里中文那几项一个都不能删：JetBrains Mono 与 IBM Plex Sans 都<b>不含中文</b>，
+     只覆盖拉丁字符与数字，中文由后面的系统字体接手，浏览器按字符自动回退 */
+  --mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --sans: "IBM Plex Sans", "Helvetica Neue", Helvetica, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  --aside-w: 216px;
+  --topbar-h: 60px;
+
+  /* ---- 主色 ----
+     靛蓝。<b>刻意避开绿 / 黄 / 红</b>：那三种色相在本平台是<b>数据语义</b>
+     （已覆盖 / 部分分支 / 未覆盖），主色若也用其中之一，人就分不清
+     「这是个按钮」还是「这行测到了」。靛蓝与三者在色相轮上各差 120° 以上。 */
+  --el-color-primary: #4F46E5;
+  --el-color-primary-light-3: #7A73EC;
+  --el-color-primary-light-5: #A5A0F2;
+  --el-color-primary-light-7: #CFCDF8;
+  --el-color-primary-light-8: #E2E1FB;
+  --el-color-primary-light-9: #F0EFFD;
+  --el-color-primary-dark-2: #3F38B7;
+
+  /* ---- 玻璃拟态 ----
+     只给<b>浮层与水位卡</b>用（顶栏 / 侧边栏 / 下拉 / 四张 stat）。
+     源码染色区与所有数据表格一律实心 —— 半透明叠底会拉低小号等宽数字的
+     对比度，而四态色的辨识度是这个平台的核心信息载体，不能拿来换观感。 */
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.9);
+  --glass-blur: 14px;
+  --glass-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 8px 24px -8px rgba(16, 24, 40, .10);
+  --card-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
+  /* 毛玻璃要透出点东西才成立。给一层极淡的径向光晕，只铺在页面底，
+     数据区一律在实心卡片里，不受它影响 */
+  --page-wash:
+    radial-gradient(820px 440px at 6% -6%, rgba(79, 70, 229, .16), transparent 62%),
+    radial-gradient(720px 400px at 96% 2%, rgba(14, 165, 233, .13), transparent 64%),
+    radial-gradient(600px 300px at 50% 108%, rgba(79, 70, 229, .06), transparent 60%);
+}
+
+/* 深色下玻璃要反过来：浅色玻璃在深底上会糊成一片灰白 */
+html.dark {
+  --glass-bg: rgba(30, 37, 56, 0.66);
+  --glass-border: rgba(255, 255, 255, 0.10);
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, .30), 0 10px 28px -10px rgba(0, 0, 0, .55);
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, .28), 0 1px 3px rgba(0, 0, 0, .22);
+  --page-wash:
+    radial-gradient(820px 440px at 6% -6%, rgba(99, 91, 255, .26), transparent 62%),
+    radial-gradient(720px 400px at 96% 2%, rgba(14, 165, 233, .16), transparent 64%),
+    radial-gradient(600px 300px at 50% 108%, rgba(99, 91, 255, .10), transparent 60%);
+  --el-color-primary: #7A73EC;
+  --el-color-primary-light-9: #232544;
 }
 
 * { box-sizing: border-box; }
 body {
   margin: 0; font-family: var(--sans); font-size: 14px;
   color: var(--el-text-color-regular); background: var(--el-bg-color-page);
+  background-image: var(--page-wash);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* vendor 没加载出来时，页面会停在这一句上。写清楚比空白强 —— 空白页
@@ -33,8 +80,11 @@ body {
 .layout { display: flex; min-height: 100vh; }
 
 .aside {
-  width: var(--aside-w); flex: none; background: var(--el-bg-color);
-  border-right: 1px solid var(--el-border-color-lighter);
+  width: var(--aside-w); flex: none;
+  /* 玻璃：它浮在页面底色的光晕之上，透出那层极淡的渐变才有厚度 */
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur));
+  border-right: 1px solid var(--glass-border);
   display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh;
 }
 .aside .brand {
@@ -65,8 +115,10 @@ body {
 /* 顶栏放「这一屏的口径」与几个动作。口径（全量/增量/场景）会改变下面每一个数字的
    含义，所以它必须常驻可见，而不是藏进某个视图里 */
 .topbar {
-  height: var(--topbar-h); flex: none; background: var(--el-bg-color);
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  height: var(--topbar-h); flex: none;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur));
+  border-bottom: 1px solid var(--glass-border);
   display: flex; align-items: center; gap: 12px; padding: 0 18px;
   position: sticky; top: 0; z-index: 10;
 }
@@ -112,9 +164,13 @@ body {
   .aside { position: static; height: auto; }
 }
 
-.card { background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius); overflow: hidden; }
+/* 内容卡一律<b>实心</b>：数据表与源码都在这里面，半透明会拉低小号等宽数字的
+   对比度。质感靠圆角与柔和阴影给，不靠透明度 */
+.card { background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--radius); overflow: hidden; box-shadow: var(--card-shadow); }
 .card-head { padding: 11px 14px; border-bottom: 1px solid var(--el-border-color-lighter); display: flex; align-items: center; gap: 8px; }
-.card-head h2 { font-size: 14px; margin: 0; color: var(--el-text-color-primary); font-weight: 600; flex: none; }
+.card-head h2 { font-size: 14px; margin: 0; color: var(--el-text-color-primary); font-weight: 600; flex: none;
+  letter-spacing: -.01em; }
 /* 说明文字长短由数据决定（口径 + 采样数 + 变化量），卡片头是 flex 且不换行，
    不设上限的话一条长说明就能把整张卡撑到容器之外 */
 .card-head .sub { font-size: 12px; color: var(--el-text-color-secondary); margin-left: auto; font-family: var(--mono); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -155,6 +211,8 @@ body {
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 10px; height: 10px; border-radius: 2px; }
 
+/* 源码区<b>永远实心、永不加毛玻璃</b>：四态色（绿/黄/红/灰）是这个平台的核心
+   信息载体，半透明叠底会让绿与黄在小面积上难分。观感让位于辨识度 */
 .src { font-family: var(--mono); font-size: 13px; line-height: 21px; overflow-x: auto; max-height: calc(100vh - 260px); overflow-y: auto; }
 .ln { display: flex; white-space: pre; border-left: 3px solid transparent; }
 .ln.COVERED { background: var(--el-color-success-light-9); border-left-color: var(--el-color-success); }
@@ -171,9 +229,18 @@ body {
 /* ---------------- 看板 ---------------- */
 
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 14px; }
-.stat { background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius); padding: 13px 14px; }
+/* 水位卡用玻璃：它是一屏里最上层、信息密度最低的四格，
+   而且只有大字号数字，透明度不会伤可读性 */
+.stat { background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border); border-radius: var(--radius);
+  padding: 15px 16px; box-shadow: var(--glass-shadow);
+  transition: transform .18s ease, box-shadow .18s ease; }
+.stat:hover { transform: translateY(-1px); box-shadow: var(--glass-shadow), 0 12px 28px -12px rgba(79,70,229,.28); }
 .stat .k { font-size: 12px; color: var(--el-text-color-secondary); }
-.stat .v { font-size: 21px; font-family: var(--mono); color: var(--el-text-color-primary); margin-top: 5px; }
+/* tabular-nums：这些数字每 3 秒刷新一次，比例宽度会让整格左右跳动 */
+.stat .v { font-size: 24px; font-family: var(--mono); color: var(--el-text-color-primary);
+  margin-top: 6px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
 .stat .v small { font-size: 13px; color: var(--el-text-color-secondary); }
 /* 门禁结论跟着覆盖率那个数字走：看的人要的是「这个数字够不够」，
    而不是先记住 3.6% 再滚到下面一张卡里找阈值 */
@@ -334,3 +401,25 @@ table.tbl td.na { color: var(--el-text-color-secondary); opacity: .6; }
 .note.info { background: var(--el-color-primary-light-9); color: var(--el-text-color-regular); }
 .note.risk { background: var(--el-color-warning-light-9); color: var(--el-text-color-regular); }
 .note b { color: var(--el-text-color-primary); }
+
+
+/* ---------------- 改版补充：一致性与可访问性 ---------------- */
+
+/* 所有等宽处都用等宽数字：这些值每轮采集都在变，比例宽度会让列宽左右跳 */
+.mono, table.tbl td.mono, .pc, .overall, .stat .v, .lang-row .pv { font-variant-numeric: tabular-nums; }
+
+/* 可点就该看得出可点。图标按钮也要有可辨的焦点圈 —— 键盘用户全靠它 */
+a.drill, .crumb a, .file, .seg button { cursor: pointer; }
+a.drill, .crumb a, .seg button { transition: color .15s ease, background-color .15s ease, border-color .15s ease; }
+:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 2px; border-radius: 3px; }
+
+/* 卡片与水位卡的悬停位移对「减少动效」用户要关掉 */
+@media (prefers-reduced-motion: reduce) {
+  .stat, .stat:hover, a.drill, .crumb a, .seg button { transition: none; transform: none; }
+}
+
+/* backdrop-filter 不被支持时（旧内核 / 某些国产浏览器）要有实心兜底，
+   否则玻璃层会变成一块半透明的糊面，文字直接压在内容上 */
+@supports not (backdrop-filter: blur(1px)) {
+  .aside, .topbar, .stat { background: var(--el-bg-color); }
+}
