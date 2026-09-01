@@ -72,7 +72,11 @@ export const Overview = {
      * 与「我的 if 测到了吗」没有关系。同一语言内部纵向可比，这才是分支覆盖率的用法。
      */
     const branchRows = computed(() => {
-      const by = (d.value && d.value.branchesByLanguage) || {};
+      // 必须与 lineStat / methodStat 一样先判 hasData：实例全部掉线时服务端不更新
+      // 快照，branchesByLanguage 仍是上一份的值 —— 不判的话同一屏里「行覆盖」显示
+      // 「—」而「分支覆盖」照常给出百分比，人会以为只有行覆盖出了问题
+      if (!hasData(d.value)) return [];
+      const by = d.value.branchesByLanguage || {};
       const rows = Object.keys(by).map(k => {
         const c = by[k].covered, m = by[k].missed, t = c + m;
         return {
@@ -90,10 +94,20 @@ export const Overview = {
       return rows;
     });
 
-    /** 方法水位。与分支不同，这个跨语言汇总 ——「一个函数」的口径三种语言大致一致 */
+    /**
+     * 方法水位。与分支不同，这个跨语言汇总 ——「一个函数」的口径三种语言大致一致。
+     *
+     * <b>增量口径下要说「不适用」而不是「—」</b>：服务端裁剪时把方法置 null
+     * （一个方法通常只有几行落在 diff 里，「这个方法覆盖了没有」答不上来），
+     * 而「—」在本页的既定含义是「探针够不到」，会把人指去查探针。
+     */
     const methodStat = computed(() => {
       const s = d.value;
-      if (!hasData(s) || s.coveredMethods === null || s.coveredMethods === undefined) {
+      if (!hasData(s)) return { v: '—', sub: '' };
+      if (s.mode === 'incremental') {
+        return { v: '不适用', sub: '增量口径下答不上来', muted: true };
+      }
+      if (s.coveredMethods === null || s.coveredMethods === undefined) {
         return { v: '—', sub: '' };
       }
       const t = s.coveredMethods + s.missedMethods;
@@ -198,7 +212,8 @@ export const Overview = {
     </div>
     <div class="stat">
       <div class="k">方法覆盖</div>
-      <div class="v" data-testid="stat-methods">{{ methodStat.v }}</div>
+      <!-- 「不适用」弱化显示：它不是一个差的数字，是这个口径下问不出这个问题 -->
+      <div class="v" :class="{ muted: methodStat.muted }" data-testid="stat-methods">{{ methodStat.v }}</div>
       <div class="sub-line">{{ methodStat.sub }}</div>
     </div>
     <div class="stat">

@@ -72,13 +72,28 @@ export const Coloring = {
       if (store.rankBy === 'missed') {
         return list.sort((a, b) => b.missedLines - a.missedLines || a.ratio - b.ratio);
       }
-      return list.sort((a, b) => a.path.localeCompare(b.path));
+      // 服务端已按 path 排好（Comparator.comparing(String)，码点序）。这里不能再用
+      // localeCompare 排一遍 —— 它是区域敏感的，大小写与 -/_ 的权重都与码点序不同，
+      // 「按路径」反而会给出与服务端不一样的顺序
+      return list;
     });
+
+    /**
+     * 当前这份数据是不是增量口径。<b>取 summary.mode 而不是 store.mode</b>：
+     * 后者是顶栏开关的即时值，setMode 先改它再 await reload()，那个窗口里
+     * 拿到的口径与手上这份数据对不上。
+     */
+    const incremental = computed(() => !!store.summary && store.summary.mode === 'incremental');
 
     /**
      * 一个文件的分支与方法。<b>null 表示这门语言不提供，必须与 0 分开</b> ——
      * Go 拿不到这两项，显示成 0/0 会被读成「一个都没测」，而那里压根没有这个概念。
      * 判定一律用 == null，不用真值判断：0 和 null 在 JS 里都是 falsy，含义却相反。
+     *
+     * <b>增量口径下方法一律不显示</b>，而不是显示「不提供」：服务端在裁剪时把方法
+     * 置 null（一个方法通常只有几行落在 diff 里，「这个方法覆盖了没有」答不上来），
+     * 那是「本口径不适用」，与「这门语言没有这个概念」是两回事 ——
+     * 都渲染成「不提供」的话，Java/C++/Rust 的文件在增量口径下都在说一句假话。
      */
     function metricsOf(f) {
       return {
@@ -96,18 +111,23 @@ export const Coloring = {
      */
     function exportCsv() {
       const head = ['#', '文件', '包名', '路径', '行覆盖率(%)', '已覆盖行', '未覆盖行', '分支', '方法'];
-      const rows = sorted.value.map((f, n) => {
+      // 导的是<b>全部</b>文件，不受左侧过滤框影响 —— 导出的表里没有任何地方能记下
+      // 「当时加过什么过滤」，一份少了文件的表贴进周报后没人看得出它是残缺的
+      const rows = all.value.map((f, n) => {
         const m = metricsOf(f);
         return [n + 1, f.sourceFileName, f.packageName, f.path, f.ratio,
                 f.coveredLines, f.missedLines, m.br || '', m.me || ''];
       });
       const csv = [head, ...rows].map(r => r.map(cell).join(',')).join('\r\n');
-      // BOM 不能省：没有它 Excel 会按本地代码页解，中文列名直接是乱码
-      const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+      // BOM 不能省：没有它 Excel 会按本地代码页解，中文列名直接是乱码。
+      // 必须写成 \ufeff 转义，不能直接放字面的 U+FEFF 字符 —— 后者在编辑器里不可见，
+      // 任何一次去 BOM 的格式化都会静默删掉它，而 diff 上看不出任何改动
+      const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = '覆盖率-' + (store.mode === 'incremental' ? '增量口径' : '全量口径')
+      // 口径取这份数据自己的 mode，不是顶栏开关的即时值（理由见 incremental）
+      a.download = '覆盖率-' + (incremental.value ? '增量口径' : '全量口径')
         + '-' + stamp() + '.csv';
       document.body.appendChild(a);
       a.click();
@@ -117,7 +137,7 @@ export const Coloring = {
     }
 
     return { store, all, files, sorted, keyword, emptyHint, ratioText, openFile,
-             pctClass, hasData, CHANGE, metricsOf, exportCsv };
+             pctClass, hasData, CHANGE, metricsOf, exportCsv, incremental };
   },
   template: `
 <div class="view coloring" data-testid="view-coloring">
@@ -161,7 +181,10 @@ export const Coloring = {
           <!-- 「不提供」必须写出来。留空或补 0 会被读成「一个都没测」，
                而这门语言压根没有这个指标 -->
           <span :class="{ na: !metricsOf(f).br }">支 {{ metricsOf(f).br || '不提供' }}</span>
-          <span :class="{ na: !metricsOf(f).me }">法 {{ metricsOf(f).me || '不提供' }}</span>
+          <!-- 增量口径下服务端把方法置 null（一个方法只有几行落在 diff 里，答不上来），
+               那是「本口径不适用」而不是「这门语言不提供」—— 写成后者是句假话，
+               所以这一项整个不显示 -->
+          <span v-if="!incremental" :class="{ na: !metricsOf(f).me }">法 {{ metricsOf(f).me || '不提供' }}</span>
         </span>
       </button>
     </div>

@@ -193,6 +193,8 @@ body {
 .stat .lang-row .dt { font-size: 12px; color: var(--el-text-color-secondary); }
 /* 「不提供」那一行要弱化：它不是一个差的数字，是「这门语言没有这个概念」 */
 .stat .lang-row.muted .pv { font-size: 13px; color: var(--el-text-color-secondary); }
+/* 「不适用 / 不提供」不是一个差的数字，别用大号主色去强调它 */
+.stat .v.muted { font-size: 15px; color: var(--el-text-color-secondary); }
 
 /* 门禁结论是三态而非两态：「判不了」必须与「不通过」分开显示 ——
    前者该找人看平台，后者该补测试，混成同一个红色就会把人指去错误的方向 */

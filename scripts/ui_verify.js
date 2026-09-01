@@ -469,9 +469,13 @@ async function baselineOptions(page, testid) {
           // 拿不到的指标必须导成空单元格，不能是 0 —— 贴进周报后没人记得
           // 「Go 那个 0 其实是没有这个指标」，而空格一眼就看得出是没有数据
           const goRow = lines.find(l => l.includes('.go,') || l.includes('.go '));
-          const goCells = goRow ? goRow.split(',') : null;
-          if (goCells && (goCells[7].trim() !== '' || goCells[8].trim() !== '')) {
-            fail(`Go 行的分支与方法应导成空，实际是「${goCells[7]}」「${goCells[8]}」：${goRow}`);
+          if (!goRow) {
+            // 找不到就 fail，不能空过：这是核心功能 #17 在 CSV 侧唯一的守卫，
+            // 静默通过等于这条防线从此形同虚设
+            fail(`CSV 里找不到 Go 文件那一行，无从验证「不提供」是否导成了空：${lines[1]}`);
+          } else if (goRow.split(',')[7].trim() !== '' || goRow.split(',')[8].trim() !== '') {
+            const c = goRow.split(',');
+            fail(`Go 行的分支与方法应导成空，实际是「${c[7]}」「${c[8]}」：${goRow}`);
           } else {
             pass(`导出的 CSV 落盘可读：${csvFile}，${lines.length - 1} 行 × 9 列，`
               + 'Go 的分支与方法导成空而不是 0');
