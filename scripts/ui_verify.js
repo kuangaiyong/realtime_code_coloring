@@ -463,8 +463,20 @@ async function baselineOptions(page, testid) {
         fail(`CSV 文件名没有写明口径：${csvFile}`);
       } else {
         const cols = lines[1].split(',').length;
-        if (cols !== 7) fail(`CSV 数据行有 ${cols} 列，应为 7 列：${lines[1]}`);
-        else pass(`导出的 CSV 落盘可读：${csvFile}，${lines.length - 1} 行 × 7 列`);
+        if (cols !== 9) {
+          fail(`CSV 数据行有 ${cols} 列，应为 9 列（末两列是分支与方法）：${lines[1]}`);
+        } else {
+          // 拿不到的指标必须导成空单元格，不能是 0 —— 贴进周报后没人记得
+          // 「Go 那个 0 其实是没有这个指标」，而空格一眼就看得出是没有数据
+          const goRow = lines.find(l => l.includes('.go,') || l.includes('.go '));
+          const goCells = goRow ? goRow.split(',') : null;
+          if (goCells && (goCells[7].trim() !== '' || goCells[8].trim() !== '')) {
+            fail(`Go 行的分支与方法应导成空，实际是「${goCells[7]}」「${goCells[8]}」：${goRow}`);
+          } else {
+            pass(`导出的 CSV 落盘可读：${csvFile}，${lines.length - 1} 行 × 9 列，`
+              + 'Go 的分支与方法导成空而不是 0');
+          }
+        }
       }
     }
     fs.rmSync(dlDir, { recursive: true, force: true });
