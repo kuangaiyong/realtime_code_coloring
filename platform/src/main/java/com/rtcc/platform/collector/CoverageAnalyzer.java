@@ -140,10 +140,59 @@ public class CoverageAnalyzer {
         } else if ("<clinit>".equals(n)) {
             n = "static {}";
         }
-        String desc = mc.getDesc();
-        int close = desc.indexOf(')');
-        return close > 0 ? n + desc.substring(0, close + 1) : n;
+        return n + params(mc.getDesc());
     }
+
+    /**
+     * 把 JVM 方法描述符的参数段渲染成人读的类型名：
+     * {@code (Ljava/lang/String;J)V} → {@code (String, long)}。
+     *
+     * 自己转而不是加 org.jacoco.report 依赖：那个包能渲染，但本项目面向内网、
+     * 对「离线可构建」是有立场的，不为一个显示名多拉一个 jar。
+     * 认不出来的描述符原样保留 —— 显示得难看好过显示得不对。
+     */
+    private String params(String desc) {
+        int close = desc == null ? -1 : desc.indexOf(')');
+        if (desc == null || !desc.startsWith("(") || close < 0) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder("(");
+        int i = 1;
+        while (i < close) {
+            int arr = 0;
+            while (i < close && desc.charAt(i) == '[') {
+                arr++;
+                i++;
+            }
+            String t;
+            char c = desc.charAt(i);
+            if (c == 'L') {
+                int semi = desc.indexOf(';', i);
+                if (semi < 0 || semi > close) {
+                    return desc.substring(0, close + 1); // 描述符不合法，原样给出
+                }
+                String cls = desc.substring(i + 1, semi);
+                int slash = cls.lastIndexOf('/');
+                t = (slash < 0 ? cls : cls.substring(slash + 1)).replace('$', '.');
+                i = semi + 1;
+            } else {
+                t = PRIMITIVES.get(c);
+                if (t == null) {
+                    return desc.substring(0, close + 1);
+                }
+                i++;
+            }
+            if (out.length() > 1) {
+                out.append(", ");
+            }
+            out.append(t).append("[]".repeat(arr));
+        }
+        return out.append(')').toString();
+    }
+
+    private static final Map<Character, String> PRIMITIVES = Map.of(
+            'I', "int", 'J', "long", 'Z', "boolean", 'D', "double", 'F', "float",
+            'B', "byte", 'C', "char", 'S', "short", 'V', "void");
 
     /** 返回 null 表示该行不可执行（空行、注释、方法签名、switch 的 case 标签等） */
     private String statusOf(int jacocoStatus) {

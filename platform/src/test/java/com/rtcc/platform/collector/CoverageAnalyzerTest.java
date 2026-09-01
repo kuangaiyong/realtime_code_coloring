@@ -225,4 +225,32 @@ class CoverageAnalyzerTest {
         assertTrue(sample.stream().anyMatch(n -> n.contains("(")),
                 "方法名没带参数段，重载分辨不了：" + sample);
     }
+
+    /**
+     * 参数段要是人读的类型名，不是 JVM 描述符。
+     *
+     * 字节码里 handleCallback 的描述符是 (Ljava/lang/String;Ljava/lang/String;)，
+     * 直接摆进报表没人愿意看。JaCoCo 的 HTML 报告靠 org.jacoco.report 渲染成
+     * handleCallback(String, String)，本项目只依赖 core，所以自己转。
+     */
+    @Test
+    void 参数段渲染成人读的类型名() throws Exception {
+        Map<String, FileCoverage> result = analyzer.analyze(new ExecutionDataStore(), classesDir(), null);
+
+        java.util.List<String> names = result.values().stream()
+                .flatMap(f -> f.methods().stream())
+                .map(FileCoverage.MethodCoverage::name).toList();
+
+        java.util.List<String> raw = names.stream()
+                .filter(n -> n.contains("Ljava/") || n.contains(";"))
+                .distinct().limit(5).toList();
+        assertTrue(raw.isEmpty(), "方法名里还留着 JVM 描述符：" + raw);
+
+        // 具体钉一个：ProbeClient.dump 的签名是 (String, int, boolean, int)
+        java.util.List<String> dump = result.get("com/rtcc/platform/collector/ProbeClient.java")
+                .methods().stream().map(FileCoverage.MethodCoverage::name)
+                .filter(n -> n.startsWith("dump")).toList();
+        assertEquals(java.util.List.of("dump(String, int, boolean, int)"), dump,
+                "dump 的参数段没渲染对");
+    }
 }
