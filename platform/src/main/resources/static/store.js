@@ -22,6 +22,14 @@ export const store = reactive({
    */
   projectId: 'default',
   projectName: '',
+  /**
+   * 当前视图在 hash 里带的路径参数（#/p/<id>/<view>/<这一段>）。
+   *
+   * 由 syncRoute 写、视图自己读。<b>不从 app.js 当 prop 往下传</b>：
+   * &lt;component :is&gt; 是所有视图共用的一处绑定，没声明这个 prop 的视图
+   * 会把它落成根元素上的一个 attr —— 那是道无声的脏，DOM 里才看得见。
+   */
+  routeArg: '',
 
   // ---- 口径 ----
   mode: 'full',
@@ -42,6 +50,12 @@ export const store = reactive({
   banner: null,
 
   // ---- 染色 ----
+  /**
+   * 报表点方法跳过来时要定位的行号，<b>用一次就清</b>。
+   *
+   * 不清的话每 3 秒一次的 WS 推送都会重跑 openFile，人正看着代码就被拽回那一行。
+   */
+  jumpToLine: null,
   current: null,
   file: null,
   /** 上一次的逐行状态，用来让"刚刚变绿"这件事可见 */

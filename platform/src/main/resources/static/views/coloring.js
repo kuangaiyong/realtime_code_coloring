@@ -1,7 +1,7 @@
 import { store, openFile, hasData } from '../store.js';
 import { pctClass } from '../api.js';
 
-const { computed, ref } = Vue;
+const { computed, ref, watch, nextTick } = Vue;
 
 /** CSV 单元格。逗号、引号、换行都必须裹起来，否则一个包名里的逗号就把列错开了 */
 function cell(v) {
@@ -136,7 +136,24 @@ export const Coloring = {
       setTimeout(() => URL.revokeObjectURL(url), 0);
     }
 
-    return { store, all, files, sorted, keyword, emptyHint, ratioText, openFile,
+    /**
+     * 从报表点方法跳过来时，滚到那一行并让它闪一下。
+     *
+     * <b>标记用一次就清</b>：openFile 在每轮 WS 推送后都会重跑，
+     * 若不清，人正看着代码就会每 3 秒被拽回目标行一次 —— 那比不定位还烦。
+     */
+    const hit = ref(0);
+    watch(() => store.file, async () => {
+      const line = store.jumpToLine;
+      if (!line || !store.file || !store.file.found) return;
+      store.jumpToLine = null;
+      hit.value = line;
+      await nextTick();
+      const el = document.querySelector('[data-testid="line-' + line + '"]');
+      if (el) el.scrollIntoView({ block: 'center' });
+    }, { immediate: true });
+
+    return { store, all, files, sorted, keyword, emptyHint, ratioText, openFile, hit,
              pctClass, hasData, CHANGE, metricsOf, exportCsv, incremental };
   },
   template: `
@@ -208,7 +225,7 @@ export const Coloring = {
       <template v-else>
         <div v-for="r in store.file.rows" :key="r.line"
              class="ln"
-             :class="r.inDiff === false ? 'out' : [r.status, { flash: r.justCovered }]"
+             :class="r.inDiff === false ? 'out' : [r.status, { flash: r.justCovered, hit: r.line === hit }]"
              :data-testid="'line-' + r.line" :data-status="r.inDiff === false ? 'OUT' : r.status">
           <span class="no">{{ r.line }}</span><span class="tx">{{ r.text }}</span>
         </div>

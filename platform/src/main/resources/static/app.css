@@ -230,6 +230,34 @@ table.tbl td .el-button { margin-left: 0; }
 table.tbl td .el-button + .el-button { margin-left: 6px; }
 table.tbl td.actions { white-space: nowrap; }
 
+/* ---------------- 覆盖率报表（包 → 源文件 → 方法） ---------------- */
+
+/* 面包屑：钻进去容易，退回来必须同样容易 —— 只靠浏览器后退键的话，
+   人会以为自己被困在最底层了 */
+.crumb { display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 0; }
+.crumb a { color: var(--el-color-primary); cursor: pointer; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.crumb a.on { color: var(--el-text-color-primary); cursor: default; font-weight: 600; }
+.crumb i { color: var(--el-text-color-secondary); font-style: normal; flex: none; }
+
+/* 可钻取的单元格。做成链接色是为了让「这一格点得动」不必靠试 */
+a.drill { color: var(--el-color-primary); cursor: pointer; }
+a.drill:hover { text-decoration: underline; }
+
+/* 一格进度条。数字给精确值，条给「一眼看出谁最差」—— 一屏几十行时，
+   扫条比读数字快得多 */
+.meter { display: inline-block; width: 68px; height: 6px; margin-left: 8px;
+  background: var(--el-fill-color-dark); border-radius: 3px; overflow: hidden;
+  vertical-align: middle; }
+.meter i { display: block; height: 100%; background: var(--el-color-primary); }
+
+/* 「不提供」比一个差数字更弱 —— 它不是差，是没有这个概念 */
+table.tbl td.na { color: var(--el-text-color-secondary); opacity: .6; }
+
+/* 从报表点方法跳过来时，目标行要能一眼找到。用左边框而不是背景色：
+   背景色会与四态染色打架，而那四种颜色是这一屏的主信息 */
+.ln.hit { border-left-color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
+
 .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px; border: 1px solid; }
 .tag.ok { color: var(--el-color-success); border-color: var(--el-color-success); background: var(--el-color-success-light-9); }
 .tag.err { color: var(--el-color-danger); border-color: var(--el-color-danger); background: var(--el-color-danger-light-9); }

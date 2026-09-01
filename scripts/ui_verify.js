@@ -485,6 +485,69 @@ async function baselineOptions(page, testid) {
     }
     fs.rmSync(dlDir, { recursive: true, force: true });
 
+    // ---------- 4d-3 · 覆盖率报表：包 → 源文件 → 方法 三级钻取 ----------
+    // 这一页存在的理由是「哪个包 / 哪个文件 / 哪个方法欠测」。只断言页面能打开
+    // 证明不了它能用 —— 必须真的钻到底，再从方法跳回源码
+    await page.click('[data-testid="nav-report"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="pkg-row"]'),
+        null, 15000) < 0) die('报表页打不开或没有包');
+
+    const pkgRows = await page.evaluate(countOf, '[data-testid="pkg-row"]');
+    const wantPkgs = new Set(sum.files.map(f => f.packageName || '(默认包)')).size;
+    if (pkgRows !== wantPkgs) fail(`报表一级列出 ${pkgRows} 个包，按 API 的 packageName 应为 ${wantPkgs} 个`);
+    else pass(`报表一级：${pkgRows} 个包，与 API 的 packageName 一致`);
+
+    // 二级：点包名进文件列表，并且 hash 要带上包名 —— 深链接是这一页可分享的前提。
+    // 原先路由拿整串与 ROUTES 全等比较，任何多级地址都会被静默判非法、跳回染色页
+    await page.click('[data-testid="pkg-row"][data-pkg="com.shop.order.service"] [data-testid="pkg-name"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="file-row"]'), null, 8000) < 0) {
+      fail('点包名没进到源文件一层');
+    } else {
+      const h = await page.evaluate(() => location.hash);
+      if (!h.includes('report/com.shop.order.service')) {
+        fail(`钻进包之后 hash 是 ${h}，包名没落进地址 —— 刷新或转发链接就回不到这一层`);
+      } else {
+        pass(`报表二级：点包名进到源文件，且地址带上了包名（${h}）`);
+      }
+    }
+
+    // 三级：方法明细。名字必须是人读的，行号必须有 —— 那是跳源码唯一的落点
+    await page.click('[data-testid="file-row"] [data-testid="file-name"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="method-row"]'), null, 15000) < 0) {
+      fail('点源文件没进到方法一层');
+    } else {
+      const names = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="method-row"]')].map(r => r.dataset.name));
+      const bad = names.filter(n => n.startsWith('<') || n.includes('Ljava/'));
+      if (bad.length) {
+        fail(`方法名还是字节码的原始形态：${bad.slice(0, 3).join('、')}`);
+      } else if (!names.some(n => n === 'refund(String, long)')) {
+        fail(`方法名没渲染成人读的签名，实际：${names.slice(0, 4).join('、')}`);
+      } else {
+        pass(`报表三级：${names.length} 个方法，名字已渲染成人读签名（如 refund(String, long)）`);
+      }
+    }
+
+    // 点方法跳回染色页并定位。定位标记必须只用一次 —— 挂在数据 watch 上不清的话，
+    // 每 3 秒一次的推送会把正在看代码的人反复拽回目标行
+    const jumpLine = await page.evaluate(() => {
+      const r = [...document.querySelectorAll('[data-testid="method-row"]')]
+        .find(x => x.dataset.name === 'refund(String, long)');
+      r.querySelector('[data-testid="method-name"]').click();
+      return r.innerText.match(/L(\d+)/)[1];
+    });
+    if (await waitFor(page, () => !!document.querySelector('.ln.hit'), null, 15000) < 0) {
+      fail('点方法后染色页没有定位到那一行');
+    } else {
+      const at = await page.evaluate(() => document.querySelector('.ln.hit').innerText.trim().split(/\s/)[0]);
+      if (at !== jumpLine) fail(`点的是 L${jumpLine}，染色页却定位到 ${at}`);
+      else pass(`点方法跳回染色页并定位到 L${at}`);
+      await sleep(4000);
+      const still = await page.evaluate(countOf, '.ln.hit');
+      if (still !== 1) fail(`等了一轮推送后定位标记有 ${still} 处，应恒为 1 处（标记没清或被重复加）`);
+      else pass('定位标记在一轮推送后仍只有一处，没有把人反复拽回目标行');
+    }
+
     // ---------- 4e · 信息架构：口径栏只在会显示数字的视图上 ----------
     // 挂在每个视图上是原先的做法，但在「项目设置」「采集事件」「服务接入」这三页，
     // 全量 / 增量口径不改变页面上的任何东西，摆着只会让人以为它对这一页有影响
@@ -498,7 +561,7 @@ async function baselineOptions(page, testid) {
     };
     const barOn = [];
     const barOff = [];
-    for (const v of ['coloring', 'overview', 'gate']) {
+    for (const v of ['coloring', 'overview', 'gate', 'report']) {
       if (await scopedBar(v)) barOn.push(v); else barOff.push(v + '(缺)');
     }
     for (const v of ['onboard', 'events', 'settings']) {

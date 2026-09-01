@@ -8,6 +8,7 @@ import { Wizard } from './views/wizard.js';
 import { Settings } from './views/settings.js';
 import { Events } from './views/events.js';
 import { Gate } from './views/gate.js';
+import { Report } from './views/report.js';
 
 const { createApp, computed, ref, watchEffect } = Vue;
 
@@ -22,6 +23,7 @@ const ROUTES = [
   { path: 'coloring', name: '代码染色', icon: 'Document', comp: Coloring, scoped: true },
   { path: 'overview', name: '总览看板', icon: 'DataLine', comp: Overview, scoped: true },
   { path: 'gate', name: '覆盖门禁', icon: 'CircleCheck', comp: Gate, scoped: true },
+  { path: 'report', name: '覆盖率报表', icon: 'Histogram', comp: Report, scoped: true },
   { path: 'onboard', name: '服务接入', icon: 'Connection', comp: Onboard },
   { path: 'events', name: '采集事件', icon: 'Warning', comp: Events },
   { path: 'settings', name: '项目设置', icon: 'Setting', comp: Settings }
@@ -56,9 +58,18 @@ const App = {
       }
       isNew.value = false;
       const id = decodeURIComponent(m[1]);
-      const view = m[2] || DEFAULT_ROUTE;
+      // hash 的第三段起是<b>视图自己的参数</b>（如报表钻到哪个包 / 哪个文件）。
+      // 原先这里拿整串去与 ROUTES 全等比较，于是 #/p/id/report/com.foo 这种多级地址
+      // 会被静默判成非法、无声跳回染色页 —— 不报错，只是「点了没反应」
+      const rest = m[2] || '';
+      const slash = rest.indexOf('/');
+      const view = (slash < 0 ? rest : rest.substring(0, slash)) || DEFAULT_ROUTE;
+      const known = ROUTES.some(r => r.path === view);
       inProject.value = true;
-      route.value = ROUTES.some(r => r.path === view) ? view : DEFAULT_ROUTE;
+      route.value = known ? view : DEFAULT_ROUTE;
+      // 视图不认识时参数也要清掉：留着的话，回落到染色页后那个参数还挂在 store 上，
+      // 下次进报表会莫名其妙停在一个不相干的包上
+      store.routeArg = known && slash >= 0 ? rest.substring(slash + 1) : '';
       // 换项目要整批换数据，不能只改 id：见 store.setProject
       if (loadedProject !== id) {
         loadedProject = id;
