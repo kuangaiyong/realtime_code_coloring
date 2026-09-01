@@ -338,53 +338,27 @@ async function baselineOptions(page, testid) {
     pass('侧边栏可切到总览看板');
 
     const statCount = await page.evaluate(countOf, '.stats .stat');
-    if (statCount !== 6) fail(`看板统计卡 ${statCount} 张，应为 6 张`);
-    else pass('看板 6 张统计卡齐备');
+    if (statCount !== 4) fail(`看板水位卡 ${statCount} 张，应为 4 张（行 / 分支 / 方法 / 源文件）`);
+    else pass('看板 4 张水位卡齐备');
 
-    const instRows = await page.evaluate(countOf, '[data-testid="inst-row"]');
-    if (instRows !== sum.instances.length) {
-      fail(`实例表 ${instRows} 行，API 给了 ${sum.instances.length} 个实例`);
+    // 分支必须按语言分行，且拿不到分支的语言要明确写「不提供」。
+    // 这是 P1 那套 null 语义在页面上唯一能被人看见的地方 —— 补 0 的话，
+    // 读的人会以为 Go / Rust 的分支一个都没测，而它们压根没有这个指标
+    const branchText = (await page.evaluate(textOf, '[data-testid="stat-branches"]')).replace(/\s+/g, ' ');
+    if (!/Java/.test(branchText) || !/C\+\+/.test(branchText)) {
+      fail(`分支水位没有按语言分行：「${branchText}」`);
+    } else if (!/不提供/.test(branchText)) {
+      fail(`分支水位没有点明哪些语言不提供分支：「${branchText}」`);
     } else {
-      pass(`实例表 ${instRows} 行，与 API 一致`);
+      pass(`分支水位按语言分行，并写明了不提供的语言：${branchText}`);
     }
 
-    const rankRows = await page.evaluate(countOf, '[data-testid="rank-table"] tbody tr');
-    if (rankRows !== sum.files.length) fail(`排行表 ${rankRows} 行，应为 ${sum.files.length} 行`);
-    else pass(`排行表 ${rankRows} 行，与文件数一致`);
-
-    // 排行的用处是「找到该补的文件、然后去看它」。路由改成两级之后，只写 #/coloring
-    // 匹配不上 #/p/<id>/<view>，点文件名会退回项目列表 —— 只数行数抓不到这种坏法
-    await page.evaluate(() => document.querySelectorAll('.rank-name')[0].click());
-    const jumped = await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]'),
-      null, 8000);
-    if (jumped < 0) {
-      fail(`点排行里的文件名没跳进染色视图（hash=${await page.evaluate(() => location.hash)}）`);
+    // 方法与分支不同，是跨语言汇总的 ——「一个函数」这个口径三种语言大致一致
+    const methodText = (await page.evaluate(textOf, '[data-testid="stat-methods"]')).trim();
+    if (!/^\d+ \/ \d+$/.test(methodText)) {
+      fail(`方法水位不是「已覆盖 / 总数」的形式：「${methodText}」`);
     } else {
-      pass('点排行里的文件名跳进了染色视图');
-    }
-    await page.click('[data-testid="nav-overview"]');
-    await waitFor(page, () => !!document.querySelector('[data-testid="view-overview"]'), null, 8000);
-
-    // 总览上的门禁只留一句结论 + 入口，详情在独立视图。同一件事在两处各写一遍，
-    // 改起来必然有一处跟不上
-    if (!(await page.evaluate(countOf, '[data-testid="btn-gate-detail"]'))) {
-      fail('总览的门禁卡没有「查看详情」入口');
-    } else if (await page.evaluate(countOf, '.gate-ci')) {
-      fail('总览页仍在重复门禁的 CI 接入说明 —— 它已经搬到「覆盖门禁」视图');
-    } else {
-      pass('总览的门禁卡只留结论，详情由「查看详情」入口带过去');
-    }
-
-    // 门禁三态：通过 / 不通过 / 无法判定。渲染成别的字样就说明分支没接上
-    const verdict = await page.evaluate(textOf, '[data-testid="gate-verdict"]');
-    if (!['通过', '不通过', '无法判定'].includes(verdict)) {
-      fail(`门禁结论渲染成「${verdict}」，不在三态之内`);
-    } else {
-      const gateResp = await fetch(`${PLATFORM}/api/coverage/gate?mode=full`);
-      const gate = await gateResp.json();
-      const want = !gateResp.ok ? '无法判定' : (gate.passed ? '通过' : '不通过');
-      if (verdict !== want) fail(`页面写「${verdict}」，接口给的是「${want}」—— 这是「能不能合并」的结论，不能对不上`);
-      else pass(`门禁结论与接口一致：${verdict}`);
+      pass(`方法水位跨语言汇总：${methodText}`);
     }
 
     // 这句免责一旦丢了，一段会话内的爬升会被读成「这个项目的长期趋势」
@@ -406,30 +380,6 @@ async function baselineOptions(page, testid) {
     if (!buildTrend.svg && !buildTrend.text) fail('跨构建曲线既没画图也没给原因，是一块静默的空白');
     else pass(`跨构建曲线有交代：${buildTrend.svg ? '已画出曲线' : '给出了原因「' + buildTrend.text.slice(0, 60) + '」'}`);
     await page.click('[data-testid="trend-session"]');
-
-    // 各实例覆盖是按需拉取的，拉完表格要真的多出三列
-    const colsBefore = await page.evaluate(countOf, '[data-testid="inst-table"] thead th');
-    await page.click('[data-testid="btn-per-inst"]');
-    const grew = await waitFor(page, (n) =>
-      document.querySelectorAll('[data-testid="inst-table"] thead th').length === n + 3,
-      colsBefore, 120000);
-    if (grew < 0) fail('点了「加载各实例覆盖」但表格没有多出三列');
-    else pass(`各实例覆盖已加载，表格由 ${colsBefore} 列增至 ${colsBefore + 3} 列（${(grew / 1000).toFixed(1)}s）`);
-
-    // ---------- 4b · 门禁结论与覆盖率数字同卡 ----------
-    // 看的人要的是「这个数字够不够」。这句话与下面那张门禁卡必须是同一个结论，
-    // 一张卡说达标、另一张说不通过的话，没人知道该信哪个
-    const gateResp2 = await fetch(`${PLATFORM}/api/coverage/gate?mode=full`);
-    const gate2 = await gateResp2.json();
-    const statGate = await page.evaluate(textOf, '[data-testid="stat-gate"]');
-    if (!gateResp2.ok) {
-      if (statGate !== '门禁判不了') fail(`接口拒判，覆盖率卡上却写着「${statGate}」`);
-      else pass('门禁判不了时，覆盖率卡上明确写「门禁判不了」');
-    } else {
-      const want = '门槛 ' + gate2.threshold + '% ' + (gate2.passed ? '已达标' : '未达标');
-      if (statGate !== want) fail(`覆盖率卡上写「${statGate}」，接口给的是「${want}」`);
-      else pass(`门禁结论与覆盖率数字同卡且一致：${statGate}`);
-    }
 
     // ---------- 4c · 趋势横轴要有时间 ----------
     // 只有 commit 短 sha 的话，看不出「这是上周的还是今天的」，而跨构建趋势
@@ -459,7 +409,37 @@ async function baselineOptions(page, testid) {
     }
     await page.click('[data-testid="trend-session"]');
 
-    // ---------- 4d · 导出 CSV ----------
+    // ---------- 4d · 染色页的文件列表：三组数与导出 ----------
+    // 排行表撤掉之后，「一眼比较多个文件」这件事由文件列表承担，所以它得带上三组数。
+    // 导出按钮也跟着搬了过来 —— 它导的就是这张列表
+    await page.click('[data-testid="nav-coloring"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]'),
+        null, 8000) < 0) die('切不到代码染色视图');
+
+    const listRows2 = await page.evaluate(countOf, '[data-testid="file-item"]');
+    if (listRows2 !== sum.files.length) {
+      fail(`文件列表 ${listRows2} 行，API 给了 ${sum.files.length} 个文件`);
+    } else {
+      pass(`文件列表 ${listRows2} 行，与 API 一致（原先这条由总览的排行表守着）`);
+    }
+
+    // Go 拿不到分支与方法，页面上必须写「不提供」而不是留空或补 0 ——
+    // 补 0 会被读成「一个都没测」，而 Go 的 coverage profile 里压根没有这两个概念
+    const goMetrics = await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('[data-testid="file-item"]')]
+        .find(e => (e.getAttribute('data-path') || '').endsWith('.go'));
+      const m = btn && btn.querySelector('[data-testid="file-metrics"]');
+      return m ? m.innerText.replace(/\s+/g, ' ') : null;
+    });
+    if (!goMetrics) {
+      fail('文件列表里找不到 Go 文件的三组数');
+    } else if ((goMetrics.match(/不提供/g) || []).length !== 2) {
+      fail(`Go 文件应有两项「不提供」（分支与方法），实际：${goMetrics}`);
+    } else {
+      pass(`Go 文件的分支与方法明确标为不提供，不是 0：${goMetrics}`);
+    }
+
+    // ---------- 4d-2 · 导出 CSV ----------
     // 真的下载下来读一遍。只断言「按钮点得动」的话，导出一份空表或者串列的表
     // 同样能通过，而这份表是要贴进周报的
     const dlDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rtcc-csv-'));
@@ -832,6 +812,20 @@ async function baselineOptions(page, testid) {
     const obRows = await page.evaluate(countOf, '[data-testid="ob-check-row"]');
     if (obRows !== sum.instances.length) fail(`接入自检表 ${obRows} 行，应为 ${sum.instances.length} 行`);
     else pass(`接入自检表 ${obRows} 行，每个实例都点了名`);
+
+    // 各实例覆盖是按需拉取的，拉完表格要真的多出三列。
+    // 这三列原先在总览的「被测实例」表上，而那张表与本表的前四列完全重复 ——
+    // 同一批实例的状态散在两个视图里，想知道「6301 现在怎么了」得两边都看
+    const colsBefore = await page.evaluate(countOf, '[data-testid="ob-check-table"] thead th');
+    await page.click('[data-testid="btn-per-inst"]');
+    const grew = await waitFor(page, (n) =>
+      document.querySelectorAll('[data-testid="ob-check-table"] thead th').length === n + 3,
+      colsBefore, 120000);
+    if (grew < 0) {
+      fail('点了「加载各实例覆盖」但自检表没有多出三列');
+    } else {
+      pass(`各实例覆盖已加载，自检表由 ${colsBefore} 列增至 ${colsBefore + 3} 列（${(grew / 1000).toFixed(1)}s）`);
+    }
 
     // ---------- 6 · 实时染色链路（本脚本的核心断言） ----------
     await page.click('[data-testid="nav-coloring"]');
