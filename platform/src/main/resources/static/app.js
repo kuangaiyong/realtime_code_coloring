@@ -7,8 +7,8 @@ import { Projects } from './views/projects.js';
 import { Wizard } from './views/wizard.js';
 import { Settings } from './views/settings.js';
 import { Events } from './views/events.js';
-import { Scenarios } from './views/scenarios.js';
 import { Gate } from './views/gate.js';
+import { Report } from './views/report.js';
 
 const { createApp, computed, ref, watchEffect } = Vue;
 
@@ -18,12 +18,12 @@ const { createApp, computed, ref, watchEffect } = Vue;
  */
 const ROUTES = [
   // 顺序按「先看什么」排：代码染色是这个平台的核心价值，总览是同一份数据的汇总，
-  // 场景与门禁是基于它们的两种判断，最后才是接入 / 诊断 / 配置这些不常用的。
-  // scoped 标记「这一页会显示覆盖数字」——口径栏只在它们上面出现
+  // 门禁是基于它们的判断，最后才是接入 / 诊断 / 配置这些不常用的。
+  // scoped 标记「这一页会显示覆盖数字」——全量/增量口径与清零只在它们上面出现
   { path: 'coloring', name: '代码染色', icon: 'Document', comp: Coloring, scoped: true },
   { path: 'overview', name: '总览看板', icon: 'DataLine', comp: Overview, scoped: true },
-  { path: 'scenarios', name: '测试场景', icon: 'VideoCamera', comp: Scenarios, scoped: true },
   { path: 'gate', name: '覆盖门禁', icon: 'CircleCheck', comp: Gate, scoped: true },
+  { path: 'report', name: '覆盖率报表', icon: 'Histogram', comp: Report, scoped: true },
   { path: 'onboard', name: '服务接入', icon: 'Connection', comp: Onboard },
   { path: 'events', name: '采集事件', icon: 'Warning', comp: Events },
   { path: 'settings', name: '项目设置', icon: 'Setting', comp: Settings }
@@ -58,9 +58,18 @@ const App = {
       }
       isNew.value = false;
       const id = decodeURIComponent(m[1]);
-      const view = m[2] || DEFAULT_ROUTE;
+      // hash 的第三段起是<b>视图自己的参数</b>（如报表钻到哪个包 / 哪个文件）。
+      // 原先这里拿整串去与 ROUTES 全等比较，于是 #/p/id/report/com.foo 这种多级地址
+      // 会被静默判成非法、无声跳回染色页 —— 不报错，只是「点了没反应」
+      const rest = m[2] || '';
+      const slash = rest.indexOf('/');
+      const view = (slash < 0 ? rest : rest.substring(0, slash)) || DEFAULT_ROUTE;
+      const known = ROUTES.some(r => r.path === view);
       inProject.value = true;
-      route.value = ROUTES.some(r => r.path === view) ? view : DEFAULT_ROUTE;
+      route.value = known ? view : DEFAULT_ROUTE;
+      // 视图不认识时参数也要清掉：留着的话，回落到染色页后那个参数还挂在 store 上，
+      // 下次进报表会莫名其妙停在一个不相干的包上
+      store.routeArg = known && slash >= 0 ? rest.substring(slash + 1) : '';
       // 换项目要整批换数据，不能只改 id：见 store.setProject
       if (loadedProject !== id) {
         loadedProject = id;
@@ -91,10 +100,10 @@ const App = {
       ? currentRoute.value.comp
       : (isNew.value ? Wizard : Projects));
     /**
-     * 口径栏（全量/增量、数据源）只在<b>会显示覆盖数字</b>的视图上出现。
+     * 口径栏（全量 / 增量、基线、采集与清零）只在<b>会显示覆盖数字</b>的视图上出现。
      *
      * 原先它挂在每个视图上，但在「项目设置」「采集事件」「服务接入」这三页，
-     * 「数据源：某个场景快照」根本无从谈起 —— 摆着只会让人以为它对这一页有影响。
+     * 换口径不改变页面上的任何东西 —— 摆着只会让人以为它对这一页有影响。
      */
     const scoped = computed(() => inProject.value && currentRoute.value.scoped === true);
 
@@ -139,23 +148,15 @@ const App = {
     const overall = computed(() => {
       const d = store.summary;
       if (!hasData(d)) return '—';
-      // 场景视图看的是已定格的归档数据，必须标出来，否则会被当成实时累计覆盖
-      const scope = d.scenarioId ? '场景 ' + d.scenarioId + ' · ' : '';
       return d.mode === 'incremental'
-        ? scope + '增量行覆盖率 ' + d.overallRatio + '% · 基线 ' + d.baselineCommit.substring(0, 8)
+        ? '增量行覆盖率 ' + d.overallRatio + '% · 基线 ' + d.baselineCommit.substring(0, 8)
           + ' → 产物 ' + d.buildCommit.substring(0, 8)
-        : scope + '整体行覆盖率 ' + d.overallRatio + '%';
+        : '整体行覆盖率 ' + d.overallRatio + '%';
     });
 
-    // ---------- 场景 ----------
-    // 录制操作已经搬进「测试场景」视图；这里只留「正在录制」这个提示，
-    // 挂在顶栏上（不是下面那条口径栏），见模板里的注释
+    // 场景只能经 API 开始 / 结束（页面上不再有入口），但进行中这件事必须显示出来 ——
+    // 它会让清零和保存配置被服务端回 409，不显示的话那两处看起来就是「点了没反应」
     const running = computed(() => !!store.activeScenario);
-
-    async function onSelectScenario(v) {
-      store.viewScenario = v;
-      await reload();
-    }
 
     async function onReset() {
       try {
@@ -184,7 +185,7 @@ const App = {
       ROUTES, route, inProject, isNew, currentView, currentRoute, scoped,
       navigate, toList, toNew, openSettings, openProject,
       store, probe, overall, dark,
-      running, onSelectScenario,
+      running,
       setMode, onCollect, onReset
     };
   },
@@ -222,9 +223,9 @@ const App = {
       <template v-if="inProject">
       <span class="pill" :class="probe.cls" data-testid="probe-pill"><i></i>{{ probe.text }}</span>
       <span class="overall" data-testid="overall">{{ overall }}</span>
-      <!-- 「正在录制」放顶栏而不是下面那条口径栏：录制期间清零会被拒、改配置会被拒，
-           而那两件事分别在别的页面上做。挂在口径栏里的话，它恰好在「项目设置」
-           这一页不显示 —— 正是最需要它的那一页 -->
+      <!-- 「正在录制」跟着 inProject 而不是 scoped：录制期间清零会被拒、改配置会被拒，
+           而后者是在「项目设置」页上做的 —— 只挂在显示覆盖数字的那几页，
+           它就恰好在最需要它的那一页不显示 -->
       <span v-if="running" class="pill err rec" data-testid="recording"><i></i>场景 {{ store.activeScenario }} 进行中</span>
       </template>
       <div class="spacer"></div>
@@ -251,24 +252,6 @@ const App = {
         <el-icon><component :is="dark ? 'Sunny' : 'Moon'" /></el-icon>
       </el-button>
     </header>
-
-    <!-- 这一条只剩「数据源」：它是口径，决定下面每个数字的含义，必须常驻可见。
-         开始 / 结束场景是操作，已经搬进「测试场景」视图 —— 一次性动作没有常驻的理由，
-         而且摆在设置页上会让人以为能在那儿开场景 -->
-    <div v-if="scoped" class="scenariobar">
-      <label>数据源</label>
-      <!-- 空串在 el-select 眼里就是「没选」，会落回 placeholder。所以 placeholder 必须
-           写成实时口径本身，否则这里显示的是组件默认的英文 Select -->
-      <el-select :model-value="store.viewScenario" size="small" style="width:290px"
-                 placeholder="实时（累计覆盖）" data-testid="scenario-view" @change="onSelectScenario">
-        <el-option value="" label="实时（累计覆盖）" />
-        <el-option v-for="s in store.scenarios" :key="s.scenarioId" :value="s.scenarioId"
-                   :label="'场景 ' + s.scenarioId + '（' + s.files + ' 文件 / ' + s.overallRatio + '%）'" />
-      </el-select>
-      <span v-if="store.viewScenario" class="mono" style="color:var(--el-text-color-secondary)">
-        已定格的独占覆盖，不是实时累计
-      </span>
-    </div>
 
     <div class="banner" data-testid="banner">
       <div v-if="store.banner" :class="store.banner.level" style="white-space:pre-line">{{ store.banner.text }}</div>

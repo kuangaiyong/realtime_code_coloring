@@ -108,21 +108,6 @@ async function baselineOptions(page, testid) {
   return out;
 }
 
-/**
- * 等按钮真的能点了再点。Element Plus 的 el-button 在 :loading 期间渲染成 disabled 的
- * 原生 button，点击会被静默吞掉 —— 后面等出来的失败与被点的那件事毫无关系，
- * 每次都要先花时间确认「不是这次改动引入的」。
- */
-async function clickWhenEnabled(page, testid, timeout = 60000) {
-  const ok = await waitFor(page, (t) => {
-    const e = document.querySelector(`[data-testid="${t}"]`);
-    const b = e && (e.tagName === 'BUTTON' ? e : e.querySelector('button'));
-    return !!b && !b.disabled;
-  }, testid, timeout);
-  if (ok < 0) die(`按钮 ${testid} 等了 ${timeout}ms 仍是禁用的，点不下去`);
-  await page.click(`[data-testid="${testid}"]`);
-}
-
 (async () => {
   console.log('='.repeat(70));
   console.log('前端验收（真实 Chrome）');
@@ -239,12 +224,11 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
     else pass(`进入项目并加载出数据（${entered}ms，地址 ${entryHash}）`);
 
     for (const t of ['nav-coloring', 'nav-overview', 'nav-onboard', 'probe-pill', 'overall',
-                     'mode-full', 'mode-incremental', 'btn-collect', 'btn-reset',
-                     'scenario-view', 'banner']) {
+                     'mode-full', 'mode-incremental', 'btn-collect', 'btn-reset', 'banner']) {
       const n = await page.evaluate(countOf, `[data-testid="${t}"]`);
       if (n !== 1) fail(`骨架钩子 ${t} 出现 ${n} 次，应为 1 次`);
     }
-    pass('侧边栏、顶栏、场景条的骨架钩子齐备');
+    pass('侧边栏、顶栏、口径栏的骨架钩子齐备');
 
     // ---------- 2 · 顶栏显示的数字与 API 一致 ----------
     const sum = await (await fetch(`${PLATFORM}/api/coverage/summary`)).json();
@@ -354,53 +338,27 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
     pass('侧边栏可切到总览看板');
 
     const statCount = await page.evaluate(countOf, '.stats .stat');
-    if (statCount !== 6) fail(`看板统计卡 ${statCount} 张，应为 6 张`);
-    else pass('看板 6 张统计卡齐备');
+    if (statCount !== 4) fail(`看板水位卡 ${statCount} 张，应为 4 张（行 / 分支 / 方法 / 源文件）`);
+    else pass('看板 4 张水位卡齐备');
 
-    const instRows = await page.evaluate(countOf, '[data-testid="inst-row"]');
-    if (instRows !== sum.instances.length) {
-      fail(`实例表 ${instRows} 行，API 给了 ${sum.instances.length} 个实例`);
+    // 分支必须按语言分行，且拿不到分支的语言要明确写「不提供」。
+    // 这是 P1 那套 null 语义在页面上唯一能被人看见的地方 —— 补 0 的话，
+    // 读的人会以为 Go / Rust 的分支一个都没测，而它们压根没有这个指标
+    const branchText = (await page.evaluate(textOf, '[data-testid="stat-branches"]')).replace(/\s+/g, ' ');
+    if (!/Java/.test(branchText) || !/C\+\+/.test(branchText)) {
+      fail(`分支水位没有按语言分行：「${branchText}」`);
+    } else if (!/不提供/.test(branchText)) {
+      fail(`分支水位没有点明哪些语言不提供分支：「${branchText}」`);
     } else {
-      pass(`实例表 ${instRows} 行，与 API 一致`);
+      pass(`分支水位按语言分行，并写明了不提供的语言：${branchText}`);
     }
 
-    const rankRows = await page.evaluate(countOf, '[data-testid="rank-table"] tbody tr');
-    if (rankRows !== sum.files.length) fail(`排行表 ${rankRows} 行，应为 ${sum.files.length} 行`);
-    else pass(`排行表 ${rankRows} 行，与文件数一致`);
-
-    // 排行的用处是「找到该补的文件、然后去看它」。路由改成两级之后，只写 #/coloring
-    // 匹配不上 #/p/<id>/<view>，点文件名会退回项目列表 —— 只数行数抓不到这种坏法
-    await page.evaluate(() => document.querySelectorAll('.rank-name')[0].click());
-    const jumped = await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]'),
-      null, 8000);
-    if (jumped < 0) {
-      fail(`点排行里的文件名没跳进染色视图（hash=${await page.evaluate(() => location.hash)}）`);
+    // 方法与分支不同，是跨语言汇总的 ——「一个函数」这个口径三种语言大致一致
+    const methodText = (await page.evaluate(textOf, '[data-testid="stat-methods"]')).trim();
+    if (!/^\d+ \/ \d+$/.test(methodText)) {
+      fail(`方法水位不是「已覆盖 / 总数」的形式：「${methodText}」`);
     } else {
-      pass('点排行里的文件名跳进了染色视图');
-    }
-    await page.click('[data-testid="nav-overview"]');
-    await waitFor(page, () => !!document.querySelector('[data-testid="view-overview"]'), null, 8000);
-
-    // 总览上的门禁只留一句结论 + 入口，详情在独立视图。同一件事在两处各写一遍，
-    // 改起来必然有一处跟不上
-    if (!(await page.evaluate(countOf, '[data-testid="btn-gate-detail"]'))) {
-      fail('总览的门禁卡没有「查看详情」入口');
-    } else if (await page.evaluate(countOf, '.gate-ci')) {
-      fail('总览页仍在重复门禁的 CI 接入说明 —— 它已经搬到「覆盖门禁」视图');
-    } else {
-      pass('总览的门禁卡只留结论，详情由「查看详情」入口带过去');
-    }
-
-    // 门禁三态：通过 / 不通过 / 无法判定。渲染成别的字样就说明分支没接上
-    const verdict = await page.evaluate(textOf, '[data-testid="gate-verdict"]');
-    if (!['通过', '不通过', '无法判定'].includes(verdict)) {
-      fail(`门禁结论渲染成「${verdict}」，不在三态之内`);
-    } else {
-      const gateResp = await fetch(`${PLATFORM}/api/coverage/gate?mode=full`);
-      const gate = await gateResp.json();
-      const want = !gateResp.ok ? '无法判定' : (gate.passed ? '通过' : '不通过');
-      if (verdict !== want) fail(`页面写「${verdict}」，接口给的是「${want}」—— 这是「能不能合并」的结论，不能对不上`);
-      else pass(`门禁结论与接口一致：${verdict}`);
+      pass(`方法水位跨语言汇总：${methodText}`);
     }
 
     // 这句免责一旦丢了，一段会话内的爬升会被读成「这个项目的长期趋势」
@@ -422,30 +380,6 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
     if (!buildTrend.svg && !buildTrend.text) fail('跨构建曲线既没画图也没给原因，是一块静默的空白');
     else pass(`跨构建曲线有交代：${buildTrend.svg ? '已画出曲线' : '给出了原因「' + buildTrend.text.slice(0, 60) + '」'}`);
     await page.click('[data-testid="trend-session"]');
-
-    // 各实例覆盖是按需拉取的，拉完表格要真的多出三列
-    const colsBefore = await page.evaluate(countOf, '[data-testid="inst-table"] thead th');
-    await page.click('[data-testid="btn-per-inst"]');
-    const grew = await waitFor(page, (n) =>
-      document.querySelectorAll('[data-testid="inst-table"] thead th').length === n + 3,
-      colsBefore, 120000);
-    if (grew < 0) fail('点了「加载各实例覆盖」但表格没有多出三列');
-    else pass(`各实例覆盖已加载，表格由 ${colsBefore} 列增至 ${colsBefore + 3} 列（${(grew / 1000).toFixed(1)}s）`);
-
-    // ---------- 4b · 门禁结论与覆盖率数字同卡 ----------
-    // 看的人要的是「这个数字够不够」。这句话与下面那张门禁卡必须是同一个结论，
-    // 一张卡说达标、另一张说不通过的话，没人知道该信哪个
-    const gateResp2 = await fetch(`${PLATFORM}/api/coverage/gate?mode=full`);
-    const gate2 = await gateResp2.json();
-    const statGate = await page.evaluate(textOf, '[data-testid="stat-gate"]');
-    if (!gateResp2.ok) {
-      if (statGate !== '门禁判不了') fail(`接口拒判，覆盖率卡上却写着「${statGate}」`);
-      else pass('门禁判不了时，覆盖率卡上明确写「门禁判不了」');
-    } else {
-      const want = '门槛 ' + gate2.threshold + '% ' + (gate2.passed ? '已达标' : '未达标');
-      if (statGate !== want) fail(`覆盖率卡上写「${statGate}」，接口给的是「${want}」`);
-      else pass(`门禁结论与覆盖率数字同卡且一致：${statGate}`);
-    }
 
     // ---------- 4c · 趋势横轴要有时间 ----------
     // 只有 commit 短 sha 的话，看不出「这是上周的还是今天的」，而跨构建趋势
@@ -475,7 +409,43 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
     }
     await page.click('[data-testid="trend-session"]');
 
-    // ---------- 4d · 导出 CSV ----------
+    // ---------- 4d · 染色页的文件列表：三组数与导出 ----------
+    // 排行表撤掉之后，「一眼比较多个文件」这件事由文件列表承担，所以它得带上三组数。
+    // 导出按钮也跟着搬了过来 —— 它导的就是这张列表
+    await page.click('[data-testid="nav-coloring"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]'),
+        null, 8000) < 0) die('切不到代码染色视图');
+
+    const listRows2 = await page.evaluate(countOf, '[data-testid="file-item"]');
+    if (listRows2 !== sum.files.length) {
+      fail(`文件列表 ${listRows2} 行，API 给了 ${sum.files.length} 个文件`);
+    } else {
+      pass(`文件列表 ${listRows2} 行，与 API 一致（原先这条由总览的排行表守着）`);
+    }
+
+    // Go 拿不到分支，页面上必须写「不提供」而不是留空或补 0 ——
+    // 补 0 会被读成「一个都没测」，而 Go 的 coverage profile 里压根没有分支这个概念。
+    // 方法则相反：自 covdata func 接进来之后 Go 是有的，这里必须是个真数字 ——
+    // 「有指标却写不提供」和「没指标却补 0」是同一类错，都在骗读表的人
+    const goMetrics = await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('[data-testid="file-item"]')]
+        .find(e => (e.getAttribute('data-path') || '').endsWith('.go'));
+      const m = btn && btn.querySelector('[data-testid="file-metrics"]');
+      return m ? m.innerText.replace(/\s+/g, ' ') : null;
+    });
+    if (!goMetrics) {
+      fail('文件列表里找不到 Go 文件的三组数');
+    } else if ((goMetrics.match(/不提供/g) || []).length !== 1) {
+      fail(`Go 文件应恰有一项「不提供」（分支），实际：${goMetrics}`);
+    } else if (!/支 不提供/.test(goMetrics)) {
+      fail(`Go 的「不提供」应落在分支那一项上，实际：${goMetrics}`);
+    } else if (!/法 \d+\/\d+/.test(goMetrics)) {
+      fail(`Go 的方法应是个真数字（covdata func 给得出），实际：${goMetrics}`);
+    } else {
+      pass(`Go 文件：分支标为不提供、方法给出真数字，两者都没补 0：${goMetrics}`);
+    }
+
+    // ---------- 4d-2 · 导出 CSV ----------
     // 真的下载下来读一遍。只断言「按钮点得动」的话，导出一份空表或者串列的表
     // 同样能通过，而这份表是要贴进周报的
     const dlDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rtcc-csv-'));
@@ -494,31 +464,141 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
       const lines = text.replace(/^\ufeff/, '').trim().split(/\r?\n/);
       if (lines.length !== sum.files.length + 1) {
         fail(`CSV 有 ${lines.length} 行，应为表头 1 行 + ${sum.files.length} 个文件`);
-      } else if (!/口径|全量|增量|场景/.test(csvFile)) {
+      } else if (!/口径|全量|增量/.test(csvFile)) {
         // 口径不写进文件名的话，隔几天再打开就分不清这是增量还是全量的数字
         fail(`CSV 文件名没有写明口径：${csvFile}`);
       } else {
         const cols = lines[1].split(',').length;
-        if (cols !== 7) fail(`CSV 数据行有 ${cols} 列，应为 7 列：${lines[1]}`);
-        else pass(`导出的 CSV 落盘可读：${csvFile}，${lines.length - 1} 行 × 7 列`);
+        if (cols !== 9) {
+          fail(`CSV 数据行有 ${cols} 列，应为 9 列（末两列是分支与方法）：${lines[1]}`);
+        } else {
+          // 拿不到的指标必须导成空单元格，不能是 0 —— 贴进周报后没人记得
+          // 「Go 那个 0 其实是没有这个指标」，而空格一眼就看得出是没有数据
+          const goRow = lines.find(l => l.includes('.go,') || l.includes('.go '));
+          if (!goRow) {
+            // 找不到就 fail，不能空过：这是核心功能 #17 在 CSV 侧唯一的守卫，
+            // 静默通过等于这条防线从此形同虚设
+            fail(`CSV 里找不到 Go 文件那一行，无从验证「不提供」是否导成了空：${lines[1]}`);
+          } else if (goRow.split(',')[7].trim() !== '') {
+            fail(`Go 行的分支应导成空（不是 0），实际是「${goRow.split(',')[7]}」：${goRow}`);
+          } else if (!/^\d+\/\d+$/.test(goRow.split(',')[8].trim())) {
+            // 方法这一列反过来：Go 有这个指标，导成空会让读表的人以为拿不到
+            fail(`Go 行的方法应是个真数字，实际是「${goRow.split(',')[8]}」：${goRow}`);
+          } else {
+            pass(`导出的 CSV 落盘可读：${csvFile}，${lines.length - 1} 行 × 9 列，`
+              + 'Go 的分支导成空而不是 0，方法导出真数字');
+          }
+        }
       }
     }
     fs.rmSync(dlDir, { recursive: true, force: true });
 
+    // ---------- 4d-3 · 覆盖率报表：包 → 源文件 → 方法 三级钻取 ----------
+    // 这一页存在的理由是「哪个包 / 哪个文件 / 哪个方法欠测」。只断言页面能打开
+    // 证明不了它能用 —— 必须真的钻到底，再从方法跳回源码
+    await page.click('[data-testid="nav-report"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="pkg-row"]'),
+        null, 15000) < 0) die('报表页打不开或没有包');
+
+    const pkgRows = await page.evaluate(countOf, '[data-testid="pkg-row"]');
+    const wantPkgs = new Set(sum.files.map(f => f.packageName || '(默认包)')).size;
+    if (pkgRows !== wantPkgs) fail(`报表一级列出 ${pkgRows} 个包，按 API 的 packageName 应为 ${wantPkgs} 个`);
+    else pass(`报表一级：${pkgRows} 个包，与 API 的 packageName 一致`);
+
+    // 二级：点包名进文件列表，并且 hash 要带上包名 —— 深链接是这一页可分享的前提。
+    // 原先路由拿整串与 ROUTES 全等比较，任何多级地址都会被静默判非法、跳回染色页
+    await page.click('[data-testid="pkg-row"][data-pkg="com.shop.order.service"] [data-testid="pkg-name"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="file-row"]'), null, 8000) < 0) {
+      fail('点包名没进到源文件一层');
+    } else {
+      const h = await page.evaluate(() => location.hash);
+      if (!h.includes('report/com.shop.order.service')) {
+        fail(`钻进包之后 hash 是 ${h}，包名没落进地址 —— 刷新或转发链接就回不到这一层`);
+      } else {
+        pass(`报表二级：点包名进到源文件，且地址带上了包名（${h}）`);
+      }
+    }
+
+    // 三级：方法明细。名字必须是人读的，行号必须有 —— 那是跳源码唯一的落点
+    await page.click('[data-testid="file-row"] [data-testid="file-name"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="method-row"]'), null, 15000) < 0) {
+      fail('点源文件没进到方法一层');
+    } else {
+      const names = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="method-row"]')].map(r => r.dataset.name));
+      const bad = names.filter(n => n.startsWith('<') || n.includes('Ljava/'));
+      if (bad.length) {
+        fail(`方法名还是字节码的原始形态：${bad.slice(0, 3).join('、')}`);
+      } else if (!names.some(n => n === 'refund(String, long)')) {
+        fail(`方法名没渲染成人读的签名，实际：${names.slice(0, 4).join('、')}`);
+      } else {
+        pass(`报表三级：${names.length} 个方法，名字已渲染成人读签名（如 refund(String, long)）`);
+      }
+    }
+
+    // 点方法跳回染色页并定位。定位标记必须只用一次 —— 挂在数据 watch 上不清的话，
+    // 每 3 秒一次的推送会把正在看代码的人反复拽回目标行
+    const jumpLine = await page.evaluate(() => {
+      const r = [...document.querySelectorAll('[data-testid="method-row"]')]
+        .find(x => x.dataset.name === 'refund(String, long)');
+      r.querySelector('[data-testid="method-name"]').click();
+      return r.innerText.match(/L(\d+)/)[1];
+    });
+    if (await waitFor(page, () => !!document.querySelector('.ln.hit'), null, 15000) < 0) {
+      fail('点方法后染色页没有定位到那一行');
+    } else {
+      const at = await page.evaluate(() => document.querySelector('.ln.hit').innerText.trim().split(/\s/)[0]);
+      if (at !== jumpLine) fail(`点的是 L${jumpLine}，染色页却定位到 ${at}`);
+      else pass(`点方法跳回染色页并定位到 L${at}`);
+      await sleep(4000);
+      const still = await page.evaluate(countOf, '.ln.hit');
+      if (still !== 1) fail(`等了一轮推送后定位标记有 ${still} 处，应恒为 1 处（标记没清或被重复加）`);
+      else pass('定位标记在一轮推送后仍只有一处，没有把人反复拽回目标行');
+    }
+
+    // Go 曾经是四种语言里唯一「钻到底是空的」那个：covdata textfmt 的输出里没有函数
+    // 信息，报表三级会是一片空白。接上 covdata func 之后四种语言都到得了底 ——
+    // 没有这条断言的话，Go 哪天退回「不提供」不会有任何用例挂，页面上也看不出异样
+    await page.click('[data-testid="nav-report"]');
+    if (await waitFor(page, () => !!document.querySelector(
+        '[data-testid="pkg-row"][data-pkg="demo-service-go"]'), null, 15000) < 0) {
+      fail('报表里找不到 Go 那个包');
+    } else {
+      await page.click('[data-testid="pkg-row"][data-pkg="demo-service-go"] [data-testid="pkg-name"]');
+      if (await waitFor(page, () => !!document.querySelector('[data-testid="file-row"]'), null, 8000) < 0) {
+        fail('Go 的包点不进源文件一层');
+      } else {
+        await page.click('[data-testid="file-row"] [data-testid="file-name"]');
+        if (await waitFor(page, () => !!document.querySelector('[data-testid="method-row"]'), null, 15000) < 0) {
+          fail('Go 的源文件钻不到方法一层 —— covdata func 没接上');
+        } else {
+          const goNames = await page.evaluate(() =>
+            [...document.querySelectorAll('[data-testid="method-row"]')].map(r => r.dataset.name));
+          // 接收者是 Go 方法名里唯一能区分 Store.Refund 与某个同名自由函数的东西，
+          // 丢了它报表上就会出现两行一模一样的名字
+          if (!goNames.some(n => n === '*Store.Refund')) {
+            fail(`Go 方法名没带接收者，实际：${goNames.slice(0, 5).join('、')}`);
+          } else {
+            pass(`Go 也钻得到方法一层：${goNames.length} 个函数，名字带接收者（如 *Store.Refund）`);
+          }
+        }
+      }
+    }
+
     // ---------- 4e · 信息架构：口径栏只在会显示数字的视图上 ----------
     // 挂在每个视图上是原先的做法，但在「项目设置」「采集事件」「服务接入」这三页，
-    // 「数据源：某个场景快照」根本无从谈起，摆着只会让人以为它对这一页有影响
+    // 全量 / 增量口径不改变页面上的任何东西，摆着只会让人以为它对这一页有影响
     const scopedBar = async (view) => {
       await page.click(`[data-testid="nav-${view}"]`);
       // 等这一页真的挂上来再量。固定 sleep 在机器忙的时候会量到上一页的口径栏，
       // 换来一次与被测功能无关的假失败
       if (await waitFor(page, (v) => !!document.querySelector(`[data-testid="view-${v}"]`),
           view, 8000) < 0) die(`打不开 ${view} 视图`);
-      return page.evaluate(() => !!document.querySelector('.scenariobar'));
+      return page.evaluate(() => !!document.querySelector('[data-testid="mode-full"]'));
     };
     const barOn = [];
     const barOff = [];
-    for (const v of ['coloring', 'overview', 'scenarios', 'gate']) {
+    for (const v of ['coloring', 'overview', 'gate', 'report']) {
       if (await scopedBar(v)) barOn.push(v); else barOff.push(v + '(缺)');
     }
     for (const v of ['onboard', 'events', 'settings']) {
@@ -530,118 +610,94 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
       pass(`口径栏只出现在会显示数字的 ${barOn.length} 个视图上，设置/事件/接入页没有`);
     }
 
-    // ---------- 4f · 测试场景：在页面上录一轮并归档 ----------
-    // 录制从顶部横条搬进了独立视图。只断言「页面能打开」证明不了它还能用。
-    // 归档的场景没有删除接口，所以每跑一次会多一条 —— 它们只在内存里
-    // （ProjectRuntime.scenarios 是个 ConcurrentHashMap），平台一重启就没了，
-    // 不会无限堆积，因此这里不为清理它去开一个删除接口
-    await page.click('[data-testid="nav-scenarios"]');
-    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-scenarios"]'),
-        null, 8000) < 0) {
-      die('打不开测试场景视图');
-    }
-    const scBefore = await page.evaluate(countOf, '[data-testid="scenario-row"]');
+    // ---------- 4f · 场景进行中：页面上唯一的解释 ----------
+    // 页面上没有开始 / 结束场景的入口 —— 场景归因是给 CI 与脚本用的，所以这里也经 API 开。
+    // 但「进行中」必须显示出来：录制期间清零与保存配置都会被服务端回 409，
+    // 不显示的话那两处看起来就是「点了没反应」，而这个提示是页面上唯一的解释。
+    //
+    // <b>两个方向都要验，而且不许靠刷新页面蒙混过去。</b>开了不显示，是少一个提示；
+    // 结束了解不开，是把清零按钮永久废掉（它绑 :disabled="running"），后者严重得多。
+    // 页面靠每轮推送跟这个状态（store.connectWs），所以两边都等得到，最多滞后一轮采集
     const SC_ID = 'ui-verify-' + Date.now().toString(36);
-    await fill('scenario-id', SC_ID);
-    await page.click('[data-testid="btn-scenario"]');
-    // start 要给所有实例清零，8 个实例慢的时候要几秒
-    const recording = await waitFor(page, () => !!document.querySelector('[data-testid="recording"]'),
-      null, 60000);
-    if (recording < 0) {
-      fail('点了「开始场景」但没有出现「进行中」提示');
-    } else {
-      await fetch(`${DEMO}/api/order/query?bizNo=A1001`);
-      await sleep(4000);
+    const SC_API = `${PLATFORM}/api/projects/${projects.defaultId}/scenario`;
+    // 一轮采集是 interval-ms + 跑这一轮，机器忙时要好几秒，给足余量
+    const SC_WAIT = 30000;
+    const resetDisabled = () => {
+      const e = document.querySelector('[data-testid="btn-reset"]');
+      const b = e && (e.tagName === 'BUTTON' ? e : e.querySelector('button'));
+      return !!b && b.disabled;
+    };
 
-      // 「录制中」必须在<b>项目设置</b>那一页也看得见：录制期间保存配置会被服务端回 409，
-      // 而人正是在那一页才会撞上它。这个提示要是挂在口径栏里，恰好就在这一页不显示
-      await page.click('[data-testid="nav-settings"]');
-      await waitFor(page, () => !!document.querySelector('[data-testid="view-settings"]'), null, 8000);
-      const recElsewhere = await page.evaluate(countOf, '[data-testid="recording"]');
-      if (recElsewhere !== 1) {
-        fail(`录制中时「项目设置」页上的「进行中」提示出现 ${recElsewhere} 次，应为 1 次`);
-      } else {
-        pass('录制中的提示在「项目设置」页也在 —— 那一页保存配置会被服务端拒绝');
-      }
-      await page.click('[data-testid="nav-scenarios"]');
-      await waitFor(page, () => !!document.querySelector('[data-testid="view-scenarios"]'), null, 8000);
-
-      await clickWhenEnabled(page, 'btn-scenario');
-      const archived = await waitFor(page, (n) =>
-        document.querySelectorAll('[data-testid="scenario-row"]').length === n + 1,
-        scBefore, 60000);
-      if (archived < 0) {
-        fail('结束场景后归档列表没有多出一行');
-      } else {
-        const row = await page.evaluate((id) => {
-          const tr = document.querySelector(`[data-testid="scenario-row"][data-id="${id}"]`);
-          return tr ? [...tr.children].map(td => td.innerText.trim()) : null;
-        }, SC_ID);
-        if (!row) fail(`归档列表里找不到刚录的场景 ${SC_ID}`);
-        // 时长必须真的算出来：只显示两个时间戳的话，人得自己减
-        else if (!/秒|分钟|小时/.test(row[4])) fail(`归档没给出录制时长：${row.join(' | ')}`);
-        else pass(`页面上录了一轮并归档：${SC_ID}，${row[1]} 个文件 / ${row[2]} / 录了 ${row[4]}`);
+    // 提示要在<b>项目设置</b>那一页看得见：保存配置被 409 挡下就发生在那一页。
+    // 它要是挂进口径栏（只在会显示覆盖数字的页上），恰好就在最需要它的那一页不显示。
+    // 4e 最后停在 settings，这里不再切一次
+    /**
+     * 开场景，失败重试一次。
+     *
+     * <b>重试不是为了掩盖失败，是为了不把别人的缺陷算到这条用例头上。</b>
+     * start 要给 8 台实例清零，走的是 ProjectRuntime.resetCounters；JaCoCo 的 tcpserver
+     * backlog 很小，平台自己的调度采集或接入自检正连着同一个探针端口时，这一次连接
+     * 会被直接拒掉（Connection refused），IOException 一路逃到 Spring 变成裸 500。
+     * 这是平台侧既有的缺陷（探针连不上该是 503 加一句点名哪台，而不是 500），
+     * 与本用例要验的「页面跟不跟得住场景状态」无关 —— e2e_scenario.py 才是管 start 的。
+     * 两次都失败才算真失败：那时多半不是撞车，而是探针真的没了。
+     */
+    async function startScenario() {
+      for (let n = 0; n < 2; n++) {
+        const r = await fetch(`${SC_API}/start?scenarioId=${SC_ID}`, { method: 'POST' });
+        if (r.ok) return;
+        const why = (await r.text().catch(() => '')).slice(0, 200);
+        if (n === 0) {
+          console.log(`  ..  起场景失败（HTTP ${r.status}），等一轮采集过去再试一次`);
+          await sleep(5000);
+          continue;
+        }
+        // 起不了场景就没什么可验的了：接着往下跑，下面每一条都会在
+        // 「本来就没有场景」的状态下空过，一屏 [PASS] 什么都没断言
+        die(`连着两次都起不了场景（HTTP ${r.status}）：${why}`);
       }
     }
+    await startScenario();
+    const recOn = await waitFor(page,
+      () => document.querySelectorAll('[data-testid="recording"]').length === 1, null, SC_WAIT);
+    if (recOn < 0) fail('场景开了，「项目设置」页上却一直没出现「进行中」—— 那一页保存配置会被 409 挡下');
+    else pass(`场景 ${SC_ID} 开了 ${(recOn / 1000).toFixed(1)}s 后，「项目设置」页上出现「进行中」`);
 
-    // 不管上面走成什么样，都不能把场景留在「进行中」：留着的话，后面 section 6 的
-    // 清零按钮带着 :disabled="running"，点击会被静默吞掉；保存设置会被服务端 409；
-    // 更麻烦的是下一次 verify 里 e2e_scenario.py 的 start 会撞「已有场景在跑」，
-    // 级联出一串与本次改动无关的假失败。所以在这里兜一次底
-    const leftOver = await (await fetch(`${PLATFORM}/api/projects/default/scenario`)).json();
-    if (leftOver.active) {
-      await fetch(`${PLATFORM}/api/projects/default/scenario/stop`, { method: 'POST' })
-        .catch(() => {});
-      fail(`场景 ${leftOver.active} 没能从页面上结束，已在收尾时直接调接口停掉`);
-    }
-
-    // 场景快照不参与门禁判定 —— 它是过去某一轮的独占覆盖，与「这次能不能合并」无关
-    await page.click('[data-testid="nav-gate"]');
-    const refused = await waitFor(page, () => !!document.querySelector('[data-testid="gate-archived"]'),
-      null, 10000);
-    if (refused < 0) {
-      fail('看着场景快照时，门禁页没有说明「不参与判定」');
+    // 清零按钮在录制期间必须禁用：不禁用的话点下去只会被服务端 409，
+    // 而那条错误只闪一下，人看到的是「清零好像没生效」
+    await page.click('[data-testid="nav-coloring"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]'),
+        null, 8000) < 0) die('打不开代码染色视图');
+    if (await waitFor(page, resetDisabled, null, SC_WAIT) < 0) {
+      fail('场景进行中，清零按钮却没有禁用 —— 点下去只会被服务端 409');
     } else {
-      pass('场景快照下门禁明确拒判，而不是给一个与合并无关的结论');
+      pass('场景进行中时清零按钮已禁用，与服务端的 409 一致');
     }
 
-    // 在门禁页<b>原地</b>把数据源切回实时（不离开这一页）。组件不会因此重新挂载，
-    // 若不重判，页面会永久停在「判定中…」且一张判定卡都没有 ——
-    // 而这一页刻意不轮询，它自己不会好起来
-    await page.click('[data-testid="scenario-view"]');
-    const backLive = await page.evaluate(() => {
-      // 只认可见的那个下拉：Element Plus 会把别处 select 的下拉留在 DOM 里
-      const li = [...document.querySelectorAll('.el-select-dropdown__item')]
-        .filter(e => e.offsetParent !== null)
-        .find(e => e.innerText.trim().startsWith('实时'));
-      if (!li) return false;
-      li.click();
-      return true;
-    });
-    if (!backLive) {
-      fail('顶栏数据源里没有「实时」这一项');
-    } else if (await waitFor(page,
-        () => document.querySelectorAll('[data-testid="gate-card"]').length === 2, null, 30000) < 0) {
-      const at = await page.evaluate(textOf, '[data-testid="judged-at"]');
-      fail(`在门禁页把数据源切回实时后没有重判（「${at}」，0 张判定卡）—— 这一页不轮询，它自己不会好`);
+    // 场景结束后，页面必须<b>自己</b>跟上。这里刻意不刷新：
+    // 只在进入项目时取一次的话，红点会一直挂着、清零按钮永久点不动，
+    // tooltip 还写着「场景进行中不能清零」—— 只有整页刷新才解得开，而人不会想到去刷新。
+    // 顺带也把场景收干净：留着的话下一次 verify 里 e2e_scenario.py 的 start
+    // 会撞「已有场景在跑」，级联出一串与本次改动无关的假失败
+    const scStop = await fetch(`${SC_API}/stop`, { method: 'POST' });
+    if (!scStop.ok) die(`经 API 结束场景失败（HTTP ${scStop.status}），后面的清零断言必然假失败`);
+    // 判据必须整个写在这个函数体里：page.evaluate 是把函数序列化过去执行的，
+    // 闭包里的 resetDisabled 在浏览器侧压根不存在，引用它只会静默变成一次求值失败
+    const recOff = await waitFor(page, () => {
+      if (document.querySelectorAll('[data-testid="recording"]').length !== 0) return false;
+      const e = document.querySelector('[data-testid="btn-reset"]');
+      const b = e && (e.tagName === 'BUTTON' ? e : e.querySelector('button'));
+      return !!b && !b.disabled;
+    }, null, SC_WAIT);
+    if (recOff < 0) {
+      const still = await page.evaluate(countOf, '[data-testid="recording"]');
+      fail(`场景已结束，页面却没跟上（仍有 ${still} 个「进行中」/ 清零按钮仍禁用）—— `
+        + '不刷新就解不开的话，这个控件对人来说就是废的');
     } else {
-      pass('在门禁页原地把数据源切回实时会立即重判，不会停在空白的「判定中…」');
+      pass(`场景结束后 ${(recOff / 1000).toFixed(1)}s 内页面自己跟上：提示消失、清零按钮恢复可用`);
     }
-
-    // 归档表的「查看覆盖」是这张表唯一的动作，也走一遍
-    await page.click('[data-testid="nav-scenarios"]');
-    await waitFor(page, () => !!document.querySelector('[data-testid="btn-view-scenario"]'), null, 8000);
-    await page.click('[data-testid="btn-view-scenario"]');
-    if (await waitFor(page, () => !!document.querySelector('[data-testid="btn-back-live"]'),
-        null, 15000) < 0) {
-      fail('点了归档场景的「查看覆盖」，数据源没有切过去');
-    } else {
-      pass('归档表的「查看覆盖」把数据源切到了那个场景');
-    }
-
-    // 切回实时，后面的断言仍按实时口径来
-    await page.click('[data-testid="btn-back-live"]');
-    await sleep(3000);
+    const leftOver = await (await fetch(SC_API)).json();
+    if (leftOver.active) die(`场景 ${leftOver.active} 没停掉，会拖累下一次 verify 的 e2e_scenario`);
 
     // ---------- 4g · 覆盖门禁：两种口径并排 ----------
     // 全量说的是存量水位，增量说的是「这次改的代码测没测」——
@@ -872,6 +928,20 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
     const obRows = await page.evaluate(countOf, '[data-testid="ob-check-row"]');
     if (obRows !== sum.instances.length) fail(`接入自检表 ${obRows} 行，应为 ${sum.instances.length} 行`);
     else pass(`接入自检表 ${obRows} 行，每个实例都点了名`);
+
+    // 各实例覆盖是按需拉取的，拉完表格要真的多出三列。
+    // 这三列原先在总览的「被测实例」表上，而那张表与本表的前四列完全重复 ——
+    // 同一批实例的状态散在两个视图里，想知道「6301 现在怎么了」得两边都看
+    const colsBefore = await page.evaluate(countOf, '[data-testid="ob-check-table"] thead th');
+    await page.click('[data-testid="btn-per-inst"]');
+    const grew = await waitFor(page, (n) =>
+      document.querySelectorAll('[data-testid="ob-check-table"] thead th').length === n + 3,
+      colsBefore, 120000);
+    if (grew < 0) {
+      fail('点了「加载各实例覆盖」但自检表没有多出三列');
+    } else {
+      pass(`各实例覆盖已加载，自检表由 ${colsBefore} 列增至 ${colsBefore + 3} 列（${(grew / 1000).toFixed(1)}s）`);
+    }
 
     // ---------- 6 · 实时染色链路（本脚本的核心断言） ----------
     await page.click('[data-testid="nav-coloring"]');
@@ -1128,6 +1198,15 @@ async function clickWhenEnabled(page, testid, timeout = 60000) {
         pass(`设置页改基线立即生效：HEAD~1 → ${after.baseline}（${(saved / 1000).toFixed(1)}s）`);
       }
     }
+
+    // 删之前必须真的重载一次页面。保存成功时 settings 已经 emit('saved') 跳回了列表页，
+    // 但<b>回列表页并不关 WebSocket</b>（connectWs 只在 setProject 里调），
+    // 那条连接仍挂在这个项目上，onmessage 照样对它打 /coverage/gate 与 /coverage/file ——
+    // 项目一删就全是 404，会被结尾「全程没有意外的 4xx」抓个正着，且只在时序赶巧时出现。
+    // reload 之后 hash 是 #/projects，syncRoute 判定不在项目内，压根不会再建连接
+    await page.reload({ waitUntil: 'networkidle2', timeout: 30000 });
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-projects"]'),
+        null, 15000) < 0) die('删项目前没能退回项目列表');
 
     // 用例要能重复跑：不删掉的话，下一次会撞「标识已被占用」而失败，
     // 而报出来的原因与被测功能毫无关系

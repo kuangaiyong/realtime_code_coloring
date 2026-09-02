@@ -12,6 +12,7 @@ import com.rtcc.platform.model.BuildVersion;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -127,7 +128,7 @@ public class ProjectChecker {
             }
         }
         if (languages.contains(ProbeEndpoint.JAVA)) {
-            dir(items, "classesDir", "Java 产物目录（classes-dir）", cfg.getClassesDir());
+            dir(items, cfg, "classesDir", "Java 产物目录（classes-dir）", cfg.getClassesDir());
             sourceRoot(items, cfg, "javaSourceRoot", "Java 源码根", cfg.getJavaSourceRoot());
             classesMatchSource(items, cfg);
         }
@@ -142,32 +143,68 @@ public class ProjectChecker {
         }
         if (languages.contains(ProbeEndpoint.CPP)) {
             sourceRoot(items, cfg, "cppSourceRoot", "C++ 源码根", cfg.getCppSourceRoot());
-            dir(items, "cppObjectsDir", "C++ 对象目录（.gcno 所在）", cfg.getCppObjectsDir());
+            dir(items, cfg, "cppObjectsDir", "C++ 对象目录（.gcno 所在）", cfg.getCppObjectsDir());
         }
         if (languages.contains(ProbeEndpoint.RUST)) {
             sourceRoot(items, cfg, "rustSourceRoot", "Rust 源码根", cfg.getRustSourceRoot());
-            file(items, "rustBinary", "Rust 产物（行号信息在它里面）", cfg.getRustBinary());
+            file(items, cfg, "rustBinary", "Rust 产物（行号信息在它里面）", cfg.getRustBinary());
         }
     }
 
-    private void dir(List<CheckItem> items, String name, String label, String path) {
+    private void dir(List<CheckItem> items, ProjectConfig cfg, String name, String label, String path) {
         if (path == null || path.isBlank()) {
             items.add(new CheckItem(name, label, false, "没填"));
             return;
         }
         File f = new File(path);
         items.add(new CheckItem(name, label, f.isDirectory(),
-                f.isDirectory() ? f.getAbsolutePath() : "不是有效目录：" + f.getAbsolutePath()));
+                f.isDirectory() ? f.getAbsolutePath()
+                        : "不是有效目录：" + f.getAbsolutePath() + repoRelativeHint(cfg, path, true)));
     }
 
-    private void file(List<CheckItem> items, String name, String label, String path) {
+    private void file(List<CheckItem> items, ProjectConfig cfg, String name, String label, String path) {
         if (path == null || path.isBlank()) {
             items.add(new CheckItem(name, label, false, "没填"));
             return;
         }
         File f = new File(path);
         items.add(new CheckItem(name, label, f.isFile(),
-                f.isFile() ? f.getAbsolutePath() : "文件不存在：" + f.getAbsolutePath()));
+                f.isFile() ? f.getAbsolutePath()
+                        : "文件不存在：" + f.getAbsolutePath() + repoRelativeHint(cfg, path, false)));
+    }
+
+    /**
+     * <b>「你多半是把它当成相对仓库目录来填了」。</b>
+     *
+     * <p>产物类字段（{@code classes-dir} / {@code cpp-objects-dir} / {@code rust-binary}）
+     * 的相对基准是<b>平台进程的工作目录</b>，而紧挨着的源码根字段相对 <b>repo-dir</b>。
+     * 同一份配置里两种基准，种子配置本身就长这样：{@code classes-dir:
+     * ../demo-service/target/classes} 配 {@code java-source-root: demo-service/src/main/java}。
+     * 照着旁边那行的写法填 {@code demo-service/target/classes}，就被解析到平台自己目录底下去了。
+     *
+     * <p><b>基准不能改</b>：库里存着的正是「相对平台目录」的那种写法，改了会被重新
+     * 解释成另一个目录 —— 既有项目当场采不到数，还不报错。所以这里只做一件事：
+     * 换个基准试一下，试得到就把该粘的绝对路径直接给出来，人不必再去猜基准是谁。
+     */
+    private String repoRelativeHint(ProjectConfig cfg, String path, boolean wantDir) {
+        String repo = cfg.getRepoDir();
+        if (repo == null || repo.isBlank() || new File(path).isAbsolute()) {
+            return "";
+        }
+        File candidate = new File(repo, path);
+        if (wantDir ? !candidate.isDirectory() : !candidate.isFile()) {
+            return "";
+        }
+        String shown;
+        try {
+            // repo-dir 常是 ..，直接 getAbsolutePath 会得到一串带 \..\ 的路径，
+            // 粘进表单虽然能用，但没法一眼看出指向哪儿
+            shown = candidate.getCanonicalPath();
+        } catch (IOException e) {
+            shown = candidate.getAbsolutePath();
+        }
+        return "。这个相对路径以平台安装目录为基准，不是上面填的仓库目录 —— "
+                + "换成仓库目录去找是有的，你要填的多半是 " + shown;
     }
 
     /**

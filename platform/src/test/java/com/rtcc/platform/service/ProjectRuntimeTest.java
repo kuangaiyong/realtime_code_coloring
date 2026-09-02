@@ -12,11 +12,14 @@ import com.rtcc.platform.collector.RustProbeClient;
 import com.rtcc.platform.config.CoverageProperties;
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.history.CoverageHistory;
+import com.rtcc.platform.model.FileCoverage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.net.ServerSocket;
 import java.util.List;
+import java.util.Set;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -140,5 +143,74 @@ class ProjectRuntimeTest {
     void 未指定场景时看的是实时数据() {
         assertNull(runtime.summary(ProjectRuntime.MODE_FULL, null, null).get("scenarioId"));
         assertNull(runtime.summary(ProjectRuntime.MODE_FULL, null, "").get("scenarioId"));
+    }
+
+    /**
+     * 增量口径下方法覆盖答不上来：一个方法通常只有几行落在 diff 里，
+     * 透传全量的方法数会让人把它读成「这次改动的方法覆盖率」。
+     * 分支则可以从保留下来的行累加 —— 那本来就是逐行的。
+     */
+    @Test
+    void 增量裁剪后分支按保留行累加而方法置空() {
+        FileCoverage full = new FileCoverage(
+                "a/B.java", "a", "B.java", 3, 1, 75d,
+                6, 2, 4, 1, null,
+                List.of(new FileCoverage.LineCoverage(10, "COVERED", 2, 0),
+                        new FileCoverage.LineCoverage(11, "PARTIAL", 1, 1),
+                        new FileCoverage.LineCoverage(12, "COVERED", 3, 1),
+                        new FileCoverage.LineCoverage(13, "MISSED", 0, 0)));
+
+        // 只保留 11、12 两行（模拟 git diff 只命中这两行）
+        FileCoverage cut = ProjectRuntime.restrictOneForTest(full, Set.of(11, 12));
+
+        assertEquals(2, cut.lines().size());
+        assertEquals(4, cut.coveredBranches(), "11 行 1 个 + 12 行 3 个");
+        assertEquals(2, cut.missedBranches(), "11 行 1 个 + 12 行 1 个");
+        assertNull(cut.coveredMethods(), "增量口径下方法覆盖答不上来，必须置空");
+        assertNull(cut.missedMethods(), "增量口径下方法覆盖答不上来，必须置空");
+    }
+
+    /** Go 的行级分支本来就是 null，累加不能把它变成 0 —— 那等于说「有分支但没测」 */
+    @Test
+    void 不提供分支的语言裁剪后仍是空而不是零() {
+        FileCoverage go = new FileCoverage(
+                "demo-service-go/main.go", "demo-service-go", "main.go", 1, 1, 50d,
+                null, null, null, null, null,
+                List.of(new FileCoverage.LineCoverage(10, "COVERED", null, null),
+                        new FileCoverage.LineCoverage(11, "MISSED", null, null)));
+
+        FileCoverage cut = ProjectRuntime.restrictOneForTest(go, Set.of(10));
+
+        assertNull(cut.coveredBranches(), "Go 没有分支概念，裁剪后仍该是 null");
+        assertNull(cut.missedBranches(), "Go 没有分支概念，裁剪后仍该是 null");
+    }
+
+    /**
+     * 分支不做跨语言汇总。实测 C++ 一个 demo 有 359 条分支（滤掉 throw 后 239 条），
+     * 而源码里真正的条件语句只有 32 处 —— 与 Java 差一个数量级。
+     * 汇总出来的百分比等于在报告 C++ 的异常处理路径覆盖率。
+     */
+    @Test
+    void 分支按语言分开汇总不给跨语言总数() {
+        Map<String, FileCoverage> snap = Map.of(
+                "demo-service/src/main/java/A.java", new FileCoverage(
+                        "demo-service/src/main/java/A.java", "a", "A.java", 5, 5, 50d,
+                        10, 6, 3, 1, null, List.of()),
+                "demo-service-cpp/order.cpp", new FileCoverage(
+                        "demo-service-cpp/order.cpp", "demo-service-cpp", "order.cpp", 5, 5, 50d,
+                        27, 212, 4, 7, null, List.of()),
+                "demo-service-go/main.go", new FileCoverage(
+                        "demo-service-go/main.go", "demo-service-go", "main.go", 5, 5, 50d,
+                        null, null, null, null, null, List.of()));
+
+        Map<String, Map<String, Integer>> byLang = ProjectRuntime.branchesByLanguage(snap);
+
+        assertEquals(10, byLang.get("java").get("covered"));
+        assertEquals(6, byLang.get("java").get("missed"));
+        assertEquals(27, byLang.get("cpp").get("covered"));
+        assertEquals(212, byLang.get("cpp").get("missed"));
+        assertFalse(byLang.containsKey("go"), "Go 不提供分支，不该出现在这张表里 —— "
+                + "出现了就意味着页面上会显示一个 0%，而那是假的");
+        assertFalse(byLang.containsKey("rust"), "Rust 不提供分支，同理");
     }
 }

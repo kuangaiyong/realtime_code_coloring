@@ -6,6 +6,9 @@
 <title>代码实时染色平台</title>
 <!-- 内联空图标：不给的话浏览器每次都去要 /favicon.ico，换来一条 404 -->
 <link rel="icon" href="data:," />
+<!-- 本地字体，不走 Google Fonts：平台面向内网，CDN 拿不到的表现是「HTTP 200 的空白页」。
+     放在 element-plus.css 之前：字体是最底层的东西，晚于组件样式加载会闪一次字形 -->
+<link rel="stylesheet" href="/vendor/fonts.css" />
 <link rel="stylesheet" href="/vendor/element-plus.css" />
 <!-- 深色主题只是一张变量表：本平台的 CSS 全走 --el-*，跟着它一起翻 -->
 <link rel="stylesheet" href="/vendor/element-plus-dark.css" />

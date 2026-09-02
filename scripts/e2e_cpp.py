@@ -82,6 +82,11 @@ def wait_until(check, secs=POLL_SEC):
     return None
 
 
+# order.cpp 里的函数数量下界。取实测值而不是精确值：源码增删函数时不必跟着改，
+# 但漏解析一半（见下面 1b 的说明）一定会跌破这条线
+CPP_MIN_METHODS = 4
+
+
 def main():
     print("=" * 78)
     print("P3 端到端验收 —— C++ 接入")
@@ -122,6 +127,32 @@ def main():
         ok = False
     else:
         print("  [PASS] 所有路径均以仓库根为基准，可直接与 git diff 对齐")
+
+    # ---- 1b. 方法数是真解析出来的，且没漏 ----
+    # 这条是<b>守卫断言</b>：C++ 的方法数来自 gcov 输出里的 function 行，靠一条正则捕获。
+    # 那条正则一旦失配，方法数会静默变小 —— 而页面上看不出任何异样。
+    #
+    # <b>必须钉数量下界，只查「大于 0」是不够的</b>：这一点是实测撞出来的。
+    # 给 gcov 加 -m（输出 demangled 名）时，名字里带了空格，而正则用的是 \S+：
+    # Store::Store() 这种无参函数仍能匹配，(anonymous namespace)::isFinalState(Order const&)
+    # 就匹配不上。结果是 5 个方法只解析出 1 个，页面显示「1/1」——
+    # 比全丢（0/0）更隐蔽，因为那个比例看着完全正常。
+    cpp_file = next((f for f in s["files"] if f["path"] == CPPFILE), None)
+    if cpp_file is None:
+        print(f"  [FAIL] summary 里没有 {CPPFILE}")
+        ok = False
+    elif cpp_file["coveredMethods"] is None:
+        print("  [FAIL] C++ 的方法数是 null —— C++ 拿得到函数信息，不该标成「不提供」")
+        ok = False
+    elif cpp_file["coveredMethods"] + cpp_file["missedMethods"] < CPP_MIN_METHODS:
+        total = cpp_file["coveredMethods"] + cpp_file["missedMethods"]
+        print(f"  [FAIL] C++ 只解析出 {total} 个方法，少于 {CPP_MIN_METHODS} 个 —— "
+              "gcov 的 function 行有一部分没被认出来")
+        ok = False
+    else:
+        total = cpp_file["coveredMethods"] + cpp_file["missedMethods"]
+        print(f"  [PASS] C++ 的方法数解析完整：{cpp_file['coveredMethods']}/{total}"
+              f"（不少于 {CPP_MIN_METHODS}）")
 
     # ---- 2. 清零对 C++ 生效 ----
     # 光调 __gcov_reset() 是不够的：.gcda 写入是合并语义，不把文件删掉，

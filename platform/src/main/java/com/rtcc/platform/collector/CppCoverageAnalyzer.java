@@ -34,6 +34,20 @@ public class CppCoverageAnalyzer {
     /** gcov -t 的每一行：{@code <计数>:<行号>:<源码>}，行号 0 的是 Source/Graph/Data 这些元信息 */
     private static final Pattern ROW = Pattern.compile("^\\s*([^:]+):\\s*(\\d+):(.*)$");
 
+    /** {@code branch  0 taken 2 (fallthrough)} / {@code branch  1 never executed} */
+    private static final Pattern BRANCH = Pattern.compile("^branch\\s+\\d+\\s+(.+)$");
+    /**
+     * {@code function Store::pay(int) called 3 returned 100% blocks executed 75%}
+     *
+     * <b>函数名必须用非贪婪捕获，不能用 \s 的反义类</b>：加了 gcov 的 -m 之后名字是
+     * demangled 的，里面带空格（如 {@code (anonymous namespace)::isFinalState(Order const&)}）。
+     * 用「非空白串」去匹配的话，无参函数还能匹配上、带参数的就匹配不上 ——
+     * 5 个方法只解析出 1 个，页面显示「1/1」，比全丢成 0/0 更隐蔽，因为比例看着正常。
+     * e2e_cpp.py 的 1b 钉着数量下界专门守这件事。
+     */
+    private static final Pattern FUNCTION =
+            Pattern.compile("^function\\s+(.+?)\\s+called\\s+(\\d+)\\s.*$");
+
     private final ProjectConfig props;
     /** 工具链可执行文件的路径是部署机器的属性，换机器才改，与项目无关，因此仍从平台配置取 */
     private final CoverageProperties platform;
@@ -130,7 +144,9 @@ public class CppCoverageAnalyzer {
      * 工作目录必须是 C++ 源码根：.gcno 里记的源码名是编译时的相对名。
      */
     private String runGcov(Path profileDir, List<Path> gcno) throws IOException {
-        List<String> cmd = new ArrayList<>(List.of(platform.getGcovTool(), "-t", "-r",
+        // -b 输出分支明细，-c 让分支给出执行次数而不是百分比（百分比在「0 次」与
+        // 「未执行」之间分不清）。二者是分支覆盖率的唯一来源
+        List<String> cmd = new ArrayList<>(List.of(platform.getGcovTool(), "-t", "-r", "-b", "-c", "-m",
                 "-o", profileDir.toAbsolutePath().toString()));
         gcno.forEach(p -> cmd.add(p.getFileName().toString()));
         Path cwd = Path.of(props.getRepoDir(), props.getCppSourceRoot());
@@ -172,30 +188,143 @@ public class CppCoverageAnalyzer {
         return out;
     }
 
-    private Map<String, FileCoverage> parse(String gcovOut, String root) throws IOException {
+    /**
+     * 正在累计的一个函数。gcov 的 function 行只给名字与调用次数 ——
+     * 首行号要等它之后第一条源码行，行覆盖要把这个函数范围内的源码行累计起来。
+     *
+     * <b>这是个近似</b>：两个 function 行之间若夹着不属于任何函数的源码
+     * （如文件作用域的初始化），会被算进前一个函数。gcov 不给函数的行范围，
+     * 要精确就得自己解析 C++ 源码，代价与收益不成正比。
+     */
+    private static final class Pending {
+        final String name;
+        int firstLine;
+        int coveredLines;
+        int missedLines;
+
+        Pending(String name) {
+            this.name = name;
+        }
+    }
+
+    /**
+     * 把 demangled 名里最常见的 STL 模板缩回短名。
+     *
+     * gcov -m 给的是完整展开：{@code std::__cxx11::basic_string<char,
+     * std::char_traits<char>, std::allocator<char> >} —— 一个 std::string 参数就是
+     * 七十多个字符，两个参数的函数名能顶满整屏，报表那一列直接撑爆。
+     *
+     * <b>只缩最常见的这一个，不做通用的模板折叠</b>：那要真解析嵌套尖括号，
+     * 而收益只是让更罕见的名字短一点。认不出来的原样保留 ——
+     * 显示得长好过显示得不对。
+     */
+    private static String shorten(String name) {
+        return name
+                .replace("std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+                        "std::string")
+                .replace("std::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+                        "std::string");
+    }
+
+    /** 把累计完的函数落进结果。firstLine 为 0 说明这个函数一条源码行都没跟着，丢弃 */
+    private static void flush(Map<String, List<FileCoverage.MethodCoverage>> into,
+                              String path, Pending p) {
+        if (p == null || path == null || p.firstLine == 0) {
+            return;
+        }
+        into.computeIfAbsent(path, k -> new ArrayList<>()).add(new FileCoverage.MethodCoverage(
+                p.name, p.firstLine, p.coveredLines, p.missedLines, null, null));
+    }
+
+    /** 包级可见是为了让测试直接喂真实的 gcov 输出文本 —— 起一次真实 gcov 要有 .gcno 与 .gcda */
+    Map<String, FileCoverage> parse(String gcovOut, String root) throws IOException {
         Map<String, List<FileCoverage.LineCoverage>> byFile = new LinkedHashMap<>();
+        // 逐文件的方法计数。function 行同样不带行号，只能按「当前是哪个文件」归集
+        Map<String, int[]> methodsByFile = new LinkedHashMap<>();
+        // 方法明细。gcov 的 function 行不带行号，但实测确认它<b>紧贴函数定义行之前</b>，
+        // 所以首行号取「它之后第一条源码行」。函数的行 / 分支覆盖靠顺序累计：
+        // gcov 是按 function → 该函数的源码行 → 下一个 function 的顺序输出的
+        Map<String, List<FileCoverage.MethodCoverage>> methodDetail = new LinkedHashMap<>();
+        Pending pend = null;
+        String currentPath = null;
         List<FileCoverage.LineCoverage> current = null;
+        // gcov 的 branch 行不带行号，跟在它所属的源码行之后。必须记住最近一条源码行，
+        // 否则分支全部落空 —— 而「一条分支都没有」与「这门语言不提供」长得一模一样
+        int lastLineIdx = -1;
+
         for (String line : gcovOut.split("\r?\n")) {
+            Matcher br = BRANCH.matcher(line);
+            if (br.matches()) {
+                String rest = br.group(1);
+                // (throw) 是编译器为可能抛异常的操作生成的路径，不是源码里写的条件。
+                // 实测一个几百行的 demo 有 359 条分支，其中 120 条是 throw，
+                // 而源码里真正的条件语句只有 32 处
+                if (rest.contains("(throw)") || current == null || lastLineIdx < 0) {
+                    continue;
+                }
+                boolean taken = rest.startsWith("taken") && !rest.startsWith("taken 0");
+                FileCoverage.LineCoverage old = current.get(lastLineIdx);
+                current.set(lastLineIdx, new FileCoverage.LineCoverage(
+                        old.line(), old.status(),
+                        old.coveredBranches() + (taken ? 1 : 0),
+                        old.missedBranches() + (taken ? 0 : 1)));
+                continue;
+            }
+            Matcher fn = FUNCTION.matcher(line);
+            if (fn.matches()) {
+                if (currentPath != null) {
+                    flush(methodDetail, currentPath, pend);
+                    int[] fm = methodsByFile.computeIfAbsent(currentPath, k -> new int[2]);
+                    if (Long.parseLong(fn.group(2)) > 0) {
+                        fm[0]++;
+                    } else {
+                        fm[1]++;
+                    }
+                    pend = new Pending(shorten(fn.group(1)));
+                }
+                continue;
+            }
+
             Matcher m = ROW.matcher(line);
             if (!m.matches()) {
-                continue; // branch/call 明细行，本切片不用
+                continue; // call 明细等其余行本切片不用
             }
             String count = m.group(1).strip();
             int no = Integer.parseInt(m.group(2));
             if (no == 0) {
                 String text = m.group(3);
                 if (text.startsWith("Source:")) {
+                    // 换文件了，把上一个文件里还在累计的函数结算掉
+                    flush(methodDetail, currentPath, pend);
+                    pend = null;
                     String src = text.substring("Source:".length()).strip().replace('\\', '/');
-                    current = byFile.computeIfAbsent(
-                            root.replace('\\', '/') + "/" + src, k -> new ArrayList<>());
+                    currentPath = root.replace('\\', '/') + "/" + src;
+                    current = byFile.computeIfAbsent(currentPath, k -> new ArrayList<>());
+                    lastLineIdx = -1;
                 }
                 continue;
             }
             if (current == null || "-".equals(count)) {
+                lastLineIdx = -1; // 非可执行行，后面若跟着 branch 行也无处可归
                 continue; // "-" 是非可执行行，与 JaCoCo 的 EMPTY 一样不进 IR
             }
-            current.add(new FileCoverage.LineCoverage(no, status(count)));
+            String st = status(count);
+            current.add(new FileCoverage.LineCoverage(no, st, 0, 0));
+            lastLineIdx = current.size() - 1;
+            if (pend != null) {
+                // function 行紧贴函数定义行之前，所以它之后的第一条源码行就是首行号
+                if (pend.firstLine == 0) {
+                    pend.firstLine = no;
+                }
+                if ("MISSED".equals(st)) {
+                    pend.missedLines++;
+                } else {
+                    pend.coveredLines++;
+                }
+            }
         }
+        // 最后一个函数没有后继的 function / Source 行来触发结算
+        flush(methodDetail, currentPath, pend);
         if (byFile.isEmpty()) {
             throw new IOException("gcov 没有输出任何源码的覆盖数据。"
                     + "请确认 coverage.cpp-source-root 指向编译时的工作目录（.gcno 里记的是相对源码名）");
@@ -208,6 +337,9 @@ public class CppCoverageAnalyzer {
             }
             int missed = (int) lines.stream().filter(l -> "MISSED".equals(l.status())).count();
             int covered = lines.size() - missed;
+            int cb = lines.stream().mapToInt(FileCoverage.LineCoverage::coveredBranches).sum();
+            int mb = lines.stream().mapToInt(FileCoverage.LineCoverage::missedBranches).sum();
+            int[] fm = methodsByFile.getOrDefault(path, new int[2]);
             int slash = path.lastIndexOf('/');
             result.put(path, new FileCoverage(
                     path,
@@ -215,6 +347,8 @@ public class CppCoverageAnalyzer {
                     slash < 0 ? path : path.substring(slash + 1),
                     covered, missed,
                     lines.isEmpty() ? 0d : covered * 100d / lines.size(),
+                    cb, mb, fm[0], fm[1],
+                    methodDetail.getOrDefault(path, List.of()),
                     lines));
         });
         return result;

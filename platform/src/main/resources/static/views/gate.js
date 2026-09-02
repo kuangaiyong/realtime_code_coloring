@@ -1,7 +1,7 @@
 import { store, projectUrl } from '../store.js';
 import { api, copyText } from '../api.js';
 
-const { computed, ref, onMounted, watch } = Vue;
+const { computed, ref, onMounted } = Vue;
 
 /**
  * 覆盖门禁 —— 这个平台分量最重的一个答案：这次能不能合并。
@@ -46,12 +46,6 @@ export const Gate = {
     }
 
     async function load() {
-      // 场景快照是过去某一轮的独占覆盖，不是当前构建的整体情况，本就不参与判定
-      if (store.viewScenario) {
-        rows.value = [];
-        loading.value = false;
-        return;
-      }
       loading.value = true;
       rows.value = await Promise.all([judge('full'), judge('incremental')]);
       judgedAt.value = new Date().toLocaleTimeString();
@@ -71,13 +65,6 @@ export const Gate = {
      * 不标的话，人会拿一个半小时前的结论去决定合不合并。
      */
     onMounted(load);
-
-    /**
-     * 数据源换了要重判。不重判的话：在场景快照下进这一页 → rows 是空的 →
-     * 顶栏切回实时，组件并没有重新挂载，页面就永久停在「判定中…」且一张卡都没有。
-     * 这不违背上面的「不轮询」—— 它由人的动作触发，与点「重新判定」同类。
-     */
-    watch(() => store.viewScenario, load);
 
     const LABEL = { full: '全量口径', incremental: '增量口径' };
     const WHY = {
@@ -116,89 +103,79 @@ export const Gate = {
   },
   template: `
 <div class="view" data-testid="view-gate">
-  <div v-if="store.viewScenario" class="card">
-    <div class="card-head"><h2>覆盖门禁</h2></div>
-    <div class="empty" data-testid="gate-archived">
-      正在看场景 {{ store.viewScenario }} 的快照，不参与门禁判定 ——
-      它是过去某一轮的独占覆盖，与「这次能不能合并」无关。
+  <div class="card">
+    <div class="card-head">
+      <h2>判定</h2>
+      <!-- 不轮询，所以「判定于几点」必须写出来：不标的话，人会拿一个半小时前的
+           结论去决定合不合并 -->
+      <span class="sub" data-testid="judged-at">{{ judgedAt ? '判定于 ' + judgedAt : '判定中…' }}</span>
+      <el-button size="small" :loading="loading" data-testid="btn-rejudge" @click="load">重新判定</el-button>
+    </div>
+    <div class="ob" style="padding-bottom:12px">
+      <div class="note info">这一页<b>不自动刷新</b>：门禁结论是个决策点，不是需要盯着跳的数字，
+        而增量判定每次要起三个 git 子进程。代码或覆盖变了之后，点「重新判定」。</div>
     </div>
   </div>
 
-  <template v-else>
-    <div class="card">
-      <div class="card-head">
-        <h2>判定</h2>
-        <!-- 不轮询，所以「判定于几点」必须写出来：不标的话，人会拿一个半小时前的
-             结论去决定合不合并 -->
-        <span class="sub" data-testid="judged-at">{{ judgedAt ? '判定于 ' + judgedAt : '判定中…' }}</span>
-        <el-button size="small" :loading="loading" data-testid="btn-rejudge" @click="load">重新判定</el-button>
-      </div>
-      <div class="ob" style="padding-bottom:12px">
-        <div class="note info">这一页<b>不自动刷新</b>：门禁结论是个决策点，不是需要盯着跳的数字，
-          而增量判定每次要起三个 git 子进程。代码或覆盖变了之后，点「重新判定」。</div>
-      </div>
+  <div v-for="r in rows" :key="r.mode" class="card" data-testid="gate-card" :data-mode="r.mode">
+    <div class="card-head">
+      <h2>{{ LABEL[r.mode] }}</h2>
+      <span class="sub" v-if="r.data">{{ r.data.metric }} · 阈值 {{ r.data.threshold }}%<template
+        v-if="r.baseline"> · 基线 {{ r.baseline }}</template></span>
     </div>
 
-    <div v-for="r in rows" :key="r.mode" class="card" data-testid="gate-card" :data-mode="r.mode">
-      <div class="card-head">
-        <h2>{{ LABEL[r.mode] }}</h2>
-        <span class="sub" v-if="r.data">{{ r.data.metric }} · 阈值 {{ r.data.threshold }}%<template
-          v-if="r.baseline"> · 基线 {{ r.baseline }}</template></span>
-      </div>
-
-      <div class="gate" :class="VERDICT[r.verdict].cls">
-        <span class="verdict" :data-testid="'gate-verdict-' + r.mode">{{ VERDICT[r.verdict].text }}</span>
-        <span class="why">{{ r.data ? r.data.reason : r.reason }}</span>
-        <span class="num" v-if="r.data">
-          <template v-if="r.data.actual === null">—</template>
-          <template v-else>{{ r.data.actual }}<small>%</small></template>
-        </span>
-      </div>
-
-      <div class="ob" style="padding-top:0">
-        <!-- 顶栏改基线只触发 setMode→reload，不会重判这一页（重判 = 每敲一个字符起三个
-             git 进程）。所以必须把「这个结论是按哪个基线判的」摆出来 -->
-        <div v-if="drifted(r)" class="note risk" data-testid="baseline-drift">
-          顶栏的基线已经改成 <b>{{ store.baseline.trim() }}</b>，而这个结论还是按
-          <b>{{ r.baseline }}</b> 判的。点上面的「重新判定」。
-        </div>
-        <div class="note info">{{ WHY[r.mode] }}</div>
-        <div v-if="r.verdict === 'undecided'" class="note risk">
-          <b>「判不了」不是「不通过」。</b>
-          <!-- 连不上平台时压根没有响应，status 是 undefined —— 这里回退成「4xx」的话，
-               就是把一件不知道的事说成知道的，而这两种情况该找的人不一样 -->
-          <template v-if="r.status">服务端回的是 HTTP {{ r.status }} 而不是 200 ——
-            前者该找人看平台（探针掉线、源码漂移、基线不存在），后者才该补测试。</template>
-          <template v-else>这次连服务端的回应都没拿到（平台没起、或被网络挡了），
-            与「这次改的代码覆盖不够」是两回事。</template>
-          CI 里那句 <code>curl -f</code> 分不出这些，所以必须靠状态码分开。
-        </div>
-        <div v-else-if="r.data" class="mono" style="color:var(--el-text-color-secondary)">
-          已覆盖 {{ r.data.coveredLines }} 行 / 未覆盖 {{ r.data.missedLines }} 行
-          <template v-if="r.data.actual === null">
-            · 分母为 0 时放行：这次没改任何可执行代码，不是「改了却一行没测」
-          </template>
-        </div>
-      </div>
+    <div class="gate" :class="VERDICT[r.verdict].cls">
+      <span class="verdict" :data-testid="'gate-verdict-' + r.mode">{{ VERDICT[r.verdict].text }}</span>
+      <span class="why">{{ r.data ? r.data.reason : r.reason }}</span>
+      <span class="num" v-if="r.data">
+        <template v-if="r.data.actual === null">—</template>
+        <template v-else>{{ r.data.actual }}<small>%</small></template>
+      </span>
     </div>
 
-    <div class="card">
-      <div class="card-head"><h2>接进 CI</h2></div>
-      <div class="ob">
-        <div class="note info">按 <code>passed</code> 放行或阻断。
-          <b>判不了时返回 409，别把它当成不通过</b> —— 那说明平台侧有问题，
-          而不是这次改动的覆盖不够。</div>
-        <div class="snip-wrap">
-          <button class="copy" data-testid="btn-copy-ci" @click="doCopy">{{ copyLabel }}</button>
-          <pre class="snippet" data-testid="gate-ci">{{ ciCmd }}</pre>
-        </div>
-        <div style="font-size:12px;color:var(--el-text-color-secondary);margin-top:6px">
-          命令里的口径与基线都跟着顶栏走（改了立刻反映在这里，不必先重新判定），
-          项目 id 已经带在路径里 —— 不带的话它恒落在默认项目上，
-          在别的项目页面照抄进 CI，判的是另一份代码。
-        </div>
+    <div class="ob" style="padding-top:0">
+      <!-- 顶栏改基线只触发 setMode→reload，不会重判这一页（重判 = 每敲一个字符起三个
+           git 进程）。所以必须把「这个结论是按哪个基线判的」摆出来 -->
+      <div v-if="drifted(r)" class="note risk" data-testid="baseline-drift">
+        顶栏的基线已经改成 <b>{{ store.baseline.trim() }}</b>，而这个结论还是按
+        <b>{{ r.baseline }}</b> 判的。点上面的「重新判定」。
+      </div>
+      <div class="note info">{{ WHY[r.mode] }}</div>
+      <div v-if="r.verdict === 'undecided'" class="note risk">
+        <b>「判不了」不是「不通过」。</b>
+        <!-- 连不上平台时压根没有响应，status 是 undefined —— 这里回退成「4xx」的话，
+             就是把一件不知道的事说成知道的，而这两种情况该找的人不一样 -->
+        <template v-if="r.status">服务端回的是 HTTP {{ r.status }} 而不是 200 ——
+          前者该找人看平台（探针掉线、源码漂移、基线不存在），后者才该补测试。</template>
+        <template v-else>这次连服务端的回应都没拿到（平台没起、或被网络挡了），
+          与「这次改的代码覆盖不够」是两回事。</template>
+        CI 里那句 <code>curl -f</code> 分不出这些，所以必须靠状态码分开。
+      </div>
+      <div v-else-if="r.data" class="mono" style="color:var(--el-text-color-secondary)">
+        已覆盖 {{ r.data.coveredLines }} 行 / 未覆盖 {{ r.data.missedLines }} 行
+        <template v-if="r.data.actual === null">
+          · 分母为 0 时放行：这次没改任何可执行代码，不是「改了却一行没测」
+        </template>
       </div>
     </div>
-  </template>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>接进 CI</h2></div>
+    <div class="ob">
+      <div class="note info">按 <code>passed</code> 放行或阻断。
+        <b>判不了时返回 409，别把它当成不通过</b> —— 那说明平台侧有问题，
+        而不是这次改动的覆盖不够。</div>
+      <div class="snip-wrap">
+        <button class="copy" data-testid="btn-copy-ci" @click="doCopy">{{ copyLabel }}</button>
+        <pre class="snippet" data-testid="gate-ci">{{ ciCmd }}</pre>
+      </div>
+      <div style="font-size:12px;color:var(--el-text-color-secondary);margin-top:6px">
+        命令里的口径与基线都跟着顶栏走（改了立刻反映在这里，不必先重新判定），
+        项目 id 已经带在路径里 —— 不带的话它恒落在默认项目上，
+        在别的项目页面照抄进 CI，判的是另一份代码。
+      </div>
+    </div>
+  </div>
 </div>`
 };
