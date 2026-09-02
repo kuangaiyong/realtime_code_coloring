@@ -31,6 +31,29 @@ public class GoCoverageAnalyzer {
     private static final Pattern BLOCK = Pattern.compile(
             "^(.+):(\\d+)\\.\\d+,(\\d+)\\.\\d+ \\d+ (\\d+)$");
 
+    /**
+     * {@code covdata func} 的一行，制表符分隔：
+     * {@code <import path>/main.go:78:\t*Store.Refund\t0.0%}
+     *
+     * <p>名字用非贪婪捕获而不是 {@code \S+}：Go 的泛型实例化会打成 {@code Foo[int]}，
+     * 眼下不带空格，但按「非空白串」匹配是在赌它永远不带 —— 而赌输的表现是
+     * 「某几个函数从报表里消失了」，与「这些函数没被跑过」长得一模一样。
+     *
+     * <p>输出末尾那行 {@code total ... (statements) ... 6.7%} 天然匹配不上：
+     * 它没有 {@code :行号:} 那一段。
+     */
+    private static final Pattern FUNC = Pattern.compile(
+            "^(.+):(\\d+):\\s+(.+?)\\s+(\\d+(?:\\.\\d+)?)%$");
+
+    /**
+     * covdata func 交出来的一个函数。
+     *
+     * @param hit 这个函数跑过没有 —— 取自 covdata 给的语句百分比，<b>不是</b>从归属到它名下的
+     *            行数推的。两者在一种情形下会不一致，而那种情形只有百分比是对的，见 {@link #methodsOf}
+     */
+    record Func(int firstLine, String name, boolean hit) {
+    }
+
     private final ProjectConfig props;
     /** 工具链可执行文件的路径是部署机器的属性，换机器才改，与项目无关，因此仍从平台配置取 */
     private final CoverageProperties platform;
@@ -70,51 +93,116 @@ public class GoCoverageAnalyzer {
                 Files.write(dir.resolve(String.format(Locale.ROOT, "covcounters.%016x.%d.1", i, i)), d[1]);
             }
             Path out = dir.resolve("profile.txt");
-            runCovdata(dir, out);
-            return parse(Files.readAllLines(out, StandardCharsets.UTF_8), module, root);
+            runCovdata(dir, "textfmt", "-o=" + out.toAbsolutePath());
+            // 两个子命令都得跑：块区间只有 textfmt 给得出，函数名与首行号只有 func 给得出。
+            // 实测各约 70ms（预编译的 covdata），Go 归一化因此从 ~120ms 涨到 ~200ms，
+            // 仍不超过四种语言里最慢的 C++（211~260ms）—— 而四者是并行的，
+            // 归一化总耗时等于最慢的那个而非四者之和，端到端延迟不变
+            // func 失败只丢方法明细，不能连累行覆盖：那会让 Go 整个从界面上消失，
+            // 与「Go 代码没被调用过」长得一模一样 —— 本项目最忌讳的那种坏法。
+            // 方法本来就是「拿不到就写不提供」的指标，退回不提供是它自己的既定语义
+            Map<String, List<Func>> funcs;
+            try {
+                funcs = parseFuncs(runCovdata(dir, "func"), module, root);
+            } catch (IOException e) {
+                log.warn("取 Go 方法明细失败，本轮方法一项按「不提供」处理，行覆盖不受影响：{}",
+                        e.getMessage());
+                funcs = Map.of();
+            }
+            return parse(Files.readAllLines(out, StandardCharsets.UTF_8), module, root, funcs);
         } finally {
             deleteTree(dir);
         }
     }
 
-    private void runCovdata(Path in, Path out) throws IOException {
+    /**
+     * 跑一个 covdata 子命令，返回它的 stdout。
+     *
+     * <p>{@code textfmt} 走 {@code -o} 落文件，stdout 本该是空的；{@code func} 没有
+     * {@code -o}，结果就在 stdout 上。两者都得**边跑边读**：只要子进程写了东西而没人读，
+     * 管道写满就双方对着阻塞，直到 30 秒超时才被强杀。
+     */
+    private String runCovdata(Path in, String subcommand, String... extra) throws IOException {
         // 走 CovdataTool 而不是直接拼 `go tool covdata`：那层包装每轮采集要花约 3 秒
         // （见 CovdataTool 的说明），而它是端到端染色延迟里最大的一块
-        List<String> cmd = CovdataTool.command(platform.getGoTool(), "textfmt",
-                "-i=" + in.toAbsolutePath(), "-o=" + out.toAbsolutePath());
-        // profile 走 -o 落文件，stdout 本该是空的；但只要它写了东西而没人读，
-        // 管道写满就会双方对着阻塞，直到 30 秒超时才被强杀。丢弃即可
-        Process p = new ProcessBuilder(cmd)
-                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                .start();
-        // stderr 单独收走，避免管道写满时两端互相阻塞
+        List<String> args = new ArrayList<>(List.of(subcommand, "-i=" + in.toAbsolutePath()));
+        args.addAll(List.of(extra));
+        List<String> cmd = CovdataTool.command(platform.getGoTool(), args.toArray(new String[0]));
+        Process p = new ProcessBuilder(cmd).start();
+        // stdout / stderr 各起一条线程收走，避免管道写满时两端互相阻塞
+        StringBuilder out = new StringBuilder();
         StringBuilder err = new StringBuilder();
-        Thread drain = new Thread(() -> {
-            try {
-                err.append(new String(p.getErrorStream().readAllBytes(), StandardCharsets.UTF_8));
-            } catch (IOException ignored) {
-            }
-        });
-        drain.setDaemon(true);
-        drain.start();
+        Thread drainOut = drain(p.getInputStream(), out);
+        Thread drainErr = drain(p.getErrorStream(), err);
         try {
-            if (!p.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+            // 两个子命令串行跑，超时是相加的。textfmt 给 30s、func 给 15s：
+            // 实测各约 70ms，15s 已是两百倍余量，而合计 45s 才留得住 CLAUDE.md 定的
+            // 60s 客户端超时 —— 两个都给 30s 的话，最坏正好把那条线顶穿
+            int seconds = "func".equals(subcommand) ? 15 : 30;
+            if (!p.waitFor(seconds, java.util.concurrent.TimeUnit.SECONDS)) {
                 p.destroyForcibly();
-                throw new IOException("go tool covdata 超时未返回");
+                throw new IOException("go tool covdata " + subcommand + " 超时未返回");
             }
-            drain.join(1000);
+            drainOut.join(1000);
+            drainErr.join(1000);
+            // join 超时了还照常返回的话，交出去的是一段<b>半截</b>输出，而且与写它的线程之间
+            // 没有 happens-before。func 少几行的表现是「若干函数从报表里消失」，
+            // 与「这些函数没被跑过」一模一样 —— 正是这段代码处处在防的那种坏法
+            if (drainOut.isAlive() || drainErr.isAlive()) {
+                p.destroyForcibly();
+                throw new IOException("go tool covdata " + subcommand + " 的输出没读完，"
+                        + "拿到的是半截结果，本轮拒绝使用");
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("等待 go tool covdata 被中断", e);
         }
         if (p.exitValue() != 0) {
-            throw new IOException("go tool covdata 失败（exit " + p.exitValue() + "）："
+            throw new IOException("go tool covdata " + subcommand + " 失败（exit " + p.exitValue() + "）："
                     + err.toString().trim() + "。请确认平台所在环境已安装 Go 工具链（coverage.go-tool）");
         }
+        return out.toString();
     }
 
-    private Map<String, FileCoverage> parse(List<String> lines, String module, String root)
-            throws IOException {
+    private Thread drain(java.io.InputStream from, StringBuilder into) {
+        Thread t = new Thread(() -> {
+            try {
+                into.append(new String(from.readAllBytes(), StandardCharsets.UTF_8));
+            } catch (IOException ignored) {
+            }
+        });
+        t.setDaemon(true);
+        t.start();
+        return t;
+    }
+
+    /**
+     * covdata func 的输出 → 每个文件的函数表（按首行号升序）。
+     *
+     * <p>可见性放开到包级是为了让单测能喂真实的 covdata 输出文本 ——
+     * 起真实 Go 服务由 {@code scripts/e2e_go.py} 负责，但格式解析必须有能钉住的用例。
+     */
+    Map<String, List<Func>> parseFuncs(String text, String module, String root) {
+        Map<String, List<Func>> byFile = new HashMap<>();
+        for (String line : text.split("\r?\n")) {
+            Matcher m = FUNC.matcher(line.strip());
+            if (!m.matches()) {
+                continue; // 末尾的 total 行，以及任何认不出来的行
+            }
+            String path = toRepoRelative(m.group(1), module, root);
+            if (path == null) {
+                continue;
+            }
+            byFile.computeIfAbsent(path, k -> new ArrayList<>())
+                    .add(new Func(Integer.parseInt(m.group(2)), m.group(3),
+                            Double.parseDouble(m.group(4)) > 0));
+        }
+        byFile.values().forEach(fs -> fs.sort(Comparator.comparingInt(Func::firstLine)));
+        return byFile;
+    }
+
+    Map<String, FileCoverage> parse(List<String> lines, String module, String root,
+                                    Map<String, List<Func>> funcs) throws IOException {
         // 先按文件累计每行的最大执行次数：一行可能落在多个块里（如 if 与其分支同一行），
         // 只要有一个块跑过，这一行就是跑过的
         Map<String, Map<Integer, Long>> byFile = new LinkedHashMap<>();
@@ -169,17 +257,81 @@ public class GoCoverageAnalyzer {
             }
             int total = covered + missed;
             int slash = path.lastIndexOf('/');
+            List<FileCoverage.MethodCoverage> ms = methodsOf(funcs.get(path), ls);
+            // Go 的 profile 里没有分支这个概念，方法则有（covdata func）——
+            // 两者都是 null 的日子到此为止，别再照抄旁边那个 null
+            Integer coveredMethods = null, missedMethods = null;
+            if (ms != null) {
+                // 「跑过没跑过」取 covdata 给的百分比，不按归属出来的行数推（理由见 methodsOf）
+                coveredMethods = (int) funcs.get(path).stream().filter(Func::hit).count();
+                missedMethods = ms.size() - coveredMethods;
+            }
             result.put(path, new FileCoverage(
                     path,
                     slash < 0 ? "" : path.substring(0, slash).replace('/', '.'),
                     slash < 0 ? path : path.substring(slash + 1),
                     covered, missed,
                     total == 0 ? 0d : covered * 100d / total,
-                    null, null, null, null,
-                    null,
+                    null, null,
+                    coveredMethods, missedMethods,
+                    ms,
                     ls));
         });
         return result;
+    }
+
+    /**
+     * 把已经算好的行状态按首行号归到各函数名下。{@code null} 表示这个文件没有函数表。
+     *
+     * <p><b>覆盖数是自己从块数据算的，不用 {@code covdata func} 给的百分比</b>，两个理由：
+     * 一是那个百分比的口径是<b>语句</b>，而 IR 要的是行数，换算不过来；
+     * 二是自己算的与文件级计数同源，父子必然对得上 ——
+     * 报表钻进去发现方法行数加起来不等于文件行数，会被当成平台算错了。
+     *
+     * <p>归属靠「首行号不大于本行的最后一个函数」。Go 的顶层函数不嵌套，
+     * 而闭包（{@code func(){...}}）不会被 covdata func 单列，是并进外层函数的，
+     * 所以这个区间划分不会串。函数表之前的那些行（包声明、import、包级变量）
+     * 不归任何函数，只计进文件级 —— 这是四种语言共有的情形，
+     * 契约里也写明了方法行数不保证加总等于文件行数。
+     *
+     * <p><b>已知限制：covdata func 只给首行号，不给函数的结束行</b>，所以区间的上界只能取
+     * 「下一个函数的首行」。夹在两个具名函数之间的<b>包级</b>可执行代码
+     * （典型是 {@code var f = func(){…}}）会被算进它上面那个函数的行数里。
+     * demo 里没有这种写法，接大型工程时会遇到。
+     *
+     * <p>这个限制不会让「跑过没跑过」出错，因为<b>那一项走 covdata 给的百分比而不是归属出来的
+     * 行数</b>：上面那种情形里，一个从没执行过的函数会分到几行跑过的包级代码，
+     * 按行数推就成了「已覆盖」—— 把没跑过的说成跑过，是这个平台最不能犯的错。
+     * 行数偏大是看得见的粒度问题，覆盖判定错了却看不出来，所以两者各取各的来源。
+     */
+    private List<FileCoverage.MethodCoverage> methodsOf(
+            List<Func> fs, List<FileCoverage.LineCoverage> ls) {
+        if (fs == null || fs.isEmpty()) {
+            return null;
+        }
+        int[] covered = new int[fs.size()];
+        int[] missed = new int[fs.size()];
+        for (FileCoverage.LineCoverage l : ls) {
+            int owner = -1;
+            for (int i = 0; i < fs.size() && fs.get(i).firstLine() <= l.line(); i++) {
+                owner = i;
+            }
+            if (owner < 0) {
+                continue;
+            }
+            if ("COVERED".equals(l.status())) {
+                covered[owner]++;
+            } else {
+                missed[owner]++;
+            }
+        }
+        List<FileCoverage.MethodCoverage> ms = new ArrayList<>();
+        for (int i = 0; i < fs.size(); i++) {
+            // 分支给 null 而不是 0：Go 压根没有分支这个概念，补 0 会被读成「一条都没测」
+            ms.add(new FileCoverage.MethodCoverage(
+                    fs.get(i).name(), fs.get(i).firstLine(), covered[i], missed[i], null, null));
+        }
+        return ms;
     }
 
     /**

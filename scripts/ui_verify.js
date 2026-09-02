@@ -423,8 +423,10 @@ async function baselineOptions(page, testid) {
       pass(`文件列表 ${listRows2} 行，与 API 一致（原先这条由总览的排行表守着）`);
     }
 
-    // Go 拿不到分支与方法，页面上必须写「不提供」而不是留空或补 0 ——
-    // 补 0 会被读成「一个都没测」，而 Go 的 coverage profile 里压根没有这两个概念
+    // Go 拿不到分支，页面上必须写「不提供」而不是留空或补 0 ——
+    // 补 0 会被读成「一个都没测」，而 Go 的 coverage profile 里压根没有分支这个概念。
+    // 方法则相反：自 covdata func 接进来之后 Go 是有的，这里必须是个真数字 ——
+    // 「有指标却写不提供」和「没指标却补 0」是同一类错，都在骗读表的人
     const goMetrics = await page.evaluate(() => {
       const btn = [...document.querySelectorAll('[data-testid="file-item"]')]
         .find(e => (e.getAttribute('data-path') || '').endsWith('.go'));
@@ -433,10 +435,14 @@ async function baselineOptions(page, testid) {
     });
     if (!goMetrics) {
       fail('文件列表里找不到 Go 文件的三组数');
-    } else if ((goMetrics.match(/不提供/g) || []).length !== 2) {
-      fail(`Go 文件应有两项「不提供」（分支与方法），实际：${goMetrics}`);
+    } else if ((goMetrics.match(/不提供/g) || []).length !== 1) {
+      fail(`Go 文件应恰有一项「不提供」（分支），实际：${goMetrics}`);
+    } else if (!/支 不提供/.test(goMetrics)) {
+      fail(`Go 的「不提供」应落在分支那一项上，实际：${goMetrics}`);
+    } else if (!/法 \d+\/\d+/.test(goMetrics)) {
+      fail(`Go 的方法应是个真数字（covdata func 给得出），实际：${goMetrics}`);
     } else {
-      pass(`Go 文件的分支与方法明确标为不提供，不是 0：${goMetrics}`);
+      pass(`Go 文件：分支标为不提供、方法给出真数字，两者都没补 0：${goMetrics}`);
     }
 
     // ---------- 4d-2 · 导出 CSV ----------
@@ -473,12 +479,14 @@ async function baselineOptions(page, testid) {
             // 找不到就 fail，不能空过：这是核心功能 #17 在 CSV 侧唯一的守卫，
             // 静默通过等于这条防线从此形同虚设
             fail(`CSV 里找不到 Go 文件那一行，无从验证「不提供」是否导成了空：${lines[1]}`);
-          } else if (goRow.split(',')[7].trim() !== '' || goRow.split(',')[8].trim() !== '') {
-            const c = goRow.split(',');
-            fail(`Go 行的分支与方法应导成空，实际是「${c[7]}」「${c[8]}」：${goRow}`);
+          } else if (goRow.split(',')[7].trim() !== '') {
+            fail(`Go 行的分支应导成空（不是 0），实际是「${goRow.split(',')[7]}」：${goRow}`);
+          } else if (!/^\d+\/\d+$/.test(goRow.split(',')[8].trim())) {
+            // 方法这一列反过来：Go 有这个指标，导成空会让读表的人以为拿不到
+            fail(`Go 行的方法应是个真数字，实际是「${goRow.split(',')[8]}」：${goRow}`);
           } else {
             pass(`导出的 CSV 落盘可读：${csvFile}，${lines.length - 1} 行 × 9 列，`
-              + 'Go 的分支与方法导成空而不是 0');
+              + 'Go 的分支导成空而不是 0，方法导出真数字');
           }
         }
       }
@@ -546,6 +554,35 @@ async function baselineOptions(page, testid) {
       const still = await page.evaluate(countOf, '.ln.hit');
       if (still !== 1) fail(`等了一轮推送后定位标记有 ${still} 处，应恒为 1 处（标记没清或被重复加）`);
       else pass('定位标记在一轮推送后仍只有一处，没有把人反复拽回目标行');
+    }
+
+    // Go 曾经是四种语言里唯一「钻到底是空的」那个：covdata textfmt 的输出里没有函数
+    // 信息，报表三级会是一片空白。接上 covdata func 之后四种语言都到得了底 ——
+    // 没有这条断言的话，Go 哪天退回「不提供」不会有任何用例挂，页面上也看不出异样
+    await page.click('[data-testid="nav-report"]');
+    if (await waitFor(page, () => !!document.querySelector(
+        '[data-testid="pkg-row"][data-pkg="demo-service-go"]'), null, 15000) < 0) {
+      fail('报表里找不到 Go 那个包');
+    } else {
+      await page.click('[data-testid="pkg-row"][data-pkg="demo-service-go"] [data-testid="pkg-name"]');
+      if (await waitFor(page, () => !!document.querySelector('[data-testid="file-row"]'), null, 8000) < 0) {
+        fail('Go 的包点不进源文件一层');
+      } else {
+        await page.click('[data-testid="file-row"] [data-testid="file-name"]');
+        if (await waitFor(page, () => !!document.querySelector('[data-testid="method-row"]'), null, 15000) < 0) {
+          fail('Go 的源文件钻不到方法一层 —— covdata func 没接上');
+        } else {
+          const goNames = await page.evaluate(() =>
+            [...document.querySelectorAll('[data-testid="method-row"]')].map(r => r.dataset.name));
+          // 接收者是 Go 方法名里唯一能区分 Store.Refund 与某个同名自由函数的东西，
+          // 丢了它报表上就会出现两行一模一样的名字
+          if (!goNames.some(n => n === '*Store.Refund')) {
+            fail(`Go 方法名没带接收者，实际：${goNames.slice(0, 5).join('、')}`);
+          } else {
+            pass(`Go 也钻得到方法一层：${goNames.length} 个函数，名字带接收者（如 *Store.Refund）`);
+          }
+        }
+      }
     }
 
     // ---------- 4e · 信息架构：口径栏只在会显示数字的视图上 ----------

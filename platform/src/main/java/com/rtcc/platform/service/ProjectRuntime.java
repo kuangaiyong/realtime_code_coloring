@@ -820,8 +820,9 @@ public class ProjectRuntime {
                     files.add(m);
                 });
         res.put("overallRatio", round(overallRatio(snap)));
-        // 方法可以跨语言汇总：「一个函数」这个口径在 Java / C++ / Rust 三者间大致一致，
-        // 不像分支那样差一个数量级。不提供的语言（Go）不计入分母
+        // 方法可以跨语言汇总：「一个函数」这个口径在四种语言间大致一致，
+        // 不像分支那样差一个数量级。四种语言现在都给得出方法，
+        // anyMethods 那条仍留着 —— 增量口径下方法会被整体置 null，那时它是唯一的出口
         int cm = 0, mm = 0;
         boolean anyMethods = false;
         for (FileCoverage f : snap.values()) {

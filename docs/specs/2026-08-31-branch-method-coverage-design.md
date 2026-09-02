@@ -47,13 +47,20 @@ partly-covered 也算已覆盖行。所以行覆盖率的算法不改，分支�
 | **Java** JaCoCo | ✓ | **✓** | ✓ | `ILine.getBranchCounter()`、`ISourceFileCoverage.getBranchCounter()` / `getMethodCounter()`，全是现成的 |
 | **C++** gcov | ✓ | **✓** | ✓ | 加 `-b -c` 后实测 359 条 branch 行、11 条 function 行 |
 | **Rust** llvm-cov | ✓ | **✗** | **✓** | 实测 `BRF:0`；`FNF:7`/`FNH` 有值 |
-| **Go** covdata | ✓ | **✗** | **✗** | 块模型，profile 里只有块的执行次数 |
+| **Go** covdata | ✓ | **✗** | **✓**（2026-09-02 修正） | 分支：块模型，profile 里只有块的执行次数。方法：`covdata func` 给得出，见下 |
 
 两条硬约束：
 
-1. **Go 永远给不出分支和方法**。不是没接好，是 coverage profile 里就没有这个信息。
+1. **Go 给不出分支**。不是没接好，是 coverage profile 里就没有这个信息。
    Rust 要分支得上 nightly 的 `-Z coverage-options=branch`，而本项目是 stable 1.97.1。
 2. **C++ 与 Java 的分支口径差一个数量级**（见 §4.2 的实测数字）。
+
+> **2026-09-02 修正：这里原本写的是「Go 永远给不出分支和方法」，方法那半句是错的。**
+> 当时只看了 `covdata textfmt` 的输出 —— 那里面确实只有块，没有函数。
+> 但 `covdata` 还有一个 `func` 子命令，输出带文件、行号与完全可读的函数名（含接收者）：
+> `…/main.go:78:\t*Store.Refund\t0.0%`。做三级钻取报表时实测发现，遂接上。
+> **教训是「某个工具给不出 X」这种结论，得把它的子命令都看一遍再下**，
+> 而不是看了最常用的那个输出就推广到整个工具。
 
 ### 2.1 顺带修正 CLAUDE.md 的一处记录错误
 
@@ -101,8 +108,8 @@ public record FileCoverage(
 读的人会以为 Go 的分支一个都没测，而真相是那里压根没有分支这回事。
 **这正是本项目最不能接受的那类静默错误：数字是假的，但界面上看不出是假的。**
 
-Java 侧永远不是 `null`（没有分支的行是 `0/0`）；Go 侧永远是 `null`；
-Rust 的分支是 `null` 而方法不是。
+Java 侧永远不是 `null`（没有分支的行是 `0/0`）；Go 与 Rust 的分支永远是 `null`，
+而两者的方法都不是（Go 的方法于 2026-09-02 接上，见 §2 的修正）。
 
 **多实例合并不需要任何额外处理。** 四种语言都是在各自的原生数据层合并
 （exec / gcda / profraw），分支与方法计数跟着自动正确 ——
@@ -140,7 +147,7 @@ C++ 里每个可能抛异常的操作（`std::string` 构造、`map` 查找）�
 | `CoverageAnalyzer`（Java） | 行级取 `sf.getLine(i).getBranchCounter()`；文件级取 `sf.getBranchCounter()` / `getMethodCounter()` |
 | `CppCoverageAnalyzer` | `runGcov` 加 `-b -c`；`parse` 认 `branch N ...` 与 `function ... called N` 行，滤掉 `(throw)` |
 | `RustCoverageAnalyzer` | 认 lcov 的 `FNF` / `FNH`（分支填 `null`） |
-| `GoCoverageAnalyzer` | **一行不动**，两项都填 `null` |
+| `GoCoverageAnalyzer` | **一行不动**，两项都填 `null`（方法这一项已于 2026-09-02 接上 `covdata func`，见 §2 的修正） |
 
 **一个实现上的坑：gcov 的 `branch` 行不带行号**，它跟在某一条源码行之后。
 解析时必须维护「最近一个源码行号」，把 branch 行归到那一行上 ——
@@ -174,7 +181,7 @@ C++ 里每个可能抛异常的操作（`std::string` 构造、`map` 查找）�
 │  行覆盖      │  分支覆盖             │  方法覆盖   │
 │   17.3%     │  Java   62%  18/29   │   12/47    │
 │  82/475 行  │  C++    11%  27/239  │   25.5%    │
-│             │  Go·Rust  不提供      │  Go 不提供  │
+│             │  Go·Rust  不提供      │            │
 └─────────────┴──────────────────────┴────────────┘
 ```
 
