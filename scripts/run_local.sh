@@ -12,7 +12,7 @@ ROOT=$(pwd)
 
 # 版本号在本脚本里只出现这一处。原先两处 jar 路径各写一遍，改 pom 版本号漏改一处
 # 只会报「文件不存在」，看不出根因是版本没跟上（CLAUDE.md 第二个坑）
-VERSION=0.8.0
+VERSION=0.9.0
 
 JAVA_HOME="${JAVA_HOME:-/c/Users/Administrator/devtools/jdk-17.0.20+8}"
 MVN_HOME="${MVN_HOME:-/c/Users/Administrator/devtools/apache-maven-3.9.16}"
