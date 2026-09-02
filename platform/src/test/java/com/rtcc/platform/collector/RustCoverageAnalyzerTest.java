@@ -203,4 +203,88 @@ class RustCoverageAnalyzerTest {
         assertNull(f.missedBranches(), "stable 不生成分支数据，必须是 null");
         assertNull(f.lines().get(0).coveredBranches(), "行级同理");
     }
+
+    /**
+     * 真实的 lcov 片段：带 FN / FNDA 记录。符号是 <b>v0 mangling</b>（_R 开头），
+     * 不是 legacy 的 _ZN...E —— 实测确认，两者是完全不同的两套编码。
+     */
+    private String lcovWithMethods(Path repo) {
+        return String.join("\n",
+                "SF:" + repo.resolve("demo-service-rust/src/order.rs"),
+                "FN:20,_RNvCs2r1QDoXLnWk_17demo_service_rust11read_target",
+                "FN:38,_RNvCs2r1QDoXLnWk_17demo_service_rust11json_escape",
+                "FN:52,_RNCNvCs2r1QDoXLnWk_17demo_service_rust11read_target0B3_",
+                "FNDA:3,_RNvCs2r1QDoXLnWk_17demo_service_rust11read_target",
+                "FNDA:0,_RNvCs2r1QDoXLnWk_17demo_service_rust11json_escape",
+                "FNDA:0,_RNCNvCs2r1QDoXLnWk_17demo_service_rust11read_target0B3_",
+                "FNF:3", "FNH:1", "BRF:0", "BRH:0",
+                "DA:20,3", "DA:21,0", "DA:38,0",
+                "end_of_record");
+    }
+
+    @Test
+    void Rust方法明细带得出可读的函数名(@TempDir Path repo) throws Exception {
+        RustCoverageAnalyzer a = new RustCoverageAnalyzer(props(repo, "x.exe"), new CoverageProperties());
+
+        FileCoverage f = a.parse(lcovWithMethods(repo)).get("demo-service-rust/src/order.rs");
+        assertNotNull(f.methods(), "Rust 拿得到方法明细");
+        assertEquals(3, f.methods().size(), "三条 FN 记录应产出三个方法");
+
+        java.util.List<String> names = f.methods().stream()
+                .map(FileCoverage.MethodCoverage::name).toList();
+        // v0 符号原样摆出来对人毫无用处，必须抽出末尾那几段可读的标识符
+        assertTrue(names.stream().noneMatch(n -> n.startsWith("_R")),
+                "方法名还是原始的 v0 符号：" + names);
+        assertTrue(names.stream().anyMatch(n -> n.contains("json_escape")),
+                "没抽出函数名：" + names);
+    }
+
+    @Test
+    void Rust方法条数与文件级计数一致(@TempDir Path repo) throws Exception {
+        RustCoverageAnalyzer a = new RustCoverageAnalyzer(props(repo, "x.exe"), new CoverageProperties());
+
+        FileCoverage f = a.parse(lcovWithMethods(repo)).get("demo-service-rust/src/order.rs");
+        // 父子必须对得上：报表上一层写 3 个方法、钻进去只有 2 条，页面无法自圆其说。
+        // 泛型单态化会让同一个函数出现多条 FN 记录，真出现重复时这条会挂 ——
+        // 那时要么把文件级计数也改成从去重列表派生，要么 Rust 不进方法明细，
+        // 必须显式二选一，不能让父子悄悄对不上
+        assertEquals(f.coveredMethods() + f.missedMethods(), f.methods().size(),
+                "方法明细条数与文件级计数对不上");
+    }
+
+    /**
+     * 真实符号（从本机 llvm-cov 输出里取的）。impl 里的方法会带上 backref：
+     * {@code NtB4_5Store} —— B4_ 是反向引用，不跳过的话 4 会被当成长度前缀，
+     * 名字里冒出 _5St 这种噪声段。这条实测撞到过。
+     */
+    @Test
+    void v0符号里的反向引用不能被当成长度前缀() {
+        assertEquals("demo_service_rust::order::Store::query_order",
+                RustCoverageAnalyzer.readableName(
+                        "_RNvMs_NtCs2r1QDoXLnWk_17demo_service_rust5orderNtB4_5Store11query_order"));
+        assertEquals("demo_service_rust::order::Order::new",
+                RustCoverageAnalyzer.readableName(
+                        "_RNvMNtCs2r1QDoXLnWk_17demo_service_rust5orderNtB2_5Order3new"));
+        assertEquals("demo_service_rust::order::is_final_state",
+                RustCoverageAnalyzer.readableName(
+                        "_RNvNtCs2r1QDoXLnWk_17demo_service_rust5order14is_final_state"));
+    }
+
+    /** 抽不出来就原样返回：这一步只影响可读性，不参与任何计算 */
+    @Test
+    void 不是v0符号时原样返回() {
+        assertEquals("plain_name", RustCoverageAnalyzer.readableName("plain_name"));
+        assertEquals("_ZN4test3fooE", RustCoverageAnalyzer.readableName("_ZN4test3fooE"));
+    }
+
+    @Test
+    void Rust方法的首行号取FN记录里的行号(@TempDir Path repo) throws Exception {
+        RustCoverageAnalyzer a = new RustCoverageAnalyzer(props(repo, "x.exe"), new CoverageProperties());
+
+        FileCoverage f = a.parse(lcovWithMethods(repo)).get("demo-service-rust/src/order.rs");
+        FileCoverage.MethodCoverage m = f.methods().stream()
+                .filter(x -> x.name().contains("json_escape")).findFirst().orElseThrow();
+        assertEquals(38, m.firstLine(), "FN:38 给的就是首行号，不必像 C++ 那样按位置猜");
+        assertNull(m.coveredBranches(), "Rust 拿不到分支，方法级同样是 null");
+    }
 }

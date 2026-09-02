@@ -91,6 +91,9 @@ public class RustCoverageAnalyzer {
         // FNF/FNH 是文件级汇总，直接用；不从 FN/FNDA 逐条累加 ——
         // 泛型单态化会让同一个函数出现多条 FN 记录，逐条累加会把分母放大
         Map<String, int[]> fnByFile = new LinkedHashMap<>();
+        // 方法明细：FN 给「行号,符号」，FNDA 给「执行次数,符号」，两者按符号配对。
+        // 按符号去重（LinkedHashMap 天然去重）—— 泛型单态化会让同一个函数出现多条 FN
+        Map<String, Map<String, int[]>> fnDetail = new LinkedHashMap<>();
         String currentPath = null;
         List<FileCoverage.LineCoverage> current = null;
         int files = 0;
@@ -102,6 +105,22 @@ public class RustCoverageAnalyzer {
                 boolean wanted = rel != null && rel.startsWith(root + "/");
                 currentPath = wanted ? rel : null;
                 current = wanted ? byFile.computeIfAbsent(rel, k -> new ArrayList<>()) : null;
+            } else if (line.startsWith("FN:") && currentPath != null) {
+                // FN:<行号>,<符号>
+                String[] kv = line.substring(3).split(",", 2);
+                if (kv.length == 2) {
+                    fnDetail.computeIfAbsent(currentPath, k -> new LinkedHashMap<>())
+                            .computeIfAbsent(kv[1].strip(), k -> new int[2])[0] =
+                            Integer.parseInt(kv[0].strip());
+                }
+            } else if (line.startsWith("FNDA:") && currentPath != null) {
+                // FNDA:<执行次数>,<符号>
+                String[] kv = line.substring(5).split(",", 2);
+                if (kv.length == 2) {
+                    int[] v = fnDetail.computeIfAbsent(currentPath, k -> new LinkedHashMap<>())
+                            .computeIfAbsent(kv[1].strip(), k -> new int[2]);
+                    v[1] = Long.parseLong(kv[0].strip()) > 0 ? 1 : 0;
+                }
             } else if (line.startsWith("FNF:") && currentPath != null) {
                 fnByFile.computeIfAbsent(currentPath, k -> new int[2])[0] =
                         Integer.parseInt(line.substring(4).strip());
@@ -153,10 +172,85 @@ public class RustCoverageAnalyzer {
                     // 填 0 会让页面显示「Rust 分支覆盖 0%」，读的人以为一个都没测
                     null, null,
                     fn[1], fn[0] - fn[1],
-                    null,
+                    methodsOf(fnDetail.get(path)),
                     lines));
         });
         return result;
+    }
+
+    /** 把一个文件的 FN/FNDA 配对结果转成方法明细。没有记录时给空列表而不是 null */
+    private static List<FileCoverage.MethodCoverage> methodsOf(Map<String, int[]> fns) {
+        if (fns == null) {
+            return List.of();
+        }
+        List<FileCoverage.MethodCoverage> out = new ArrayList<>();
+        fns.forEach((sym, v) -> out.add(new FileCoverage.MethodCoverage(
+                readableName(sym), v[0],
+                // 行覆盖按「这个函数跑没跑过」记：lcov 的 FNDA 只给调用次数，
+                // 拿不到函数的行范围。1/1 或 0/1 至少是真的，编一个行数才是错的
+                v[1], 1 - v[1],
+                // 分支恒为 null，理由同文件级：rustc stable 不生成分支数据
+                null, null)));
+        return out;
+    }
+
+    /**
+     * 从 Rust 的 <b>v0 mangled</b> 符号里抽出可读的名字。
+     *
+     * 实测本项目的符号是 v0（{@code _R} 开头），不是 legacy 的 {@code _ZN...E} ——
+     * 两者是完全不同的两套编码，别照着 legacy 的规则去解。
+     *
+     * <b>这不是完整的 demangle，只是抽出末尾那几段标识符给人看。</b>
+     * v0 里标识符一律以「十进制长度 + 内容」编码，中间夹着标签字母与
+     * {@code s<base62>_} 形式的消歧串；扫出所有长度前缀正确的段拼起来就够读了：
+     * {@code _RNvCs2r1QDoXLnWk_17demo_service_rust11json_escape}
+     * → {@code demo_service_rust::json_escape}。
+     *
+     * <b>抽不出来就原样返回符号</b>：这一步只影响可读性，不参与任何计算 ——
+     * 显示得难看好过显示得不对。真要完整 demangle 得引一个库，
+     * 而本项目对「内网离线可构建」是有立场的。
+     */
+    static String readableName(String sym) {
+        if (sym == null || !sym.startsWith("_R")) {
+            return sym;
+        }
+        List<String> parts = new ArrayList<>();
+        int i = 2;
+        while (i < sym.length()) {
+            char c = sym.charAt(i);
+            // s<base62>_ 是消歧串、B<base62>_ 是反向引用，两者里的数字都不是长度前缀。
+            // 不跳过 B 的话，NtB4_5Store 会被当成「长度 4 的标识符 _5St」——
+            // 名字里就冒出 _5St 这种噪声段（实测撞到过）
+            if (c == 's' || c == 'B') {
+                int j = i + 1;
+                while (j < sym.length() && Character.isLetterOrDigit(sym.charAt(j))) {
+                    j++;
+                }
+                if (j < sym.length() && sym.charAt(j) == '_') {
+                    i = j + 1;
+                    continue;
+                }
+            }
+            if (!Character.isDigit(c)) {
+                i++;
+                continue;
+            }
+            int j = i;
+            while (j < sym.length() && Character.isDigit(sym.charAt(j))) {
+                j++;
+            }
+            int len = Integer.parseInt(sym.substring(i, j));
+            if (len <= 0 || j + len > sym.length()) {
+                i = j;
+                continue;
+            }
+            String name = sym.substring(j, j + len);
+            if (name.chars().allMatch(ch -> Character.isLetterOrDigit(ch) || ch == '_')) {
+                parts.add(name);
+            }
+            i = j + len;
+        }
+        return parts.isEmpty() ? sym : String.join("::", parts);
     }
 
     /** 返回 null 表示这个文件不在仓库里（依赖库、标准库） */
