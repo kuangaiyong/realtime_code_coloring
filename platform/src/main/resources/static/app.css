@@ -399,8 +399,10 @@ table.tbl td.na { color: var(--el-text-color-secondary); opacity: .6; }
                   background: var(--el-bg-color); border: 1px solid var(--el-border-color);
                   border-radius: var(--radius); }
 .ob-field input:focus { outline: none; border-color: var(--el-color-primary); }
-.ob-field .hint { font-size: 11px; line-height: 1.6; color: var(--el-text-color-secondary); margin-top: 4px; }
-.ob-field .hint code { font-size: 11px; padding: 0 3px; }
+/* 字段说明降级成 ⓘ：这几条讲的是「填错了看不出来」，人在填的那一刻要能看到，
+   但摊开成说明块就又变回一屏文档 —— 完整版在「接入帮助」页 */
+.ob-field .fi { flex: none; font-size: 12px; color: var(--el-text-color-secondary); cursor: help; }
+.ob-field .fi:hover { color: var(--el-color-primary); }
 /* 「这个路径在谁的机器上」必须一眼看得出：平台只能校验自己这台上的，
    而对被测机器上的路径做存在性检查，答案与事实无关（见 onboard.js 的说明） */
 .ob-field .side { flex: none; font-size: 10px; font-weight: 500; padding: 1px 6px; border-radius: 20px; }
@@ -416,14 +418,31 @@ table.tbl td.na { color: var(--el-text-color-secondary); opacity: .6; }
 .ob-artifact .dl { font-size: 13px; font-weight: 600; color: var(--el-color-primary); text-decoration: none; }
 .ob-artifact .dl:hover { text-decoration: underline; }
 .ob-artifact .meta { font-size: 11px; color: var(--el-text-color-secondary); }
-.ob-artifact .pre { flex-basis: 100%; font-size: 11px; line-height: 1.7;
-                    color: var(--el-text-color-secondary); }
+/* 前提留一句话在下载处（完整版在帮助页）：不满足前提的人下载完接不上、
+   还不知道为什么。一行放不下就省略，悬停看全 */
+.ob-artifact .pre { flex-basis: 100%; font-size: 11px; line-height: 1.7; cursor: help;
+                    color: var(--el-text-color-secondary);
+                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 自检表里的「测这一台」。结果就在按钮旁边，不必等下一个轮询周期 */
 .probe-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
 .probe-res { font-size: 11px; }
 .probe-res.ok { color: var(--el-color-success); }
 .probe-res.err { color: var(--el-color-danger); }
+
+/* 「详细说明」的入口。撤掉正文之后这是通往原理的唯一一条路，不能藏 */
+.lang-tabs .help-link { margin-left: auto; align-self: center; font-size: 12px;
+                        color: var(--el-color-primary); text-decoration: none; }
+.lang-tabs .help-link:hover { text-decoration: underline; }
+.cfg-foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.cfg-foot .tip { font-size: 11px; color: var(--el-text-color-secondary); }
+
+/* 帮助页：被测机器 / 平台机器 两组字段要一眼分得开（平台只校验得了后者） */
+.ob h4.side-h { font-size: 12px; font-weight: 600; margin: 12px 0 4px; }
+.ob h4.side-h.target { color: var(--el-color-warning); }
+.ob h4.side-h.platform { color: var(--el-color-primary); }
+.ob .opt { font-size: 10px; padding: 0 5px; border-radius: 20px; margin-left: 5px;
+           color: var(--el-text-color-secondary); background: var(--el-fill-color); }
 
 .snip-wrap { position: relative; }
 .snip-wrap .copy { position: absolute; top: 14px; right: 10px; height: 24px; padding: 0 9px; font-size: 12px; cursor: pointer;

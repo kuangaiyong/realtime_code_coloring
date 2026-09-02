@@ -9,6 +9,7 @@ import { Settings } from './views/settings.js';
 import { Events } from './views/events.js';
 import { Gate } from './views/gate.js';
 import { Report } from './views/report.js';
+import { Help } from './views/help.js';
 
 const { createApp, computed, ref, watchEffect } = Vue;
 
@@ -25,6 +26,8 @@ const ROUTES = [
   { path: 'gate', name: '覆盖门禁', icon: 'CircleCheck', comp: Gate, scoped: true },
   { path: 'report', name: '覆盖率报表', icon: 'Histogram', comp: Report, scoped: true },
   { path: 'onboard', name: '服务接入', icon: 'Connection', comp: Onboard },
+  // 接入页搬出来的说明。不 scoped —— 它一个覆盖数字都不显示，口径栏不该出现在这里
+  { path: 'help', name: '接入帮助', icon: 'QuestionFilled', comp: Help },
   { path: 'events', name: '采集事件', icon: 'Warning', comp: Events },
   { path: 'settings', name: '项目设置', icon: 'Setting', comp: Settings }
 ];

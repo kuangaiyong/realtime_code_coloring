@@ -601,13 +601,13 @@ async function baselineOptions(page, testid) {
     for (const v of ['coloring', 'overview', 'gate', 'report']) {
       if (await scopedBar(v)) barOn.push(v); else barOff.push(v + '(缺)');
     }
-    for (const v of ['onboard', 'events', 'settings']) {
+    for (const v of ['onboard', 'help', 'events', 'settings']) {
       if (await scopedBar(v)) barOff.push(v + '(多)');
     }
     if (barOff.length) {
       fail(`口径栏出现的位置不对：${barOff.join('、')}`);
     } else {
-      pass(`口径栏只出现在会显示数字的 ${barOn.length} 个视图上，设置/事件/接入页没有`);
+      pass(`口径栏只出现在会显示数字的 ${barOn.length} 个视图上，设置/事件/接入/帮助页没有`);
     }
 
     // ---------- 4f · 场景进行中：页面上唯一的解释 ----------
@@ -1091,6 +1091,78 @@ async function baselineOptions(page, testid) {
       }
     }
     // 这一节改过表单与设置页，回到服务接入页收尾，不影响后面的断言
+    await page.click('[data-testid="nav-onboard"]');
+    await waitFor(page, () => !!document.querySelector('[data-testid="view-onboard"]'), null, 5000);
+
+    // ---------- 5f · 接入页只留要填的，说明都在「接入帮助」 ----------
+    // 改版前这一页是一屏文档裹着一个表单（4 处风险提示 + 19 处字段说明 +
+    // 4 处语言坑 + 1 段配置说明，两千多字），要接入的人在里面找不到「我该填什么」
+    const obShape = await page.evaluate(() => {
+      const v = document.querySelector('[data-testid="view-onboard"]');
+      return {
+        notes: v.querySelectorAll('.note').length,
+        hintBlocks: v.querySelectorAll('.ob-field .hint').length,
+        infoIcons: v.querySelectorAll('.ob-field .fi').length,
+        fields: v.querySelectorAll('.ob-field').length,
+        helpHref: (v.querySelector('[data-testid="ob-help-link"]') || {}).getAttribute
+          ? v.querySelector('[data-testid="ob-help-link"]').getAttribute('href') : null
+      };
+    });
+    if (obShape.notes || obShape.hintBlocks) {
+      fail(`接入页还留着说明块（note ${obShape.notes} / hint ${obShape.hintBlocks}），应已搬去帮助页`);
+    } else if (obShape.infoIcons !== obShape.fields) {
+      // 每个字段都要有 ⓘ：这几条讲的是「填错了看不出来」，
+      // 人在填的那一刻看不到就等于没写 —— 这是它们没被一起搬走的唯一理由
+      fail(`${obShape.fields} 个字段只有 ${obShape.infoIcons} 个有说明图标`);
+    } else if (!/\/help\//.test(obShape.helpHref || '')) {
+      // 撤掉正文之后，这是通往原理的唯一一条路
+      fail(`接入页没有通往帮助页的入口：${obShape.helpHref}`);
+    } else {
+      pass(`接入页只留表单：0 个说明块、${obShape.fields} 个字段各有一个说明图标，另有帮助页入口`);
+    }
+
+    // 说明搬走了不等于还看得到 —— 悬停必须出完整那句
+    await page.hover('[data-testid="ob-hint-pkg"]');
+    await sleep(700);
+    const tipText = await page.evaluate(() => {
+      const t = document.querySelector('.el-popper');
+      return t ? t.innerText : null;
+    });
+    if (!tipText || !/填宽了|填窄了/.test(tipText)) {
+      fail(`字段说明图标悬停没出内容：${tipText}`);
+    } else {
+      pass('字段说明降级成图标后，悬停仍给出完整那句（includes 填宽/填窄的后果）');
+    }
+
+    // ---------- 5g · 接入帮助：说明的新家，且支持按语言深链接 ----------
+    await page.click('[data-testid="nav-help"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-help"]'), null, 8000) < 0) {
+      fail('打不开「接入帮助」视图');
+    } else {
+      const hp = await page.evaluate(() => {
+        const v = document.querySelector('[data-testid="view-help"]');
+        return { len: v.innerText.replace(/\s+/g, '').length, notes: v.querySelectorAll('.note').length };
+      });
+      if (hp.len < 500 || !hp.notes) {
+        fail(`帮助页内容太少，说明可能没搬过来：${hp.len} 字 / ${hp.notes} 个提示块`);
+      } else {
+        pass(`接入帮助页承接了说明：${hp.len} 字、${hp.notes} 个提示块`);
+      }
+      // 从接入页点某语言的「详细说明」跳过来，必须落在那门语言上 ——
+      // 人是带着「我要看 Rust 的」这个意图点过来的，落回 Java 等于没跳
+      await page.goto(`${PLATFORM}/#/p/default/help/rust`, { waitUntil: 'networkidle2' });
+      await waitFor(page, () => !!document.querySelector('[data-testid="view-help"]'), null, 8000);
+      const onRust = await page.evaluate(() =>
+        !!document.querySelector('[data-testid="hp-lang-rust"].on'));
+      if (!onRust) fail('深链接 /help/rust 没落在 Rust 那一节');
+      else pass('帮助页支持按语言深链接（/help/rust 直接落在 Rust）');
+      // 帮助页一个覆盖数字都不显示，口径栏不该出现在这里
+      if (await page.evaluate(() => !!document.querySelector('[data-testid="mode-full"]'))) {
+        fail('帮助页出现了口径栏，但它一个覆盖数字都不显示');
+      } else {
+        pass('帮助页没有口径栏：它不显示任何覆盖数字');
+      }
+    }
     await page.click('[data-testid="nav-onboard"]');
     await waitFor(page, () => !!document.querySelector('[data-testid="view-onboard"]'), null, 5000);
 
