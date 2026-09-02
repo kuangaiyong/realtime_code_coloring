@@ -163,4 +163,62 @@ class CppCoverageAnalyzerTest {
         assertEquals(1, f.coveredMethods(), "pay() called 3，算跑过");
         assertEquals(1, f.missedMethods(), "refund() called 0，算没跑过");
     }
+
+    /**
+     * 加了 -m 之后 gcov 给的是 demangled 名，形态与 mangled 完全不同：
+     * 里面<b>带空格</b>（Order const&），而且 STL 类型会展开成一长串模板。
+     * 这是真实输出的片段。
+     */
+    private static final String GCOV_DEMANGLED = String.join("\n",
+            "        -:    0:Source:order.cpp",
+            "function (anonymous namespace)::isFinalState(Order const&) called 0 returned 0% blocks executed 0%",
+            "    #####:    5:bool isFinalState(const Order& o) {",
+            "    #####:    6:    return o.status == \"PAID\";",
+            "function Store::refund(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, long long) called 3 returned 100% blocks executed 80%",
+            "        3:   51:bool Store::refund(const std::string& bizNo, long long amount) {",
+            "        3:   52:    return true;",
+            "        -:   53:}");
+
+    @Test
+    void 带空格的demangled函数名也要解析出来() throws Exception {
+        CppCoverageAnalyzer a = new CppCoverageAnalyzer(props(null), new CoverageProperties());
+
+        FileCoverage f = a.parse(GCOV_DEMANGLED, "demo-service-cpp").get("demo-service-cpp/order.cpp");
+        assertNotNull(f, "没解析出文件");
+        // 用「非空白串」匹配函数名的话，isFinalState(Order const&) 因为带空格会被丢掉，
+        // 只剩下无参的那些 —— 页面显示「1/1」，比全丢更隐蔽
+        assertEquals(2, f.coveredMethods() + f.missedMethods(),
+                "带空格的 demangled 名没被认出来，方法数只剩 " + (f.coveredMethods() + f.missedMethods()));
+        assertEquals(1, f.coveredMethods(), "refund called 3，算跑过");
+    }
+
+    @Test
+    void 方法首行号取function行之后的第一条源码行() throws Exception {
+        CppCoverageAnalyzer a = new CppCoverageAnalyzer(props(null), new CoverageProperties());
+
+        FileCoverage f = a.parse(GCOV_DEMANGLED, "demo-service-cpp").get("demo-service-cpp/order.cpp");
+        assertNotNull(f.methods(), "C++ 拿得到方法明细");
+        // gcov 的 function 行不带行号，实测确认它紧贴函数定义行之前
+        FileCoverage.MethodCoverage refund = f.methods().stream()
+                .filter(m -> m.name().startsWith("Store::refund")).findFirst().orElseThrow();
+        assertEquals(51, refund.firstLine(), "首行号该取 function 行之后的第一条源码行");
+        assertEquals(2, refund.coveredLines(), "函数范围内的源码行要累计到它名下");
+    }
+
+    /**
+     * STL 类型在 demangled 名里会展开成一长串模板，摆进报表会把表格撑爆。
+     * std::string 是其中最常见的一个，缩回去。
+     */
+    @Test
+    void 常见的STL模板缩写成短名() throws Exception {
+        CppCoverageAnalyzer a = new CppCoverageAnalyzer(props(null), new CoverageProperties());
+
+        FileCoverage f = a.parse(GCOV_DEMANGLED, "demo-service-cpp").get("demo-service-cpp/order.cpp");
+        String refund = f.methods().stream()
+                .filter(m -> m.name().startsWith("Store::refund")).findFirst().orElseThrow().name();
+
+        assertFalse(refund.contains("basic_string"),
+                "basic_string 的完整模板没缩写，报表里这一列会撑爆：" + refund);
+        assertEquals("Store::refund(std::string const&, long long)", refund);
+    }
 }
