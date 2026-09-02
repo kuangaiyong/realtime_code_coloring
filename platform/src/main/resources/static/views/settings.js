@@ -1,4 +1,5 @@
 import { api, LANG } from '../api.js';
+import { store } from '../store.js';
 import { BaselineField } from '../components/baseline-field.js';
 
 const { computed, reactive, ref, onMounted } = Vue;
@@ -43,6 +44,10 @@ export const Settings = {
     const busy = ref(false);
     const loadError = ref(null);
     const items = ref([]);
+    /** 哪几项是从服务接入页带过来的 —— 要说出来，否则人以为这些值本来就存着 */
+    const prefilled = ref([]);
+    /** 带过来了、但这一页此刻渲染不出输入框的那几项（该语言还没配实例） */
+    const hiddenPrefilled = ref([]);
 
     onMounted(async () => {
       try {
@@ -54,10 +59,29 @@ export const Settings = {
           const at = hp.lastIndexOf(':');
           return { lang, host: hp.slice(0, at), port: Number(hp.slice(at + 1)) };
         }));
+        // 从服务接入页带过来的值盖在库里那份之上，让人接着填而不是重打一遍。
+        // 顺序要紧：先装库里的，再盖带过来的 —— 反过来会被库里的旧值冲掉。
+        // 只带了已填的项（空值不带），所以不会把这里本来有的值清成空
+        if (store.pendingConfig) {
+          Object.assign(cfg, store.pendingConfig);
+          prefilled.value = Object.keys(store.pendingConfig);
+        }
+        // 语言字段只在配了该语言的实例时才渲染（见 pathFields）。
+        // 从接入页带 Go 的两项过来、而这个项目只配了 Java 实例时，
+        // 横幅会说「有 2 项带过来了」，页面上却一处都找不到 —— 人只能以为页面坏了。
+        // 值仍然带着（保存时会写进库，那是对的：语言配上之后它就该在），
+        // 但要说清此刻看不到它们，以及为什么
+        hiddenPrefilled.value = prefilled.value.filter(k =>
+          !GROUPS.some(g => g.fields.some(f => f[0] === k))
+          && !pathFields.value.some(f => f[1] === k));
       } catch (e) {
         loadError.value = e.message;
       } finally {
         loading.value = false;
+        // 用一次就清，而且<b>成功失败都要清</b>。
+        // 只在成功路径清的话，这次 GET 失败时它会留到下一次进这一页，
+        // 把人刚保存好的配置重新盖成陈旧的值 —— 正是这个字段本身要避免的那种坏法
+        store.pendingConfig = null;
       }
     });
 
@@ -103,7 +127,7 @@ export const Settings = {
     function addRow() { rows.push({ lang: 'java', host: '127.0.0.1', port: 6300 }); }
     function removeRow(i) { rows.splice(i, 1); }
 
-    return { GROUPS, LANG, cfg, rows, loading, busy, loadError, items,
+    return { GROUPS, LANG, cfg, rows, loading, busy, loadError, items, prefilled, hiddenPrefilled,
       instances, languages, pathFields, check, save, addRow, removeRow, emit };
   },
   template: `
@@ -117,6 +141,17 @@ export const Settings = {
         <span class="sub mono">{{ cfg.id }}</span>
       </div>
       <div class="ob">
+        <!-- 带过来的值必须说出来：不说的话，人会以为这几项本来就存着，
+             于是不点保存就走了 —— 而它们此刻只在表单里，库里还是旧值 -->
+        <div v-if="prefilled.length" class="note info" data-testid="st-prefilled">
+          有 {{ prefilled.length }} 项是从「服务接入」页带过来的，<b>还没保存</b> ——
+          确认无误后点下面的「保存」才会生效。
+          <template v-if="hiddenPrefilled.length">
+            <br>其中 <b>{{ hiddenPrefilled.length }} 项这一页还显示不出来</b>
+            （{{ hiddenPrefilled.join('、') }}）：语言相关的字段要先在上面配一个该语言的实例才会出现。
+            它们的值仍会随保存写进去。
+          </template>
+        </div>
         <div class="note info">改完<b>立即生效，不需要重启平台</b>。
           有场景正在进行时保存会被拒（409）—— 那个场景的计数器窗口是在旧配置下开的，
           跨配置定格出来的归因没有意义。</div>

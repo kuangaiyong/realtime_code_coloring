@@ -302,16 +302,47 @@ def main():
     # （8 个实例最坏 24 秒），之后才轮到它自己对 8 个实例各跑一遍外部归一化工具。
     # 写 15 秒时实例还少，如今偶尔会顶破 —— 顶破时报出来的是一串 Python 栈，
     # 看着像平台崩了，而实际上只是没等够
-    st, per = http(f"{PLATFORM}/api/coverage/instances", timeout=90)
-    if st != 200:
-        print(f"  [FAIL] 取各实例覆盖失败：{st} {per}")
-        ok = False
+    # 一台没取到数时这条断言<b>判不了</b>，不能照判。
+    # 掉线的那台会被下面的 rows 过滤掉，只剩一台时 max == sum 必然成立，
+    # 报出来的是「聚合不符合并集语义」—— 把人引向一个根本不存在的聚合 bug，
+    # 与上面「两台没有共同覆盖行」那个坑是同一类错。
+    #
+    # 所以先把<b>前提</b>做实：取不齐就重试几次。重试的是取数，不是断言本身 ——
+    # 每次为什么没取到都打出来，真的持续掉线时照样看得见，只是不再伪装成聚合 bug。
+    per, attempts, last_bad = None, 0, []
+    for attempts in range(1, 4):
+        st, body = http(f"{PLATFORM}/api/coverage/instances", timeout=90)
+        if st != 200:
+            print(f"  [FAIL] 取各实例覆盖失败：{st} {body}")
+            ok = False
+            break
+        last_bad = [(r["endpoint"], r.get("error")) for r in body["instances"]
+                    if r["coveredLines"] is None]
+        per = body
+        if not last_bad:
+            break
+        # 点名是哪台、为什么 —— 只说「重试」等于让人去翻日志
+        print(f"    第 {attempts} 次取数有实例没给出覆盖，重试：")
+        for ep, err in last_bad:
+            print(f"      {ep}  {err}")
+        time.sleep(3)
+
+    if per is None:
+        pass  # 上面已经报过 FAIL
     else:
         rows = [r for r in per["instances"] if r["coveredLines"] is not None]
         for r in per["instances"]:
             print(f"    {r['endpoint']:<24s} {r['status']:<12s} "
                   f"{r['overallRatio']}%  已覆盖 {r['coveredLines']}")
-        if len(per["instances"]) < 2 or not rows:
+        if attempts > 1 and not last_bad:
+            print(f"  [PASS] 第 {attempts} 次取数拿齐了全部实例（前 {attempts - 1} 次有实例瞬时取不到）")
+        if last_bad:
+            # 判不了，不是判不过。两者的下一步动作完全不同：
+            # 前者要去查那台实例为什么取不到，后者才是聚合算错了
+            print(f"  [FAIL] 取数 {attempts} 次仍有实例没给出覆盖，"
+                  f"无法验证并集语义（不是聚合算错了）：{last_bad}")
+            ok = False
+        elif len(per["instances"]) < 2 or not rows:
             print("  [FAIL] 至少应有两个实例分别给出覆盖")
             ok = False
         else:

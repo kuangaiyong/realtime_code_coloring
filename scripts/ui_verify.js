@@ -943,6 +943,157 @@ async function baselineOptions(page, testid) {
       pass(`各实例覆盖已加载，自检表由 ${colsBefore} 列增至 ${colsBefore + 3} 列（${(grew / 1000).toFixed(1)}s）`);
     }
 
+    // ---------- 5b · 接入参数表单：命令按填的值算，不留待替换的占位符 ----------
+    // 这一页此前是一屏需要人工替换的示例文字，而<b>替换错的后果大多是静默的</b>：
+    // includes 填宽了框架类进分母、覆盖率莫名偏低，填窄了被测代码根本不插桩，
+    // 漏掉 sessionid 则页面只说一句「没上报构建版本」—— 三种错都看不出根因在这里
+    const obFields = async () => page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="ob-form"] .ob-field')].map(e => e.dataset.field));
+
+    await page.click('[data-testid="ob-lang-java"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="ob-form"]'), null, 5000) < 0) {
+      die('接入页的参数表单没渲染出来');
+    }
+    const javaFields = await obFields();
+    await page.click('[data-testid="ob-lang-cpp"]');
+    await sleep(300);
+    const cppFields = await obFields();
+    if (javaFields.includes('pkg') && !cppFields.includes('pkg') && cppFields.includes('cppObjectsDir')) {
+      pass(`参数项跟着语言换：Java ${javaFields.length} 项 / C++ ${cppFields.length} 项，互不串`);
+    } else {
+      fail(`参数项没跟着语言换：java=${javaFields.join(',')} cpp=${cppFields.join(',')}`);
+    }
+
+    await page.click('[data-testid="ob-lang-java"]');
+    await sleep(300);
+    // 没填时必须仍给出完整命令 —— 人第一次进来往往是「先看看要做什么」，
+    // 空着把命令藏起来等于把这一页原本的价值也弄丢了
+    const cmdBefore = await page.evaluate(textOf, '[data-testid="ob-cmd"]');
+    if (!/com\.example/.test(cmdBefore)) fail('参数没填时应保留示例占位符，实际没有');
+    else pass('参数没填时仍给出完整的示例命令');
+
+    for (const [k, v] of [['pkg', 'com.acme.billing'], ['agentJar', '/opt/jacocoagent.jar'],
+                          ['appJar', '/srv/billing.jar'], ['classesDir', '/srv/app/target/classes']]) {
+      await fill('ob-in-' + k, v);
+    }
+    await sleep(400);
+    const cmdAfter = await page.evaluate(textOf, '[data-testid="ob-cmd"]');
+    if (/com\.example/.test(cmdAfter) || /your-service\.jar/.test(cmdAfter)) {
+      fail(`填了参数占位符还在：${cmdAfter.split('\n').pop()}`);
+    } else if (!cmdAfter.includes('includes=com.acme.billing.*')) {
+      // 包名拼 .* 少一个点或多一个点，是这类改动最容易悄悄引入的错
+      fail(`包名没拼对：${cmdAfter.split('\n').pop()}`);
+    } else {
+      pass('填入参数后示例占位符全部消失，包名拼接正确');
+    }
+
+    // 刷新后还在：填完参数正要去「项目设置」保存，那一趟来回不能把它清掉
+    await page.reload({ waitUntil: 'networkidle2' });
+    await waitFor(page, () => !!document.querySelector('[data-testid="ob-in-pkg"]'), null, 15000);
+    const kept = await page.evaluate(() => document.querySelector('[data-testid="ob-in-pkg"]').value);
+    if (kept !== 'com.acme.billing') fail(`刷新后表单值丢了：「${kept}」`);
+    else pass('刷新后表单值还在（存在浏览器本地，不入库、不进项目配置）');
+
+    // 平台侧配置按同一份表单算出。没填的项也要列出来 ——
+    // 漏掉的话，人照抄完还差几项却不知道差在哪
+    const cfgText = await page.evaluate(textOf, '[data-testid="ob-cfg"]');
+    if (!cfgText.includes('classes-dir: /srv/app/target/classes')) {
+      fail(`配置片段没跟着表单算：${cfgText}`);
+    } else if (!cfgText.includes('java-source-root: <还没填>')) {
+      fail(`没填的项应列出来并标明还没填：${cfgText}`);
+    } else {
+      pass('平台侧配置按表单算出，没填的项也列出来并标明「还没填」');
+    }
+
+    // 硬边界：配置的保存入口只应该有「项目设置」一处。两个地方都能改的话，
+    // 改出不同的值时没人看得出是哪一处生效了 —— 这条断言防的是日后「顺手加个保存按钮」
+    const hasSave = await page.evaluate(() => {
+      const v = document.querySelector('[data-testid="view-onboard"]');
+      return [...v.querySelectorAll('button')].some(b => /保存|存盘|提交/.test(b.innerText));
+    });
+    if (hasSave) fail('服务接入页出现了保存按钮 —— 配置的保存入口只应该有「项目设置」一处');
+    else pass('服务接入页没有任何写配置的操作，与「项目设置」不重复');
+
+    // 四步条：完成态只给平台能观测到的那几步。
+    // <b>「重启被测服务」永远不打勾</b> —— 它发生在被测方，平台无从得知，
+    // 打勾会变成一句没有依据的断言，而人会据此以为自己已经做过了
+    const steps = await page.evaluate(() => ({
+      s3: document.querySelector('[data-testid="ob-step-3"]').className,
+      s4: document.querySelector('[data-testid="ob-step-4"]').className
+    }));
+    if (/done/.test(steps.s3)) fail('「重启被测服务」不该有完成态 —— 平台无从得知');
+    else pass('「重启被测服务」一步没有完成态：平台观测不到的事不打勾');
+    if (!/done/.test(steps.s4)) fail(`探针已连上，第 4 步却不是完成态：${steps.s4}`);
+    else pass('第 4 步的完成态取自平台真实的探测结果');
+
+    // ---------- 5c · 探针物料：内网无外网，这是唯一拿得到它们的途径 ----------
+    await page.click('[data-testid="ob-lang-go"]');
+    await sleep(400);
+    const goPre = await page.evaluate(textOf, '[data-testid="ob-artifact-pre"]');
+    const dlHref = await page.evaluate(() => {
+      const a = document.querySelector('[data-testid="ob-download"]');
+      return a ? a.getAttribute('href') : null;
+    });
+    if (!goPre) {
+      fail('Go 的物料前提说明没渲染');
+    } else if (!/同包/.test(goPre)) {
+      // 不满足前提的人下载完接不上、还不知道为什么 —— 前提必须写在下载处
+      fail(`Go 物料没写明「与 main 同包」这个前提：${goPre}`);
+    } else if (dlHref !== '/api/probe/artifacts/go') {
+      fail(`Go 的下载链接不对：${dlHref}`);
+    } else {
+      pass('探针物料有下载入口，且在下载处写明了适用前提（Go 需与 main 同包）');
+    }
+
+    // ---------- 5d · 「测这一台」：不必等下一个轮询周期 ----------
+    // 人刚改完启动参数重启了服务，等 3 秒一轮才知道成没成，
+    // 那段等待里最常见的动作是反复刷新页面
+    const probeEp = sum.instances[0].endpoint;
+    await page.click(`[data-testid="ob-probe-${probeEp}"]`);
+    const probeMs = await waitFor(page, (e) =>
+      !!document.querySelector(`[data-testid="ob-probe-res-${e}"]`), probeEp, 15000);
+    if (probeMs < 0) {
+      fail('点「测这一台」没有出结果');
+    } else {
+      const txt = await page.evaluate((e) =>
+        document.querySelector(`[data-testid="ob-probe-res-${e}"]`).innerText, probeEp);
+      if (!/已连上/.test(txt)) fail(`探测 ${probeEp} 的结果不对：${txt}`);
+      else pass(`「测这一台」${probeMs}ms 当场出结果：${txt}`);
+    }
+
+    // ---------- 5e · 跳「项目设置」时带上已填的值 ----------
+    await page.click('[data-testid="ob-lang-java"]');
+    await sleep(300);
+    await page.click('[data-testid="ob-to-settings"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="st-classesDir"]'), null, 15000) < 0) {
+      fail('点「去项目设置」没跳过去');
+    } else {
+      const v = await page.evaluate(() =>
+        document.querySelector('[data-testid="st-classesDir"]').value);
+      if (v !== '/srv/app/target/classes') fail(`设置页没预填带过来的值：「${v}」`);
+      else pass('跳「项目设置」时带上了接入页已填的值，不必重打一遍');
+      // 带过来的值还没保存，不说的话人会以为已经存上了，不点保存就走
+      if (!await page.evaluate(() => !!document.querySelector('[data-testid="st-prefilled"]'))) {
+        fail('预填了却没说「还没保存」—— 人会以为已经存上了');
+      } else {
+        pass('设置页说明了这几项是带过来的、还没保存');
+      }
+      // 用一次就清：不清的话此后每次进设置页都会被这份陈旧的值覆盖，
+      // 而人不会知道自己刚改的值为什么又变回去了 —— 比不预填更糟
+      await page.click('[data-testid="nav-onboard"]');
+      await waitFor(page, () => !!document.querySelector('[data-testid="view-onboard"]'), null, 5000);
+      await page.click('[data-testid="nav-settings"]');
+      await waitFor(page, () => !!document.querySelector('[data-testid="st-classesDir"]'), null, 15000);
+      if (await page.evaluate(() => !!document.querySelector('[data-testid="st-prefilled"]'))) {
+        fail('预填值没有用完即清 —— 每次进设置页都会被这份陈旧的值覆盖');
+      } else {
+        pass('预填值用一次就清，再进设置页不会被陈旧值覆盖');
+      }
+    }
+    // 这一节改过表单与设置页，回到服务接入页收尾，不影响后面的断言
+    await page.click('[data-testid="nav-onboard"]');
+    await waitFor(page, () => !!document.querySelector('[data-testid="view-onboard"]'), null, 5000);
+
     // ---------- 6 · 实时染色链路（本脚本的核心断言） ----------
     await page.click('[data-testid="nav-coloring"]');
     await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]'), null, 5000);

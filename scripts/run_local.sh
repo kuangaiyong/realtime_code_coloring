@@ -95,7 +95,7 @@ start_demo() {
 
   # 注意：java.exe 是 Windows 程序，认不得 Git Bash 的 /c/... 路径，
   # 传给它的路径必须是相对路径或 Windows 路径。
-  java -javaagent:platform/target/agent/jacocoagent.jar=includes=com.shop.*,output=tcpserver,address=localhost,port=$probe,sessionid=$sid \
+  java -javaagent:platform/target/classes/probe/jacocoagent.jar=includes=com.shop.*,output=tcpserver,address=localhost,port=$probe,sessionid=$sid \
        -jar "demo-service/target/demo-service-$VERSION.jar" --server.port=$http > "$LOG_DIR/$name.log" 2>&1 &
   echo $! > "$LOG_DIR/$name.pid"
   wait_ready "$LOG_DIR/$name.log" "Started DemoServiceApplication" "$name"

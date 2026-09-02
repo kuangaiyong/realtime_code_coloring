@@ -372,6 +372,7 @@ table.tbl td.na { color: var(--el-text-color-secondary); opacity: .6; }
 .wz-foot { display: flex; align-items: center; gap: 8px; padding: 12px 18px;
            border-top: 1px solid var(--el-border-color-lighter); }
 /* 走过的步骤要与「还没到」区分开，否则六个圈看起来一模一样，不知道自己在哪 */
+.steps .step .miss { font-size: 11px; color: var(--el-color-warning); margin-left: 2px; }
 .steps .step.done { color: var(--el-color-success); }
 .steps .step.done .num { border-color: var(--el-color-success); color: var(--el-color-success); }
 
@@ -386,6 +387,44 @@ table.tbl td.na { color: var(--el-text-color-secondary); opacity: .6; }
 .ob h3:first-child { margin-top: 0; }
 .ob ul { margin: 4px 0; padding-left: 20px; }
 .ob code { font-family: var(--mono); background: var(--el-fill-color-light); padding: 1px 5px; border-radius: 4px; }
+
+/* 接入参数表单。两列自适应：字段少的语言（Go 只有 3 项）不至于空一大片，
+   字段多的（Rust 有 7 项）也不会排成一长条 */
+.ob-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px 18px;
+           margin: 4px 0 14px; }
+.ob-field label { display: flex; align-items: center; gap: 7px; font-size: 12px;
+                  color: var(--el-text-color-primary); font-weight: 600; margin-bottom: 5px; }
+.ob-field input { width: 100%; height: 30px; padding: 0 10px; box-sizing: border-box;
+                  font-family: var(--mono); font-size: 12px; color: var(--el-text-color-primary);
+                  background: var(--el-bg-color); border: 1px solid var(--el-border-color);
+                  border-radius: var(--radius); }
+.ob-field input:focus { outline: none; border-color: var(--el-color-primary); }
+.ob-field .hint { font-size: 11px; line-height: 1.6; color: var(--el-text-color-secondary); margin-top: 4px; }
+.ob-field .hint code { font-size: 11px; padding: 0 3px; }
+/* 「这个路径在谁的机器上」必须一眼看得出：平台只能校验自己这台上的，
+   而对被测机器上的路径做存在性检查，答案与事实无关（见 onboard.js 的说明） */
+.ob-field .side { flex: none; font-size: 10px; font-weight: 500; padding: 1px 6px; border-radius: 20px; }
+.ob-field .side.target { color: var(--el-color-warning); background: var(--el-color-warning-light-9); }
+.ob-field .side.platform { color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
+
+/* 探针物料。前提说明与下载按钮必须挨着 ——
+   不满足前提的人下载完接不上，还不知道为什么 */
+.ob-artifact { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+               padding: 12px 14px; margin: 4px 0 4px;
+               background: var(--el-fill-color-light); border: 1px solid var(--el-border-color-lighter);
+               border-radius: var(--radius); }
+.ob-artifact .dl { font-size: 13px; font-weight: 600; color: var(--el-color-primary); text-decoration: none; }
+.ob-artifact .dl:hover { text-decoration: underline; }
+.ob-artifact .meta { font-size: 11px; color: var(--el-text-color-secondary); }
+.ob-artifact .pre { flex-basis: 100%; font-size: 11px; line-height: 1.7;
+                    color: var(--el-text-color-secondary); }
+
+/* 自检表里的「测这一台」。结果就在按钮旁边，不必等下一个轮询周期 */
+.probe-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.probe-res { font-size: 11px; }
+.probe-res.ok { color: var(--el-color-success); }
+.probe-res.err { color: var(--el-color-danger); }
+
 .snip-wrap { position: relative; }
 .snip-wrap .copy { position: absolute; top: 14px; right: 10px; height: 24px; padding: 0 9px; font-size: 12px; cursor: pointer;
                    color: var(--el-text-color-regular); font-family: inherit;

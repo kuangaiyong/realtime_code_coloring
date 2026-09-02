@@ -57,7 +57,17 @@
         <artifactId>spring-boot-maven-plugin</artifactId>
       </plugin>
 
-      <!-- 把 jacocoagent.jar 取出来放到 target/agent/，供被测服务挂载 -->
+      <!--
+        把 jacocoagent.jar 取出来放到 target/classes/probe/，它因此会进 fat jar 的
+        BOOT-INF/classes/ —— 平台要把它当 classpath 资源交给用户下载
+        （内网无外网，这是用户唯一拿得到它的途径）。
+
+        落点从 target/agent/ 改到这里之后，run_local.sh 里 Java 实例挂载 agent 的
+        路径必须同步改，否则只报「文件不存在」，看不出根因。
+
+        版本取 ${jacoco.version}，与平台解析 exec 数据用的是同一个版本 ——
+        分发一个版本对不上的 agent，表现是「接上了但解不出数据」。
+      -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-dependency-plugin</artifactId>
@@ -76,7 +86,52 @@
                   <destFileName>jacocoagent.jar</destFileName>
                 </artifactItem>
               </artifactItems>
-              <outputDirectory>${project.build.directory}/agent</outputDirectory>
+              <outputDirectory>${project.build.outputDirectory}/probe</outputDirectory>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!--
+        三种语言的探针源码同样要能下载，但它们<b>留在 demo-service-*/ 原处不动</b>，
+        构建时复制进来。
+
+        为什么不把权威副本挪到 platform 的资源目录：Go 的包就是目录，
+        coverage_agent.go 必须与 main.go 同目录才会被 `go build -tags=goverage .`
+        编译到；挪走就不参与编译，而构建前复制回去又会让 demo-service-go 多出一个
+        未跟踪文件 —— 那个目录在 SOURCE_ROOTS 里，判脏后被测实例自报的 sessionid
+        带上 -dirty，增量口径相关的用例会全部失败。
+
+        构建期从单一来源复制，产物不入库、每次重新生成，不存在两份分岔的问题；
+        而且用户下载到的恰好是被 8 个实例的全量 E2E 真实验证过的那一份。
+
+        代价：platform 模块的构建从此引用 sibling 目录，单独拿出仓库构建会失败。
+        本仓库是聚合工程，接受这个耦合。
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>copy-probe-sources</id>
+            <phase>process-resources</phase>
+            <goals><goal>copy-resources</goal></goals>
+            <configuration>
+              <outputDirectory>${project.build.outputDirectory}/probe</outputDirectory>
+              <resources>
+                <resource>
+                  <directory>${project.basedir}/../demo-service-go</directory>
+                  <includes><include>coverage_agent.go</include></includes>
+                </resource>
+                <resource>
+                  <directory>${project.basedir}/../demo-service-cpp</directory>
+                  <includes><include>coverage_agent.cpp</include></includes>
+                </resource>
+                <resource>
+                  <directory>${project.basedir}/../demo-service-rust</directory>
+                  <includes><include>coverage_agent.c</include></includes>
+                </resource>
+              </resources>
             </configuration>
           </execution>
         </executions>

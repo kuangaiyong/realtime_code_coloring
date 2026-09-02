@@ -1,22 +1,72 @@
 import { store, loadPerInstance } from '../store.js';
-import { esc, copyText, LANG, pctClass } from '../api.js';
+import { api, esc, copyText, LANG, pctClass } from '../api.js';
 
 const { computed, ref, watch } = Vue;
 
 /**
+ * 把「产物路径」渲染成可以直接执行的形式。
+ *
+ * 相对路径要加 <code>./</code>（POSIX shell 不搜当前目录），<b>绝对路径不能加</b> ——
+ * 无条件拼的话，用户按同页其它字段的口径填了绝对路径，就会生成
+ * <code>.//srv/app/svc</code> 这种东西，照抄执行找不到文件。
+ * 高亮标记要先剥再判，否则带标记的绝对路径会被当成相对路径。
+ */
+/**
+ * 高亮标记。<b>刻意用一个输入框里打不出来的控制字符</b>，而不是可见的字符串：
+ * 标记是靠「奇数段普通、偶数段高亮」数出来的，用户只要填一个含该串的路径，
+ * 此后所有段落就会错位，而复制时那句「剥掉全部标记」还会把他自己填的字符一并删掉 ——
+ * 交出去的是一条被悄悄改坏的命令，正是这一页要消灭的那类错误。
+ */
+const MARK = String.fromCharCode(1);
+
+function run(pathWithMark) {
+  const bare = pathWithMark.split(MARK).join('');
+  // POSIX 绝对路径、~、Windows 盘符路径，以及已经带了 ./ 或 ../ 的，都原样用。
+  // 分隔符两种都要认：这一页的用户有一半在 Windows 上
+  const asIs = /^([/~]|[A-Za-z]:[\\/]|\.{1,2}[\\/])/.test(bare);
+  return asIs ? pathWithMark : './' + pathWithMark;
+}
+
+/**
  * 服务接入向导。
  *
- * 向导的价值不在于复述文档，而在于两点：命令里的端口就是本平台实际配置的那个，
- * 以及最后一步「连上没有」由平台自己回答。所以正文按 summary 里的 instances 现算，
- * 不写死任何端口。
+ * 向导的价值不在于复述文档，而在于三点：命令里的端口就是本平台实际配置的那个，
+ * 命令里的其余参数由用户自己填、当场算进去，以及最后一步「连上没有」由平台自己回答。
+ * 所以正文按 summary 里的 instances 与表单现算，不写死任何端口，也不留需要手工替换的占位符。
+ *
+ * <b>fields 里的 side 是这一页最要紧的一处区分</b>：
+ *
+ * - <code>target</code> —— 这个路径在<b>被测服务那台机器</b>上（agent 路径、产物名、
+ *   对象目录）。平台<b>不能</b>校验它：去 exists() 一下，本机恰好也有同名目录就报「存在」，
+ *   没有就报「不存在」，<b>两种回答都可能是错的，而错的那种看起来完全正常</b>；
+ * - <code>platform</code> —— 这个路径在<b>平台这台机器</b>上（classes-dir、各语言 source-root），
+ *   它会进项目配置。校验交给「项目设置」保存时的 /api/projects/check，这一页不做。
+ *
+ * 带 cfgField 的字段就是要进项目配置的那些，值同时用于生成配置片段与跳设置页预填。
+ * optional 的字段不计入「填齐了没有」（Rust 的 xwin / toolchain 只有 Windows 要填）。
  */
 const OB = {
   java: {
     name: 'Java', port: 6300,
+    fields: [
+      { key: 'pkg', label: '业务包名前缀', side: 'target', ph: 'com.example',
+        hint: '填进 <code>includes</code>。<b>填宽了</b>框架类会进分母、覆盖率莫名偏低；' +
+          '<b>填窄了</b>被测代码根本不插桩 —— 两种错都看不出是这里填的' },
+      { key: 'agentJar', label: 'JaCoCo agent 路径', side: 'target', ph: '/path/to/jacocoagent.jar',
+        hint: '被测服务那台机器上的路径。上面可以直接下载这份 agent，版本与平台解析用的一致' },
+      { key: 'appJar', label: '被测服务的 jar', side: 'target', ph: 'your-service.jar',
+        hint: '被测服务那台机器上的路径' },
+      { key: 'classesDir', label: 'Java 产物目录', side: 'platform', cfgField: 'classesDir',
+        cfgKey: 'classes-dir', ph: '/srv/app/target/classes',
+        hint: '<b>平台</b>这台机器上的路径。缺了它解不出任何行号' },
+      { key: 'javaSourceRoot', label: 'Java 源码根', side: 'platform', cfgField: 'javaSourceRoot',
+        cfgKey: 'java-source-root', ph: 'demo-service/src/main/java',
+        hint: '<b>平台</b>这台机器上的路径，用于渲染染色视图' }
+    ],
     note: ['info', '<b>无需重新编译，也无需改动源码。</b>JaCoCo 在类加载时做字节码插桩。' +
       '但探针必须随 JVM 一起启动 —— JaCoCo 官方明确不支持对已运行的进程动态挂载' +
       '（插桩会给类添加静态字段，违反 JVM 类重定义的约束）。'],
-    cmd: hp => [
+    cmd: (hp, f) => [
       ['cm', '# 工作树脏时必须带 -dirty：少了它，实例会自报一个干净的 commit，'],
       ['cm', '# 平台的版本一致性校验被绕过，算出来的是一份行号错位却看不出异常的增量报告'],
       ['', 'BUILD_ID=$(git rev-parse HEAD)$(git status --porcelain | grep -q . && echo -dirty)'],
@@ -24,9 +74,9 @@ const OB = {
       ['cm', '# includes 只填你自己的包，范围越小开销越小'],
       ['cm', '# sessionid 是实例自报的构建版本，不配它增量口径不可用'],
       ['cm', '# 参数串不折行：中间断开会被 shell 当成两条命令'],
-      ['', 'java -javaagent:/path/to/jacocoagent.jar=includes=com.example.*,output=tcpserver,' +
-           '@@address=' + hp.host + ',port=' + hp.port + '@@,sessionid=$BUILD_ID' +
-           ' -jar your-service.jar']
+      ['', 'java -javaagent:' + f('agentJar') + '=includes=' + f('pkg') + '.*,output=tcpserver,' +
+           MARK + 'address=' + hp.host + ',port=' + hp.port + MARK + ',sessionid=$BUILD_ID' +
+           ' -jar ' + f('appJar')]
     ],
     cfg: [
       ['classes-dir', '被测服务的 .class 产物。缺了它解不出任何行号'],
@@ -36,20 +86,31 @@ const OB = {
   },
   go: {
     name: 'Go', port: 6400,
+    fields: [
+      { key: 'output', label: '产物文件名', side: 'target', ph: 'your-service',
+        hint: '被测服务那台机器上的产物路径，构建与启动两处用的是同一个' },
+      { key: 'goSourceRoot', label: 'Go 源码根', side: 'platform', cfgField: 'goSourceRoot',
+        cfgKey: 'go-source-root', ph: 'demo-service-go',
+        hint: '<b>平台</b>这台机器上的路径' },
+      { key: 'goModulePath', label: 'go.mod 的 module 路径', side: 'platform',
+        cfgField: 'goModulePath', cfgKey: 'go-module-path', ph: 'github.com/you/your-service',
+        hint: '把 profile 里的 import path 换算成仓库相对路径。' +
+          '与被测模块对不上时，报告会是「Go 一个文件都没有」—— 与「Go 代码没被调用过」长得一样' }
+    ],
     note: ['risk', '<b>必须带插桩重新编译一次，但业务源码一行不改。</b>' +
       'Go 编译为原生机器码，运行期没有可改写的中间表示。探针 <code>coverage_agent.go</code> 与 main 同包、' +
       '由 build tag 守卫，<code>init()</code> 自动执行；不带 tag 的生产构建里它根本不参与编译。'],
-    cmd: hp => [
+    cmd: (hp, f) => [
       ['cm', '# 工作树脏时必须带 -dirty：少了它，实例会自报一个干净的 commit，'],
       ['cm', '# 平台的版本一致性校验被绕过，算出来的是一份行号错位却看不出异常的增量报告'],
       ['', 'BUILD_ID=$(git rev-parse HEAD)$(git status --porcelain | grep -q . && echo -dirty)'],
       ['', ''],
       ['cm', '# -covermode=atomic 是硬要求：场景清零用的 ClearCounters() 只在 atomic 模式下可用'],
-      ['', 'go build -cover -covermode=atomic -tags=goverage -o your-service .'],
+      ['', 'go build -cover -covermode=atomic -tags=goverage -o ' + f('output') + ' .'],
       ['', ''],
       ['cm', '# COVERAGE_ADDR 默认只绑回环。写成 :' + hp.port + ' 会绑到所有网卡，'],
       ['cm', '# 而 /coverage/clear 能清零计数器 —— 等于把正在录的场景交给同网段任何人随手作废'],
-      ['', 'COVERAGE_ADDR=@@' + hp.host + ':' + hp.port + '@@ COVERAGE_BUILD_ID=$BUILD_ID ./your-service']
+      ['', 'COVERAGE_ADDR=' + MARK + hp.host + ':' + hp.port + MARK + ' COVERAGE_BUILD_ID=$BUILD_ID ' + run(f('output'))]
     ],
     cfg: [
       ['go-source-root', 'Go 源码根'],
@@ -62,25 +123,48 @@ const OB = {
   },
   cpp: {
     name: 'C++', port: 6500,
+    fields: [
+      { key: 'sources', label: '业务源文件', side: 'target', ph: 'order.cpp main.cpp',
+        hint: '空格分隔。这些要插桩（加 <code>--coverage</code>），探针不插桩 —— ' +
+          '给探针也加上的话，测的是探针自己' },
+      { key: 'objDir', label: '对象文件目录', side: 'target', ph: '/build/obj',
+        hint: '<b>必须是绝对路径</b>：.gcda 的落点是编译期写死进产物的，' +
+          '相对路径会跟着进程的工作目录跑' },
+      { key: 'output', label: '产物名', side: 'target', ph: 'your-service' },
+      { key: 'dataDir', label: '覆盖数据目录', side: 'target', ph: '/var/cover/svc-1',
+        hint: '<b>每个实例一个目录</b>。不分开的话两个实例往同一个 .gcda 互相覆盖，' +
+          '聚合出来的是「最后写的那一份」' },
+      { key: 'cppObjectsDir', label: '.gcno 所在目录', side: 'platform', cfgField: 'cppObjectsDir',
+        cfgKey: 'cpp-objects-dir', ph: '/build/obj',
+        hint: '<b>平台</b>这台机器上的路径。相当于 Java 的 classes-dir，缺了它解不出行号 —— ' +
+          '与上面那个对象目录常常指同一处，但那是被测方的视角，这是平台的视角' },
+      { key: 'cppSourceRoot', label: 'C++ 源码根', side: 'platform', cfgField: 'cppSourceRoot',
+        cfgKey: 'cpp-source-root', ph: 'demo-service-cpp',
+        hint: '<b>平台</b>这台机器上的路径，平台侧的 gcov 要在这个目录下才找得到源码' }
+    ],
     note: ['risk', '<b>必须重新编译；业务源码同样一行不改。</b>' +
       '探针 <code>coverage_agent.cpp</code> 是独立编译单元，靠全局对象的构造函数（早于 main 执行）自动启动，' +
       '业务代码不 include 也不调用它任何东西。不依赖 LD_PRELOAD，也不用 SIGUSR1，Windows 上同样可用。'],
-    cmd: hp => [
+    cmd: (hp, f) => [
       ['cm', '# 工作树脏时必须带 -dirty：少了它，实例会自报一个干净的 commit，'],
       ['cm', '# 平台的版本一致性校验被绕过，算出来的是一份行号错位却看不出异常的增量报告'],
       ['', 'BUILD_ID=$(git rev-parse HEAD)$(git status --porcelain | grep -q . && echo -dirty)'],
       ['', ''],
       ['cm', '# 业务代码插桩、探针不插桩。编译的工作目录必须是源码根（.gcno 记的是相对源码名），'],
       ['cm', '# 对象文件必须用绝对路径 —— .gcda 的落点是编译期写死进产物的'],
-      ['', 'g++ -std=c++17 --coverage -c order.cpp -o /build/obj/order.o'],
-      ['', 'g++ -std=c++17            -c coverage_agent.cpp -o /build/obj/coverage_agent.o'],
+      // 逐个源文件一条编译命令：g++ -c 接多个源文件时不能再给 -o。
+      // 先剥掉高亮标记再切分 —— 标记是成对的，切开之后就配不上了
+      ...f('sources').split(MARK).join('').split(/\s+/).filter(s => s).map(src => ['',
+        'g++ -std=c++17 --coverage -c ' + src + ' -o ' + f('objDir') + '/'
+          + src.replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '') + '.o']),
+      ['', 'g++ -std=c++17            -c coverage_agent.cpp -o ' + f('objDir') + '/coverage_agent.o'],
       ['cm', '# 探针要开 socket：Windows 上需显式链 -lws2_32，Linux 上不用'],
-      ['', 'g++ -o your-service /build/obj/*.o --coverage -lws2_32'],
+      ['', 'g++ -o ' + f('output') + ' ' + f('objDir') + '/*.o --coverage -lws2_32'],
       ['', ''],
       ['cm', '# GCOV_PREFIX 每实例一个目录，否则两个实例往同一个 .gcda 互相覆盖，'],
       ['cm', '# 聚合出来的是「最后写的那一份」'],
-      ['', 'GCOV_PREFIX=/var/cover/svc-1 GCOV_PREFIX_STRIP=99 COVERAGE_DATA_DIR=/var/cover/svc-1 \\'],
-      ['', '  COVERAGE_ADDR=@@' + hp.host + ':' + hp.port + '@@ COVERAGE_BUILD_ID=$BUILD_ID ./your-service']
+      ['', 'GCOV_PREFIX=' + f('dataDir') + ' GCOV_PREFIX_STRIP=99 COVERAGE_DATA_DIR=' + f('dataDir') + ' \\'],
+      ['', '  COVERAGE_ADDR=' + MARK + hp.host + ':' + hp.port + MARK + ' COVERAGE_BUILD_ID=$BUILD_ID ' + run(f('output'))]
     ],
     cfg: [
       ['cpp-objects-dir', '.gcno 所在目录（编译期产物）。相当于 Java 的 classes-dir，缺了它解不出行号'],
@@ -93,31 +177,51 @@ const OB = {
   },
   rust: {
     name: 'Rust', port: 6600,
+    fields: [
+      { key: 'objDir', label: '探针 .o 的落点目录', side: 'target', ph: '/build/obj',
+        hint: '被测方机器上的绝对路径。探针单独编成 .o 后经 <code>-C link-arg</code> 注入' },
+      { key: 'profraw', label: '.profraw 文件路径', side: 'target', ph: '/var/cover/svc-1.profraw',
+        hint: '<b>每个实例一个文件，且必须是字面路径</b> —— <code>%p</code> / <code>%m</code> ' +
+          '之类的模式由 LLVM 展开，探针按同一个字符串删不掉旧文件，' +
+          '交回的就成了历次累计的叠加，而界面上看不出异样' },
+      { key: 'output', label: '产物路径', side: 'target', ph: './target/release/your-service' },
+      { key: 'xwin', label: 'xwin 目录（仅 Windows）', side: 'target', ph: '<xwin>', optional: true,
+        hint: 'Windows 上要编成 msvc 目标，用它拉来的 CRT/SDK 导入库。Linux 上留空即可' },
+      { key: 'toolchain', label: 'rustup toolchain 目录（仅 Windows）', side: 'target',
+        ph: '<toolchain>', optional: true,
+        hint: '取其中的 rust-lld 作链接器。Linux 上留空即可' },
+      { key: 'rustBinary', label: '产物路径（平台侧）', side: 'platform', cfgField: 'rustBinary',
+        cfgKey: 'rust-binary', ph: 'demo-service-rust/target/.../your-service.exe',
+        hint: '<b>平台</b>这台机器上能读到的产物本身 —— 行号信息在它自带的 coverage mapping 里' },
+      { key: 'rustSourceRoot', label: 'Rust 源码根', side: 'platform', cfgField: 'rustSourceRoot',
+        cfgKey: 'rust-source-root', ph: 'demo-service-rust',
+        hint: '<b>平台</b>这台机器上的路径' }
+    ],
     note: ['risk', '<b>必须重新编译；源码零改动做得比 Go / C++ 还彻底 —— 连 Cargo.toml 都不用动。</b>' +
       '探针是单独用 gcc 编译的 <code>.o</code>，构建时经 <code>-C link-arg</code> 注入，' +
       '靠 <code>.CRT$XCU</code> 段里的函数指针在 main 之前自动执行。既没走连续同步模式（%c），也没引入 minicov 依赖。'],
-    cmd: hp => [
+    cmd: (hp, f) => [
       ['cm', '# 工作树脏时必须带 -dirty：少了它，实例会自报一个干净的 commit，'],
       ['cm', '# 平台的版本一致性校验被绕过，算出来的是一份行号错位却看不出异常的增量报告'],
       ['', 'BUILD_ID=$(git rev-parse HEAD)$(git status --porcelain | grep -q . && echo -dirty)'],
       ['', ''],
       ['cm', '# 探针单独编成 .o 经 link-arg 注入；Cargo.toml 一行不动'],
-      ['', 'gcc -c coverage_agent.c -o /build/obj/coverage_agent.o -mno-stack-arg-probe -O1'],
+      ['', 'gcc -c coverage_agent.c -o ' + f('objDir') + '/coverage_agent.o -mno-stack-arg-probe -O1'],
       ['cm', '# Windows 必须编成 msvc 目标（gnu 目标上 -C instrument-coverage 直接 E0463），'],
       ['cm', '# 因此还要 -L native= 指向 xwin 拉来的 CRT/SDK 导入库并换用 lld-link。'],
       ['cm', '# Linux 上把 --target 与 -L / -C linker 那几项去掉即可，其余不变'],
-      ['', 'RUSTFLAGS="-C instrument-coverage -C link-arg=/build/obj/coverage_agent.o \\'],
+      ['', 'RUSTFLAGS="-C instrument-coverage -C link-arg=' + f('objDir') + '/coverage_agent.o \\'],
       ['', '  -C link-arg=ws2_32.lib \\'],
-      ['', '  -L native=<xwin>/crt/lib/x86_64 -L native=<xwin>/sdk/lib/um/x86_64 \\'],
-      ['', '  -L native=<xwin>/sdk/lib/ucrt/x86_64 \\'],
-      ['', '  -C linker=<toolchain>/lib/rustlib/x86_64-pc-windows-gnu/bin/rust-lld.exe \\'],
+      ['', '  -L native=' + f('xwin') + '/crt/lib/x86_64 -L native=' + f('xwin') + '/sdk/lib/um/x86_64 \\'],
+      ['', '  -L native=' + f('xwin') + '/sdk/lib/ucrt/x86_64 \\'],
+      ['', '  -C linker=' + f('toolchain') + '/lib/rustlib/x86_64-pc-windows-gnu/bin/rust-lld.exe \\'],
       ['', '  -C linker-flavor=lld-link" \\'],
       ['', '  cargo build --release --target x86_64-pc-windows-msvc'],
       ['', ''],
       ['cm', '# LLVM_PROFILE_FILE 每实例一个文件，且必须是字面路径 —— %p / %m 之类的模式由 LLVM 展开，'],
       ['cm', '# 探针按同一个字符串删不掉旧文件，交回的就成了历次累计的叠加，界面上看不出异样'],
-      ['', 'LLVM_PROFILE_FILE=/var/cover/svc-1.profraw \\'],
-      ['', '  COVERAGE_ADDR=@@' + hp.host + ':' + hp.port + '@@ COVERAGE_BUILD_ID=$BUILD_ID ./target/release/your-service']
+      ['', 'LLVM_PROFILE_FILE=' + f('profraw') + ' \\'],
+      ['', '  COVERAGE_ADDR=' + MARK + hp.host + ':' + hp.port + MARK + ' COVERAGE_BUILD_ID=$BUILD_ID ' + run(f('output'))]
     ],
     cfg: [
       ['rust-binary', '指向产物本身 —— 行号信息在它自带的 coverage mapping 里'],
@@ -168,21 +272,79 @@ export const Onboard = {
     const hp = computed(() => eps.value.length
       ? eps.value[0] : { host: '127.0.0.1', port: String(o.value.port) });
 
-    const cmdLines = computed(() => o.value.cmd(hp.value));
+    // ---- 接入参数表单 ----
+    //
+    // 存浏览器本地而不是服务端：这是「我这次接入时填的东西」，不是项目配置。
+    // 存到服务端就等于开了第二个配置入口，而配置的保存入口只应该有「项目设置」一处。
+    // 按项目 id + 语言分键：同一个人往往要给几个项目各接一遍，串了比不存还糟。
+    const LS_KEY = 'rtcc.onboard.form';
 
     /**
-     * 命令块走 v-html 而非模板插值：@@ 之间那段是从平台配置里取出来的实际值，
+     * localStorage 读写一律包起来：隐私窗口、禁用站点数据的浏览器里
+     * <b>访问器本身就会抛</b>，不是返回空 —— 不兜住的话整个视图白屏。
+     * 兜住之后退回内存态，页面照常可用，只是刷新后要重填。
+     */
+    function lsGet() {
+      try {
+        return JSON.parse(localStorage.getItem(LS_KEY) || '{}');
+      } catch (e) {
+        return {};
+      }
+    }
+    function lsSet(all) {
+      try {
+        localStorage.setItem(LS_KEY, JSON.stringify(all));
+      } catch (e) { /* 存不进去就只在内存里活着，不影响这一页能不能用 */ }
+    }
+
+    // 内存态是权威，localStorage 只是它的备份 —— 反过来的话，存不进去时页面就废了
+    const forms = ref(lsGet());
+    const formKey = computed(() => store.projectId + '|' + lang.value);
+    const form = computed(() => forms.value[formKey.value] || {});
+
+    function setField(key, val) {
+      const all = Object.assign({}, forms.value);
+      all[formKey.value] = Object.assign({}, all[formKey.value], { [key]: val });
+      forms.value = all;
+      lsSet(all);
+    }
+
+    /**
+     * 取一个参数的值：填了用填的，没填回落到示例占位符。
+     *
+     * <b>没填时必须仍给出完整命令</b>：人第一次进这一页往往是来「看看要做什么」的，
+     * 空着就把命令藏起来或者留一串空洞，等于把这一页原本的价值也弄丢了。
+     */
+    function valueOf(key) {
+      const fd = (o.value.fields || []).find(x => x.key === key);
+      const v = (form.value[key] || '').trim();
+      if (!v) return fd ? fd.ph : '';
+      // 填过的包上 MARK，渲染时是蓝色；没填的原样给示例值，保持灰色。
+      // 这样一眼能看出「还有哪几处是要替换的」—— 与端口那处用的是同一套标记，
+      // 语义也一致：蓝色 = 已经确定的值，灰色 = 待你替换的示例。
+      // 复制时标记会被剥掉，所以粘出去的始终是纯命令；而 MARK 是个输入框里
+      // 打不出来的控制字符，用户填的值再古怪也撞不上它（见 MARK 的说明）
+      return MARK + v + MARK;
+    }
+
+    const cmdLines = computed(() => o.value.cmd(hp.value, valueOf));
+
+    /**
+     * 命令块走 v-html 而非模板插值：MARK 之间那段是已经确定的值（平台配置里的地址、
+     * 或用户自己填的参数），
      * 要标成蓝色让人知道哪里是真的、哪里是占位；而 <pre> 里的换行不能交给
      * Vue 的模板编译（whitespace: condense 会动它），只能自己拼好 HTML。
      * 拼进去的每一段都过 esc()。
      */
     const cmdHtml = computed(() => cmdLines.value.map(([cls, t]) => {
-      const body = esc(t).split('@@')
+      const body = esc(t).split(MARK)
         .map((x, n) => n % 2 ? '<span class="val">' + x + '</span>' : x).join('');
       return cls ? '<span class="' + cls + '">' + body + '</span>' : body;
     }).join('\n'));
 
-    const rawCmd = computed(() => cmdLines.value.map(([, t]) => t.replace(/@@/g, '')).join('\n'));
+    // 复制出去的是纯命令：剥掉高亮标记，不含任何页面用于渲染的东西
+    const rawCmd = computed(() =>
+      cmdLines.value.map(([, t]) => t.split(MARK).join('')).join('\n'));
 
     const epNote = computed(() => eps.value.length
       ? '蓝色部分取自本平台的项目配置，是实际在监听的地址。'
@@ -192,8 +354,111 @@ export const Onboard = {
       : '本平台目前没有配置 ' + o.value.name + ' 实例，上面用的是默认端口。'
         + '实际接入时端口由你定，填进项目配置即可。');
 
-    const ymlSnippet = computed(() => 'coverage:\n  instances:\n    - "'
-      + (lang.value === 'java' ? '' : lang.value + '://') + hp.value.host + ':' + hp.value.port + '"');
+    /**
+     * 平台侧要填的那份配置，按同一份表单算出来。
+     *
+     * <b>这一页只生成，不保存</b>：配置的保存入口只应该有「项目设置」一处。
+     * 在这里也能存的话，实例地址与 classes-dir 就有两个地方能改，
+     * 而两处改出不同的值时，没有任何地方看得出是哪一处生效了。
+     */
+    const cfgFields = computed(() => (o.value.fields || []).filter(fd => fd.cfgField));
+
+    const ymlSnippet = computed(() => {
+      const lines = ['coverage:', '  instances:',
+        '    - "' + (lang.value === 'java' ? '' : lang.value + '://')
+          + hp.value.host + ':' + hp.value.port + '"'];
+      // 没填的项也列出来，值留空 —— 漏掉的话，人照抄完还差几项却不知道差在哪
+      for (const fd of cfgFields.value) {
+        lines.push('  ' + fd.cfgKey + ': ' + ((form.value[fd.key] || '').trim() || '<还没填>'));
+      }
+      return lines.join('\n');
+    });
+
+    /** 已填的平台侧配置，跳设置页时带过去。空值不带 —— 带过去会把设置页里已有的值清掉 */
+    const pendingCfg = computed(() => {
+      const out = {};
+      for (const fd of cfgFields.value) {
+        const v = (form.value[fd.key] || '').trim();
+        if (v) out[fd.cfgField] = v;
+      }
+      return out;
+    });
+
+    // ---- 探针物料 ----
+    // 平台面向内网，不能假设有外网 —— 这是用户唯一拿得到这些文件的途径。
+    // 前提说明由后端给（见 ProbeArtifactController）：不满足前提的人下载完接不上、
+    // 还不知道为什么，而页面改版不该把这句话弄丢
+    const artifacts = ref([]);
+    api.get('/api/probe/artifacts')
+      .then(d => { artifacts.value = d.artifacts || []; })
+      .catch(() => { /* 取不到就不显示这一节，不挡住整页 */ });
+
+    const artifact = computed(() => artifacts.value.find(a => a.id === lang.value) || null);
+
+    // ---- 单实例就地探测 ----
+    // 人刚改完启动参数重启了服务，等下一个 3 秒轮询周期才知道成没成，
+    // 这段等待里最常见的动作是反复刷新页面
+    const probing = ref('');
+    const probed = ref({});
+
+    async function probeOne(endpoint) {
+      probing.value = endpoint;
+      try {
+        const d = await api.post(
+          '/api/projects/' + encodeURIComponent(store.projectId) + '/instances/probe',
+          { endpoint });
+        probed.value = Object.assign({}, probed.value, { [endpoint]: d });
+      } catch (e) {
+        probed.value = Object.assign({}, probed.value,
+          { [endpoint]: { connected: false, error: e.message } });
+      } finally {
+        probing.value = '';
+      }
+    }
+
+    /** 探测结果的一句话。没探过就返回 null，让那一格空着而不是写「未知」 */
+    function probeText(endpoint) {
+      const r = probed.value[endpoint];
+      if (!r) return null;
+      if (!r.connected) return { ok: false, text: '仍未连上：' + (r.error || '未给出原因') };
+      if (!r.buildId) return { ok: false, text: '连上了，但没上报构建版本 —— 增量口径仍不可用' };
+      return { ok: true, text: '已连上，构建版本 ' + String(r.buildId).substring(0, 8)
+        + (r.dirty ? '（dirty）' : '') };
+    }
+
+    /**
+     * 这门语言的参数是不是都填齐了。只看<b>页面自己知道的</b>东西 ——
+     * 值对不对平台无从判断（多数路径在被测那台机器上，见 fields 的 side 说明），
+     * 所以这一步的完成态只说明「你填完了」，不说明「填对了」。
+     */
+    // optional 的项不计入：Rust 的 xwin / toolchain 只有 Windows 要填，
+    // 而它们的提示自己写着「Linux 上留空即可」—— 都算必填的话，
+    // Linux 用户这一步永远点不亮，而页面还不说漏的是哪一项
+    const allFilled = computed(() =>
+      (o.value.fields || []).every(fd => fd.optional || (form.value[fd.key] || '').trim()));
+
+    /** 还差哪几项没填 —— 第 2 步不亮时要说得出原因，否则人只能一个个框去找 */
+    const missingFields = computed(() => (o.value.fields || [])
+      .filter(fd => !fd.optional && !(form.value[fd.key] || '').trim())
+      .map(fd => fd.label));
+
+    const cfgCopyLabel = ref('复制配置');
+    async function copyCfg() {
+      cfgCopyLabel.value = await copyText(ymlSnippet.value) ? '已复制' : '复制失败，请手动选中';
+      setTimeout(() => { cfgCopyLabel.value = '复制配置'; }, 1600);
+    }
+
+    /**
+     * 去「项目设置」填这份配置，把已填的值带过去。
+     *
+     * 走 store 上的一次性字段（与报表点方法跳染色页用 store.jumpToLine 同一个手法），
+     * <b>设置页读完必须立即清空</b> —— 不清的话，此后每次进设置页都会被这份陈旧的值
+     * 覆盖，而人不会知道自己刚改的值为什么又变回去了。
+     */
+    function toSettings() {
+      store.pendingConfig = Object.keys(pendingCfg.value).length ? pendingCfg.value : null;
+      location.hash = '#/p/' + encodeURIComponent(store.projectId) + '/settings';
+    }
 
     async function doCopy() {
       copyLabel.value = await copyText(rawCmd.value) ? '已复制' : '复制失败，请手动选中';
@@ -205,6 +470,10 @@ export const Onboard = {
     // （某台实例脏了、或实例间版本不一致），而这张表正是唯一能点名「是哪一台」的地方
     const src = computed(() => store.summary || store.lastGood);
     const inst = computed(() => (src.value && src.value.instances) || []);
+
+    /** 这门语言至少有一台实例真的连上了 —— 这一条由平台自己回答，不看页面输入 */
+    const anyConnected = computed(() => inst.value.some(i =>
+      i.status === 'CONNECTED' && String(i.endpoint).split('://')[0] === lang.value));
 
     const checkMeta = computed(() => inst.value.length
       ? inst.value.filter(i => i.status === 'CONNECTED').length + '/' + inst.value.length + ' 已连上' : '');
@@ -261,6 +530,8 @@ export const Onboard = {
 
     return {
       lang, o, cmdHtml, epNote, ymlSnippet, copyLabel, doCopy,
+      form, setField, cfgCopyLabel, copyCfg, toSettings, missingFields,
+      artifact, allFilled, anyConnected, probing, probeOne, probeText,
       src, inst, checkMeta, checkEmpty, langOf, todo,
       store, perInstMap, perInstOf, loadPerInstance, pctClass
     };
@@ -272,13 +543,24 @@ export const Onboard = {
       <h2>接入向导</h2>
       <span class="sub">源码零改动，只调启动参数或构建参数</span>
     </div>
-    <!-- 四步里只有最后一步是平台能自己判定的，前三步在被测方那边做完平台无从得知，
-         所以不做「已完成」态 —— 打勾会变成一句没有依据的断言 -->
-    <div class="steps">
-      <div class="step"><span class="num">1</span>选择语言</div>
-      <div class="step"><span class="num">2</span>改启动 / 构建参数</div>
-      <div class="step"><span class="num">3</span>重启被测服务</div>
-      <div class="step live"><span class="num">4</span>回这一页看探针连上没有</div>
+    <!-- 完成态只给「平台能观测到的」那几步：第 1、2 步依页面自身的输入，
+         第 4 步依平台真的探到的结果。
+         <b>第 3 步「重启被测服务」永远不打勾</b> —— 它发生在被测方，平台无从得知，
+         打勾会变成一句没有依据的断言，而人会据此以为自己已经做过了 -->
+    <div class="steps" data-testid="ob-steps">
+      <div class="step done" data-testid="ob-step-1"><span class="num">1</span>选择语言</div>
+      <div class="step" :class="{ done: allFilled }" data-testid="ob-step-2"
+           :title="missingFields.length ? '还差：' + missingFields.join('、') : '参数已填齐'">
+        <span class="num">2</span>填参数、改启动 / 构建参数
+        <!-- 不亮时要说得出还差哪几项，否则人只能一个个输入框去找 -->
+        <span v-if="missingFields.length" class="miss" data-testid="ob-missing">
+          还差 {{ missingFields.length }} 项
+        </span>
+      </div>
+      <div class="step" data-testid="ob-step-3"><span class="num">3</span>重启被测服务</div>
+      <div class="step" :class="anyConnected ? 'done' : 'live'" data-testid="ob-step-4">
+        <span class="num">4</span>回这一页看探针连上没有
+      </div>
     </div>
     <div class="lang-tabs">
       <button v-for="(v, k) in { java: 'Java', go: 'Go', cpp: 'C++', rust: 'Rust' }" :key="k"
@@ -287,18 +569,55 @@ export const Onboard = {
     <div class="ob">
       <div class="note" :class="o.note[0]" v-html="o.note[1]"></div>
 
-      <h3>1 · 改启动 / 构建参数</h3>
+      <!-- 平台面向内网，不能假设有外网 —— 这是拿到这些文件唯一的途径。
+           适用前提必须写在下载处：不满足前提的人下载完接不上，还不知道为什么 -->
+      <h3 v-if="artifact">0 · 先拿探针</h3>
+      <div v-if="artifact" class="ob-artifact" data-testid="ob-artifact">
+        <a class="dl" :href="'/api/probe/artifacts/' + artifact.id" data-testid="ob-download">
+          下载 {{ artifact.file }}
+        </a>
+        <span class="meta mono" v-if="artifact.version">版本 {{ artifact.version }}</span>
+        <span class="meta mono" v-if="artifact.size">{{ Math.round(artifact.size / 1024) }} KB</span>
+        <div class="pre" data-testid="ob-artifact-pre">{{ artifact.prerequisite }}</div>
+      </div>
+
+      <h3>1 · 填参数，命令自己算出来</h3>
+      <!-- 两类路径必须分开摆。平台去 exists() 一个被测机器上的路径，本机恰好也有同名
+           目录就报「存在」，没有就报「不存在」—— 两种回答都可能是错的，而错的那种
+           看起来完全正常。所以这一页一个都不校验，只把它们分开说清楚 -->
+      <div class="ob-form" data-testid="ob-form">
+        <div class="ob-field" v-for="fd in o.fields" :key="fd.key" :data-field="fd.key">
+          <label>
+            {{ fd.label }}
+            <span class="side" :class="fd.side">{{ fd.side === 'target' ? '被测机器' : '平台机器' }}</span>
+          </label>
+          <input type="text" :placeholder="fd.ph" :value="form[fd.key] || ''"
+                 :data-testid="'ob-in-' + fd.key"
+                 @input="setField(fd.key, $event.target.value)">
+          <div class="hint" v-if="fd.hint" v-html="fd.hint"></div>
+        </div>
+      </div>
       <div class="snip-wrap">
         <button class="copy" @click="doCopy">{{ copyLabel }}</button>
         <pre class="snippet" data-testid="ob-cmd" v-html="cmdHtml"></pre>
       </div>
       <div style="font-size:12px;color:var(--el-text-color-secondary);margin-top:6px">{{ epNote }}</div>
 
-      <h3>2 · 把地址填进项目配置</h3>
+      <h3>2 · 把这份配置填进项目设置</h3>
       <div class="note info">平台<b>没有注册中心</b>，实例不会自己上报 —— 地址写在项目配置的
         <code>instances</code> 里。首次启动时以 <code>application.yml</code> 为种子写进数据库，
-        <b>此后以库里那份为准，改完即时生效、不必重启平台</b>。不写语言前缀默认按 <code>java</code> 解析。</div>
-      <div class="snip-wrap"><pre class="snippet">{{ ymlSnippet }}</pre></div>
+        <b>此后以库里那份为准，改完即时生效、不必重启平台</b>。不写语言前缀默认按 <code>java</code> 解析。
+        <br><b>这一页只算给你看，不保存</b> —— 配置的保存入口只有「项目设置」一处，
+        两个地方都能改的话，改出不同的值时没人看得出是哪一处生效了。</div>
+      <div class="snip-wrap">
+        <button class="copy" data-testid="ob-copy-cfg" @click="copyCfg">{{ cfgCopyLabel }}</button>
+        <pre class="snippet" data-testid="ob-cfg">{{ ymlSnippet }}</pre>
+      </div>
+      <div style="margin-top:8px">
+        <el-button size="small" type="primary" plain data-testid="ob-to-settings" @click="toSettings">
+          去「项目设置」填，并带上已填的值
+        </el-button>
+      </div>
 
       <h3>3 · 平台侧还要配这几项</h3>
       <ul>
@@ -361,7 +680,22 @@ export const Onboard = {
                 </template>
                 <template v-else><td class="mono">—</td><td class="mono">—</td><td class="mono">—</td></template>
               </template>
-              <td v-html="todo(i)"></td>
+              <td>
+                <div v-html="todo(i)"></div>
+                <!-- 改完启动参数重启完服务，等下一个 3 秒轮询周期才知道成没成 ——
+                     那段等待里最常见的动作是反复刷新页面 -->
+                <div class="probe-row">
+                  <el-button size="small" text type="primary" :data-testid="'ob-probe-' + i.endpoint"
+                             :loading="probing === i.endpoint" @click="probeOne(i.endpoint)">
+                    测这一台
+                  </el-button>
+                  <span v-if="probeText(i.endpoint)" class="probe-res"
+                        :class="probeText(i.endpoint).ok ? 'ok' : 'err'"
+                        :data-testid="'ob-probe-res-' + i.endpoint">
+                    {{ probeText(i.endpoint).text }}
+                  </span>
+                </div>
+              </td>
             </tr>
           </tbody>
         </table>
