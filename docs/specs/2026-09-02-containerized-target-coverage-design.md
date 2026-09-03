@@ -145,9 +145,24 @@ CI 构建镜像
 
 **四个 Analyzer 一行不改**（Go 的本来就不碰产物，另外三个也不用动）。
 
-这一条是刻意的：`ProjectRuntime` 现在直接
-`new File(props.getClassesDir())` 传给 Analyzer，改成「先按模式解析路径、再传」之后，
-Analyzer 收到的仍然是一个本地目录，它不需要知道那个目录是配置里写的还是解压出来的。
+> **2026-09-03 修正：这里原先写的「先按模式解析路径、再传给 Analyzer」只对 Java 成立。**
+> 实施前核对代码发现，三个 Analyzer 拿产物路径的方式并不一致：
+>
+> | Analyzer | 签名 | 产物路径从哪来 |
+> |---|---|---|
+> | `CoverageAnalyzer`（Java） | `analyze(execStore, File classesDir, String sourceRoot)` | **外部传入** |
+> | `CppCoverageAnalyzer` | `analyze(List<byte[]> dumps)` | 自己读 `props.getCppObjectsDir()` |
+> | `RustCoverageAnalyzer` | `analyze(List<byte[]> dumps)` | 自己读 `props.getRustBinary()` |
+>
+> C++ 与 Rust 压根没有接收路径的入参，「解析好再传」这条路走不通。
+>
+> **但结论不变，做法换一个**：这两个 Analyzer 是在 `ProjectRuntimeFactory` 里
+> 用 `new CppCoverageAnalyzer(cfg, platform)` 造出来的 —— 喂给它一份
+> <b>产物路径已换成解压目录的配置副本</b>即可。Analyzer 仍然不知道那个目录
+> 是配置里写的还是解压出来的，分层没有被破坏。
+
+这一条是刻意的：Analyzer 收到的始终是一个本地目录，
+它不需要知道那个目录是配置里写的还是解压出来的。
 
 产物来源属于**上游**，不该渗进归一化层。CLAUDE.md 里 P2 / P3 / P4 三次验收都在守
 「接入新语言不改 Analyzer」这条分层 ——
