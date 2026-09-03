@@ -1,7 +1,16 @@
 package com.rtcc.platform.artifact;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Optional;
 import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * 按 buildId 存放被测服务的编译产物。
@@ -62,6 +71,105 @@ public class ArtifactStore {
         }
         if (!SHA.matcher(buildId).matches()) {
             throw new IllegalArgumentException("buildId 必须是 40 位小写十六进制，实际为：" + buildId);
+        }
+    }
+
+    /**
+     * 解压一份产物到 {@code <root>/<projectId>/<buildId>/<lang>/}。
+     *
+     * <p><b>先清空目标目录</b>：重传同一个 buildId 时若与上一次的残留混在一起，
+     * 解出来的是两次构建的并集 —— 又是一份看不出错的错数据。
+     *
+     * <p>存完顺手 {@link #prune}，不必另起一个清理任务。
+     */
+    public void save(String projectId, String buildId, ArtifactKind kind, InputStream zip)
+            throws IOException {
+        Path dir = dirOf(projectId, buildId, kind);
+        deleteTree(dir);
+        Files.createDirectories(dir);
+        Path base = dir.toAbsolutePath().normalize();
+        try (ZipInputStream in = new ZipInputStream(zip)) {
+            ZipEntry e;
+            while ((e = in.getNextEntry()) != null) {
+                // Zip Slip：条目名里带 ../ 就能写到目标目录之外。
+                // 上传接口是写平台磁盘的，这条必须挡住
+                Path out = base.resolve(e.getName()).normalize();
+                if (!out.startsWith(base)) {
+                    throw new IOException("产物包里有指向目标目录之外的条目：" + e.getName());
+                }
+                if (e.isDirectory()) {
+                    Files.createDirectories(out);
+                } else {
+                    Files.createDirectories(out.getParent());
+                    Files.copy(in, out, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+        // 目录的 mtime 决定保留顺序，显式刷一下：解压过程中它可能没被更新
+        Files.setLastModifiedTime(dir.getParent(), java.nio.file.attribute.FileTime.from(java.time.Instant.now()));
+        prune(projectId);
+    }
+
+    /** 取不到就是没上传过。返回空目录会被上游读成「这个构建没有代码」 */
+    public Optional<Path> find(String projectId, String buildId, ArtifactKind kind) {
+        requireValidBuildId(buildId);
+        Path dir = root.resolve(projectId).resolve(buildId).resolve(kind.dir());
+        if (!Files.isDirectory(dir)) {
+            return Optional.empty();
+        }
+        try (var s = Files.list(dir)) {
+            return s.findAny().isPresent() ? Optional.of(dir) : Optional.empty();
+        } catch (IOException e) {
+            return Optional.empty();
+        }
+    }
+
+    /** 这个项目存过哪些构建，新的在前 */
+    public List<String> builds(String projectId) {
+        Path p = root.resolve(projectId);
+        if (!Files.isDirectory(p)) {
+            return List.of();
+        }
+        try (var s = Files.list(p)) {
+            return s.filter(Files::isDirectory)
+                    .sorted(Comparator.comparingLong((Path d) -> d.toFile().lastModified()).reversed())
+                    .map(d -> d.getFileName().toString())
+                    .toList();
+        } catch (IOException e) {
+            return List.of();
+        }
+    }
+
+    /**
+     * 删掉超出 {@link #keep} 的最旧构建，返回删了几个。
+     *
+     * <p><b>按个数而不是按天数</b>：一个长期不发布的服务会把自己正在跑的那份产物清掉，
+     * 而那时平台会开始拒绝出报告 —— 一个由「太久没发版」引发的故障，没人查得到。
+     */
+    public int prune(String projectId) {
+        List<String> all = builds(projectId);
+        int removed = 0;
+        for (int i = keep; i < all.size(); i++) {
+            deleteTree(root.resolve(projectId).resolve(all.get(i)));
+            removed++;
+        }
+        return removed;
+    }
+
+    private static void deleteTree(Path dir) {
+        if (!Files.exists(dir)) {
+            return;
+        }
+        try (var walk = Files.walk(dir)) {
+            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.deleteIfExists(p);
+                } catch (IOException ignored) {
+                    // 单个文件删不掉不该让整次上传失败：下次 prune 会再试
+                }
+            });
+        } catch (IOException ignored) {
+            // 同上
         }
     }
 }
