@@ -234,6 +234,16 @@ public class ProjectRuntime {
      * 当下的原因在 lastError 里始终看得到。
      */
     private void setProbeStatus(String status, String detail) {
+        setProbeStatus(status, detail, List.of());
+    }
+
+    /**
+     * @param instances 这次是<b>哪几台</b>出的问题。事件页据此单列一列、可筛选 ——
+     *                  detail 里虽然也拼着实例名，但那是给人读的一段话，
+     *                  拿它筛选就得反过来解析文本，提示语一改就抽不出来了。
+     *                  配置错误、归一化失败这类与具体实例无关的，传空
+     */
+    private void setProbeStatus(String status, String detail, List<String> instances) {
         probeStatus = status;
         lastError = detail;
         // 被顶替掉的实例不再代表这个项目，它的状态变化不该记进事件流
@@ -241,7 +251,7 @@ public class ProjectRuntime {
             return;
         }
         lastRecordedStatus = status;
-        events.record(props.getId(), status, detail);
+        events.record(props.getId(), status, detail, instances);
     }
 
     /**
@@ -391,7 +401,8 @@ public class ProjectRuntime {
             }
             setProbeStatus("DISCONNECTED", statuses.isEmpty()
                     ? "未配置任何被测实例（coverage.instances）"
-                    : statuses.get(0).error());
+                    : statuses.get(0).error(),
+                    statuses.stream().map(InstanceStatus::endpoint).toList());
             return;
         }
 
@@ -445,7 +456,9 @@ public class ProjectRuntime {
                     connected == endpoints.size() ? null
                             : statuses.stream().filter(s -> !"CONNECTED".equals(s.status()))
                                     .map(s -> s.endpoint() + "（" + s.error() + "）")
-                                    .collect(Collectors.joining("、", "以下实例不可达，聚合结果缺少它们的覆盖：", "")));
+                                    .collect(Collectors.joining("、", "以下实例不可达，聚合结果缺少它们的覆盖：", "")),
+                    statuses.stream().filter(s -> !"CONNECTED".equals(s.status()))
+                            .map(InstanceStatus::endpoint).toList());
             lastCollectedAt = Instant.now();
 
             // 记进历史，供跨构建趋势。只记「全部实例版本一致且工作树干净」的构建：

@@ -1522,6 +1522,58 @@ async function baselineOptions(page, testid) {
       } else {
         pass(`事件页列出 ${evAfter.events.length} 条，与接口一致`);
       }
+
+      // 持续时长不能是负数。曾经是：时间列用 NOW(3) 写入（服务端本地墙钟），
+      // 而连接串写着 serverTimezone=UTC，驱动把那个墙钟当 UTC 读回 ——
+      // 事件时间戳比浏览器的「现在」还晚 8 小时，页面上是「-28672 秒（至今）」
+      const durations = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="event-row"]')].map(r => r.children[2].innerText.trim()));
+      const negative = durations.filter(d => d.startsWith('-'));
+      if (negative.length) {
+        fail(`${negative.length} 条事件的持续时长是负数（时间戳比现在还晚）：${negative.slice(0, 3).join('、')}`);
+      } else {
+        pass(`${durations.length} 条事件的持续时长全部非负（时间按 UTC 存取）`);
+      }
+
+      // 掉线事件要点名是哪台。只说「部分实例掉线」等于让人去翻日志；
+      // 实例名虽然也拼在「原因」那段话里，但那是给人读的，筛选不了
+      const named = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="event-row"]')]
+          .filter(r => r.dataset.status === 'PARTIAL')
+          .map(r => r.children[3].innerText.trim()));
+      const withName = named.filter(t => t && !t.includes('—'));
+      if (!named.length) {
+        // 这一节前面刚停过一台实例，必然有 PARTIAL —— 一条都没有说明断言站错了地方
+        fail('事件页里一条 PARTIAL 都没有，无法验证「涉及实例」列');
+      } else if (!withName.length) {
+        fail(`${named.length} 条 PARTIAL 事件都没点名是哪台实例`);
+      } else {
+        pass(`PARTIAL 事件点名了涉及的实例（${withName[0]}）`);
+      }
+
+      // 汇总条：逐条看得出「那一刻发生了什么」，看不出「这段时间稳不稳」
+      const bar = await page.evaluate(textOf, '[data-testid="event-summary"]');
+      if (!bar || !/异常\s*\d+\s*次/.test(bar.replace(/\s+/g, ' '))) {
+        fail(`事件页没有汇总条，或没给出异常次数：${bar}`);
+      } else {
+        pass(`事件页有汇总条：${bar.replace(/\s+/g, ' ').slice(0, 60)}`);
+      }
+
+      // 只看异常：事故复盘时 200 条里大半是 CONNECTED，翻起来费劲
+      const total = await page.evaluate(countOf, '[data-testid="event-row"]');
+      await page.click('[data-testid="event-only-bad"]');
+      await sleep(400);
+      const filtered = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('[data-testid="event-row"]')];
+        return { n: rows.length, allBad: rows.every(r => r.dataset.status !== 'CONNECTED') };
+      });
+      if (!filtered.allBad) {
+        fail('勾了「只看异常」，列表里仍有 CONNECTED');
+      } else if (filtered.n >= total) {
+        fail(`勾了「只看异常」但行数没减少（${total} → ${filtered.n}）`);
+      } else {
+        pass(`「只看异常」筛选生效：${total} → ${filtered.n} 条，且全部非 CONNECTED`);
+      }
     }
 
     // ---------- 7 · 全程无脚本错误 ----------

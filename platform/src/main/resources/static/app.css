@@ -288,7 +288,11 @@ body {
 .tbl-wrap { overflow-x: auto; }
 table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.tbl th { text-align: left; font-size: 12px; font-weight: 600; color: var(--el-text-color-secondary); padding: 9px 14px; border-bottom: 1px solid var(--el-border-color-lighter); white-space: nowrap; }
-table.tbl td { padding: 9px 14px; border-bottom: 1px solid var(--el-border-color-lighter); }
+/* vertical-align:top 是必须的：只要有一列会换行（采集事件的「原因」、
+   自检表的「下一步」），其余列在默认的 middle 下就会被垂直居中，
+   看起来像整行错位 —— 而单行内容的表格看不出任何差别 */
+table.tbl td { padding: 9px 14px; border-bottom: 1px solid var(--el-border-color-lighter);
+               vertical-align: top; }
 table.tbl tr:last-child td { border-bottom: none; }
 table.tbl td.mono, .mono { font-family: var(--mono); font-size: 12px; }
 
@@ -296,6 +300,21 @@ table.tbl td.mono, .mono { font-family: var(--mono); font-size: 12px; }
 table.tbl td .el-button { margin-left: 0; }
 table.tbl td .el-button + .el-button { margin-left: 6px; }
 table.tbl td.actions { white-space: nowrap; }
+
+/* 采集事件的汇总条。逐条看得出「那一刻发生了什么」，看不出「这段时间稳不稳」 */
+.ev-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+          padding: 10px 18px; font-size: 12px; color: var(--el-text-color-secondary);
+          border-bottom: 1px solid var(--el-border-color-lighter); }
+.ev-bar .s b { color: var(--el-text-color-primary); font-family: var(--mono); }
+.ev-bar .s.bad b { color: var(--el-color-warning); }
+.ev-bar .grow { flex: 1; }
+.ev-bar .f { display: inline-flex; align-items: center; gap: 5px; font-size: 12px;
+             color: var(--el-text-color-regular); cursor: pointer; }
+.ev-bar select.f { height: 26px; padding: 0 8px; font-family: var(--mono); font-size: 11px;
+                   color: var(--el-text-color-regular); background: var(--el-bg-color);
+                   border: 1px solid var(--el-border-color); border-radius: var(--radius); }
+/* 一台一行：两台挤在一行里，眼睛分不出 6300 和 6301 的边界 */
+.ev-ins .ep { display: block; font-size: 11px; line-height: 1.7; }
 
 /* ---------------- 覆盖率报表（包 → 源文件 → 方法） ---------------- */
 

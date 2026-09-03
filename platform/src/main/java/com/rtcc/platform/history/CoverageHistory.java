@@ -112,12 +112,15 @@ public class CoverageHistory {
         }
         try {
             jdbc.update("""
+                    -- UTC_TIMESTAMP 而不是 NOW：NOW 给的是服务端本地墙钟，而连接串
+                    -- 写着 serverTimezone=UTC，驱动会把那个墙钟当 UTC 读回来。
+                    -- 趋势点没人拿去跟「现在」比，所以这处偏移长期没被发现
                     INSERT INTO build_coverage
                       (project_id, build_commit, first_seen_at, peak_at, overall_ratio,
                        covered_lines, missed_lines, file_count)
-                    VALUES (?, ?, NOW(3), NOW(3), ?, ?, ?, ?)
+                    VALUES (?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3), ?, ?, ?, ?)
                     ON DUPLICATE KEY UPDATE
-                      peak_at       = IF(VALUES(covered_lines) > covered_lines, NOW(3), peak_at),
+                      peak_at       = IF(VALUES(covered_lines) > covered_lines, UTC_TIMESTAMP(3), peak_at),
                       overall_ratio = IF(VALUES(covered_lines) > covered_lines, VALUES(overall_ratio), overall_ratio),
                       missed_lines  = IF(VALUES(covered_lines) > covered_lines, VALUES(missed_lines), missed_lines),
                       file_count    = IF(VALUES(covered_lines) > covered_lines, VALUES(file_count), file_count),
