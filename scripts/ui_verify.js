@@ -407,6 +407,54 @@ async function baselineOptions(page, testid) {
         pass(`跨构建横轴带上了时间：${from} → ${to}（${mid}）`);
       }
     }
+
+    // 曲线下方的事件带：覆盖率掉下去的那一段，人第一个想知道的是当时发生了什么。
+    // <b>刻意不在曲线上打点</b> —— 横轴是「第几个点」不是时间（svgPoints 按索引均分），
+    // 两次构建间隔 1 小时和 3 天在图上一样宽，按时间比例标记会标到视觉上错误的位置，
+    // 而图看着是对的。所以只在下方列出区间内的事件
+    const band = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="trend-events"]');
+      if (!el) return null;
+      return {
+        text: el.innerText.replace(/\s+/g, ' '),
+        rows: document.querySelectorAll('[data-testid="trend-event-row"]').length,
+        // 只取最近若干条事件，而跨构建区间可能横跨几周 —— 区间更早的部分不在这批里，
+        // 不说的话人会把「列出来的」当成「全部的」
+        truncated: !!document.querySelector('[data-testid="trend-events-cut"]'),
+        hasLink: !!document.querySelector('[data-testid="trend-events-all"]')
+      };
+    });
+    if (!band) {
+      // 曲线画不出来时事件带也不该在 —— 它挂在曲线下面，没有区间就没有「区间内的事件」
+      const drawn = await page.evaluate(() => !!document.querySelector('[data-testid="trend-xaxis"]'));
+      if (drawn) fail('跨构建曲线画出来了，但下方没有事件带');
+      else pass('曲线画不出来时事件带一并省略：没有区间就没有「区间内的事件」');
+    } else if (!band.hasLink) {
+      fail(`事件带没有通往采集事件页的入口：${band.text.slice(0, 60)}`);
+    } else if (!/次异常|没有异常/.test(band.text)) {
+      fail(`事件带没说清区间内有没有异常：${band.text.slice(0, 60)}`);
+    } else {
+      pass(`趋势下方有事件带：${band.text.slice(0, 46)}…（${band.rows} 行`
+        + `${band.truncated ? '，并说明了只统计最近若干条' : ''}）`);
+    }
+
+    // 点一下要能到采集事件页 —— 这一带的全部价值就是「从坑跳到解释」
+    if (band && band.hasLink) {
+      await page.click(band.rows
+        ? '[data-testid="trend-event-row"]' : '[data-testid="trend-events-all"]');
+      const jumped = await waitFor(page, () =>
+        !!document.querySelector('[data-testid="view-events"]'), null, 8000);
+      if (jumped < 0) {
+        fail('点趋势下方的事件没跳到采集事件页');
+      } else {
+        pass('从趋势的事件带点得进采集事件页');
+      }
+      await page.click('[data-testid="nav-overview"]');
+      await waitFor(page, () => !!document.querySelector('[data-testid="view-overview"]'), null, 8000);
+      await page.click('[data-testid="trend-build"]');
+      await sleep(1200);
+    }
+
     await page.click('[data-testid="trend-session"]');
 
     // ---------- 4d · 染色页的文件列表：三组数与导出 ----------
