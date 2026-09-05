@@ -23,7 +23,9 @@ __pycache__/
 # 本机的 Claude Code 自定义命令与技能，属个人工具配置，与项目无关。
 # 注意只忽略这两个子目录 —— .claude/launch.json 是项目的预览配置，要入库
 .claude/commands/
-.claude/skills/
+# openspec 等插件生成的 skill 不入库；项目自己的 rtcc-* skill 要入库
+.claude/skills/*
+!.claude/skills/rtcc-*/
 
 # OpenSpec 的本地工作目录
 openspec/
