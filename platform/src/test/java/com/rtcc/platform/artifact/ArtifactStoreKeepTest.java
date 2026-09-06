@@ -36,6 +36,20 @@ class ArtifactStoreKeepTest {
         return String.format("%040x", java.math.BigInteger.valueOf(n));
     }
 
+    /** 两个条目的 zip：用来模拟「前面条目合法、后面条目才触发失败」的中途失败场景 */
+    private static byte[] zipOfTwo(String name1, String content1, String name2, String content2) throws Exception {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(bos)) {
+            zip.putNextEntry(new ZipEntry(name1));
+            zip.write(content1.getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry(name2));
+            zip.write(content2.getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        return bos.toByteArray();
+    }
+
     @Test
     void 存进去的内容取回来逐字一致(@TempDir Path root) throws Exception {
         ArtifactStore store = new ArtifactStore(root, 10);
@@ -115,5 +129,46 @@ class ArtifactStoreKeepTest {
                 store.save("demo", sha(1), ArtifactKind.JAVA, new ByteArrayInputStream(evil)));
         assertFalse(Files.exists(root.resolve("pwned.txt")));
         assertFalse(Files.exists(root.getParent().resolve("pwned.txt")));
+    }
+
+    /**
+     * 首次上传就中途失败（第一个条目合法、第二个才触发 Zip Slip）：
+     * 前一个条目已经落盘，但这个构建整体没传成功，不能被当成「已经就绪」——
+     * 上传方看到失败退出，平台这边却让 find() 返回一个目录，
+     * 后续采集拿着不完整的字节码去解探针数据，算出的覆盖率界面上看不出任何异样。
+     */
+    @Test
+    void 解压中途失败不留半成品(@TempDir Path root) throws Exception {
+        ArtifactStore store = new ArtifactStore(root, 10);
+        byte[] evil = zipOfTwo("legit.class", "看起来正常的一个条目", "../../pwned.txt", "坏东西");
+
+        assertThrows(java.io.IOException.class, () ->
+                store.save("demo", sha(1), ArtifactKind.JAVA, new ByteArrayInputStream(evil)));
+
+        assertTrue(store.find("demo", sha(1), ArtifactKind.JAVA).isEmpty(),
+                "解压中途失败却能被 find() 找到 —— 上传方以为失败了，平台却把半成品当成了已就绪的构建");
+    }
+
+    /**
+     * 重传中途失败更危险：不能因为这次传坏了，就把还在服役的旧产物换没了。
+     * 旧实现是先 deleteTree(dir) 清空、再边解压边写，失败时旧产物已经被删掉、
+     * 新内容又没写完 —— 上传方以为失败，平台却连能采数据的旧构建都丢了。
+     */
+    @Test
+    void 重传中途失败不破坏原有产物(@TempDir Path root) throws Exception {
+        ArtifactStore store = new ArtifactStore(root, 10);
+        store.save("demo", sha(1), ArtifactKind.JAVA,
+                new ByteArrayInputStream(zipOf("good.class", "旧的好产物")));
+
+        byte[] evil = zipOfTwo("legit.class", "看起来正常的一个条目", "../../pwned.txt", "坏东西");
+        assertThrows(java.io.IOException.class, () ->
+                store.save("demo", sha(1), ArtifactKind.JAVA, new ByteArrayInputStream(evil)));
+
+        Path dir = store.find("demo", sha(1), ArtifactKind.JAVA).orElseThrow(
+                () -> new AssertionError("重传失败却把旧产物弄丢了：上传方以为失败，平台连能采数据的旧构建都没了"));
+        assertEquals("旧的好产物", Files.readString(dir.resolve("good.class"), StandardCharsets.UTF_8),
+                "重传失败必须保住原有的好产物，不能用传了一半的半成品覆盖它");
+        assertFalse(Files.exists(dir.resolve("legit.class")), "半成品的条目不该混进正式目录");
+        assertFalse(Files.exists(root.resolve("pwned.txt")));
     }
 }

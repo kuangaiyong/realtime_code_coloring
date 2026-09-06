@@ -77,35 +77,48 @@ public class ArtifactStore {
     /**
      * 解压一份产物到 {@code <root>/<projectId>/<buildId>/<lang>/}。
      *
-     * <p><b>先清空目标目录</b>：重传同一个 buildId 时若与上一次的残留混在一起，
-     * 解出来的是两次构建的并集 —— 又是一份看不出错的错数据。
+     * <p><b>先解压到同级临时目录，全部条目都处理完且没有异常才换入正式目录</b>：
+     * 若直接边解压边写正式目录，Zip Slip（或 zip 中途损坏）在第 N 个条目才触发时，
+     * 前 N-1 个合法条目已经落盘 —— {@link #find} 的判据只看「目录存在且非空」，
+     * 会把这个半成品当成已经就绪的构建，后续拿着不完整的字节码去解探针数据，
+     * 算出的覆盖率错得界面上看不出任何异样。若这次是对已有 buildId 的重传，更糟：
+     * 旧产物一旦被清空就回不来，绝不能用半成品去顶替一份还在服役的好产物。
      *
      * <p>存完顺手 {@link #prune}，不必另起一个清理任务。
      */
     public void save(String projectId, String buildId, ArtifactKind kind, InputStream zip)
             throws IOException {
         Path dir = dirOf(projectId, buildId, kind);
-        deleteTree(dir);
-        Files.createDirectories(dir);
-        Path base = dir.toAbsolutePath().normalize();
-        try (ZipInputStream in = new ZipInputStream(zip)) {
-            ZipEntry e;
-            while ((e = in.getNextEntry()) != null) {
-                // Zip Slip：条目名里带 ../ 就能写到目标目录之外。
-                // 上传接口是写平台磁盘的，这条必须挡住
-                Path out = base.resolve(e.getName()).normalize();
-                if (!out.startsWith(base)) {
-                    throw new IOException("产物包里有指向目标目录之外的条目：" + e.getName());
-                }
-                if (e.isDirectory()) {
-                    Files.createDirectories(out);
-                } else {
-                    Files.createDirectories(out.getParent());
-                    Files.copy(in, out, StandardCopyOption.REPLACE_EXISTING);
+        Path tmp = dir.getParent().resolve(kind.dir() + ".tmp-" + System.nanoTime());
+        Files.createDirectories(tmp);
+        try {
+            Path base = tmp.toAbsolutePath().normalize();
+            try (ZipInputStream in = new ZipInputStream(zip)) {
+                ZipEntry e;
+                while ((e = in.getNextEntry()) != null) {
+                    // Zip Slip：条目名里带 ../ 就能写到目标目录之外。
+                    // 上传接口是写平台磁盘的，这条必须挡住
+                    Path out = base.resolve(e.getName()).normalize();
+                    if (!out.startsWith(base)) {
+                        throw new IOException("产物包里有指向目标目录之外的条目：" + e.getName());
+                    }
+                    if (e.isDirectory()) {
+                        Files.createDirectories(out);
+                    } else {
+                        Files.createDirectories(out.getParent());
+                        Files.copy(in, out, StandardCopyOption.REPLACE_EXISTING);
+                    }
                 }
             }
+            // 解压全部成功后才清空旧内容、换入 —— 顺序不能反：先清后解的话，
+            // 解压中途失败就会把旧产物的坑留在原地，什么都补不回来。
+            requireDeleted(dir);
+            Files.move(tmp, dir, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException | RuntimeException ex) {
+            deleteTree(tmp);
+            throw ex;
         }
-        // 目录的 mtime 决定保留顺序，显式刷一下：解压过程中它可能没被更新
+        // 目录的 mtime 决定保留顺序，显式刷一下：换入过程中它可能没被更新
         Files.setLastModifiedTime(dir.getParent(), java.nio.file.attribute.FileTime.from(java.time.Instant.now()));
         prune(projectId);
     }
@@ -156,6 +169,26 @@ public class ArtifactStore {
         return removed;
     }
 
+    /**
+     * {@code save()} 换入前的强制清空：删不干净就必须让 {@code save()} 失败，不能带着残留继续。
+     *
+     * <p>与下面 {@link #deleteTree}（{@link #prune} 用）刻意是两套不同的语义 ——
+     * {@code prune()} 删的是要退休的旧构建，少删一个不影响正确性，下一轮还会再试；
+     * 这里删的是即将被新内容占用的目录，删不干净却继续，解压结果就会摊在残留之上，
+     * 新旧两次构建的产物混成并集，正是「重传要先清空」这一步本来要防的场景。
+     */
+    private static void requireDeleted(Path dir) throws IOException {
+        if (!Files.exists(dir)) {
+            return;
+        }
+        try (var walk = Files.walk(dir)) {
+            for (Path p : (Iterable<Path>) walk.sorted(Comparator.reverseOrder())::iterator) {
+                Files.delete(p);
+            }
+        }
+    }
+
+    /** {@link #prune} 用的宽容删除：单个文件删不掉不该让清理整体失败，下一轮 prune 还会再试 */
     private static void deleteTree(Path dir) {
         if (!Files.exists(dir)) {
             return;
@@ -165,7 +198,7 @@ public class ArtifactStore {
                 try {
                     Files.deleteIfExists(p);
                 } catch (IOException ignored) {
-                    // 单个文件删不掉不该让整次上传失败：下次 prune 会再试
+                    // 单个文件删不掉不该让整次操作失败：下次 prune 会再试
                 }
             });
         } catch (IOException ignored) {
