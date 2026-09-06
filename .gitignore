@@ -27,5 +27,6 @@ __pycache__/
 .claude/skills/*
 !.claude/skills/rtcc-*/
 
-# OpenSpec 的本地工作目录
-openspec/
+# OpenSpec：长期规格 specs/ 与项目口径 config.yaml 是资产，入库；
+# changes/ 是过程草稿（做完即失效），不入库
+openspec/changes/
