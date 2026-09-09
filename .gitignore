@@ -30,3 +30,7 @@ __pycache__/
 # OpenSpec：长期规格 specs/ 与项目口径 config.yaml 是资产，入库；
 # changes/ 是过程草稿（做完即失效），不入库
 openspec/changes/
+
+# Codex 的仓库级 skills 是指向 .claude/skills/rtcc-* 的本机目录联接（单一事实源在 .claude 侧），
+# 联接本身不入库；换机器用 New-Item -ItemType Junction 重建即可
+.agents/
