@@ -123,9 +123,11 @@ public class ArtifactStore {
         Files.createDirectories(tmp);
         try {
             Path base = tmp.toAbsolutePath().normalize();
+            int entries = 0;
             try (ZipInputStream in = new ZipInputStream(zip)) {
                 ZipEntry e;
                 while ((e = in.getNextEntry()) != null) {
+                    entries++;
                     // Zip Slip：条目名里带 ../ 就能写到目标目录之外。
                     // 上传接口是写平台磁盘的，这条必须挡住
                     Path out = base.resolve(e.getName()).normalize();
@@ -140,12 +142,25 @@ public class ArtifactStore {
                     }
                 }
             }
+            // 零条目必须拒绝，不能存成一个空壳：ZipInputStream 读到<b>不是 zip</b> 的数据时，
+            // 首次 getNextEntry() 就返回 null 而<b>不抛异常</b>，于是这里会「成功」地存下一个空目录、
+            // 接口回 200 且该 buildId 进入 kept 与列表，而平台之后 find() 判它为空，
+            // 对外说「这个构建没上传产物」。上传说成功、取用说没有 ——
+            // 与「宁可 4xx 也不给一份静默错误的报告」是同一条原则。
+            if (entries == 0) {
+                throw new IOException("产物包里一个条目都没有：它要么不是 zip，要么是个空包");
+            }
             // 解压全部成功后才清空旧内容、换入 —— 顺序不能反：先清后解的话，
             // 解压中途失败就会把旧产物的坑留在原地，什么都补不回来。
             requireDeleted(dir);
             Files.move(tmp, dir, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException | RuntimeException ex) {
             deleteTree(tmp);
+            // 上面的 Files.createDirectories(tmp) 顺带把 <buildId>/ 也建了出来。留着它的话，
+            // builds() 会把这个空壳计入、mtime 还排在最前：CI 连推 N 次坏包，
+            // 下一次成功上传触发的 prune 就把 N 个<b>真实构建</b>挤掉了 ——
+            // 一个由「几次失败的上传」引发的故障，查起来完全不着边际。
+            deleteIfEmpty(dir.getParent());
             throw ex;
         }
         // 目录的 mtime 决定保留顺序，显式刷一下：换入过程中它可能没被更新
@@ -221,6 +236,22 @@ public class ArtifactStore {
             for (Path p : (Iterable<Path>) walk.sorted(Comparator.reverseOrder())::iterator) {
                 Files.delete(p);
             }
+        }
+    }
+
+    /**
+     * 只删空目录，非空就原样留着 —— {@link Files#deleteIfExists} 对非空目录会抛
+     * {@code DirectoryNotEmptyException}，正好就是这里要的语义。
+     *
+     * <p><b>为什么必须「只删空的」</b>：同一个 buildId 下可能已经有别的语言的正常产物
+     * （java 传成功了、cpp 这次传坏了），把整个 {@code <buildId>/} 删掉就是拿一次失败的上传
+     * 去毁掉一份还在服役的好产物。
+     */
+    private static void deleteIfEmpty(Path dir) {
+        try {
+            Files.deleteIfExists(dir);
+        } catch (IOException ignored) {
+            // 非空、或者删不掉，都不该盖掉调用方真正要抛的那个失败原因
         }
     }
 

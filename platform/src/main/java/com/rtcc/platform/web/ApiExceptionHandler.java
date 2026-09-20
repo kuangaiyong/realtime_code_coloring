@@ -1,5 +1,6 @@
 package com.rtcc.platform.web;
 
+import com.rtcc.platform.artifact.ArtifactOperationException;
 import com.rtcc.platform.service.GateUndecidableException;
 import com.rtcc.platform.service.IncrementalUnavailableException;
 import com.rtcc.platform.service.ProjectOperationException;
@@ -10,6 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -60,10 +62,39 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(e.status()).body(error(e));
     }
 
+    /**
+     * 产物的上传 / 查询 / 删除做不了。状态码由异常自己带，与
+     * {@link #onProjectOperation} 同一套 ——「你传的包或参数有问题」（400）与
+     * 「平台这边存不下来」（5xx）处置完全不同，混成一个码 CI 就只能猜。
+     */
+    @ExceptionHandler(ArtifactOperationException.class)
+    public ResponseEntity<Map<String, Object>> onArtifactOperation(ArtifactOperationException e) {
+        return ResponseEntity.status(e.status()).body(error(e));
+    }
+
+    /**
+     * 产物包超过 multipart 上限。<b>不接管的话它落到默认错误页 = 500</b>，
+     * 上传方会以为平台内部故障而去查平台，真正该做的却是把包拆小或调大上限。
+     *
+     * <p><b>不要在这里印 {@code e.getMaxUploadSize()}</b>：Tomcat 抛这个异常时并不带上限值，
+     * 实测拿到的是 {@code -1}，印出来就是「当前 -1 字节」这种把人带偏的胡话。
+     * 一个错的数字比没有数字更糟，所以只点名该去看哪个配置项。
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<Map<String, Object>> onTooLarge(MaxUploadSizeExceededException e) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(error("产物包超过平台的上传上限（由 spring.servlet.multipart.max-file-size 决定）："
+                        + "请拆小产物，或调大这个上限"));
+    }
+
     private Map<String, Object> error(Exception e) {
+        return error(e.getMessage());
+    }
+
+    private Map<String, Object> error(String message) {
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("ok", false);
-        res.put("error", e.getMessage());
+        res.put("error", message);
         return res;
     }
 }

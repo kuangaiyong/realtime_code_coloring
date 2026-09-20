@@ -1,21 +1,18 @@
 package com.rtcc.platform.web;
 
 import com.rtcc.platform.artifact.ArtifactKind;
+import com.rtcc.platform.artifact.ArtifactOperationException;
 import com.rtcc.platform.artifact.ArtifactStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-
-import static org.springframework.http.HttpStatus.BAD_REQUEST;
-import static org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR;
 
 /**
  * 被测服务的编译产物。给「平台够不着容器文件系统」那种部署用。
@@ -57,19 +54,19 @@ public class ArtifactController {
         try {
             store.requireValidBuildId(buildId);
         } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(BAD_REQUEST, e.getMessage());
+            throw ArtifactOperationException.invalid(e.getMessage());
         }
         // 空包存下去会变成一个空目录，而空目录与「没上传过」在上游长得一模一样
         if (file == null || file.isEmpty()) {
-            throw new ResponseStatusException(BAD_REQUEST, "产物包是空的，没有东西可存");
+            throw ArtifactOperationException.invalid("产物包是空的，没有东西可存");
         }
         try (var in = file.getInputStream()) {
             store.save(project, buildId, kind, in);
         } catch (IOException e) {
             // Zip Slip 之类的坏包也走这里 —— 报出原因，别让人对着 500 猜
-            throw new ResponseStatusException(BAD_REQUEST, "产物包存不下来：" + e.getMessage());
+            throw ArtifactOperationException.invalid("产物包存不下来：" + e.getMessage());
         } catch (Exception e) {
-            throw new ResponseStatusException(INTERNAL_SERVER_ERROR, "产物包存不下来：" + e);
+            throw ArtifactOperationException.failed("产物包存不下来：" + e);
         }
         log.info("已收下产物：项目 {} / 构建 {} / {}（{} 字节）",
                 project, buildId, kind.dir(), file.getSize());
@@ -112,7 +109,7 @@ public class ArtifactController {
         try {
             store.requireValidBuildId(buildId);
         } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(BAD_REQUEST, e.getMessage());
+            throw ArtifactOperationException.invalid(e.getMessage());
         }
         store.remove(project, buildId);
         return Map.of("ok", true, "project", project, "buildId", buildId);
@@ -126,7 +123,7 @@ public class ArtifactController {
         try {
             store.requireValidProjectId(project);
         } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(BAD_REQUEST, e.getMessage());
+            throw ArtifactOperationException.invalid(e.getMessage());
         }
     }
 
@@ -134,7 +131,7 @@ public class ArtifactController {
         try {
             return ArtifactKind.of(lang);
         } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(BAD_REQUEST, e.getMessage());
+            throw ArtifactOperationException.invalid(e.getMessage());
         }
     }
 }

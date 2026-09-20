@@ -3,6 +3,13 @@ target/
 *.exec
 *.log
 
+# 上传上来的被测编译产物（按 buildId 存，默认根 platform/.artifacts）。
+# 运行期数据不是源码：一次 Java 上传就落下上百个 .class、几十 MB，混进提交没人看得出来。
+# 注意它不会让被测实例自报 -dirty —— run_local.sh 的脏标记只看 SOURCE_ROOTS
+#（demo-service*，见该脚本第 50 行）；但它照样会把 git status 搅浑，
+# 而本项目的顺序是「先在 dev 提交、再跑 verify」
+.artifacts/
+
 .idea/
 *.iml
 .vscode/
