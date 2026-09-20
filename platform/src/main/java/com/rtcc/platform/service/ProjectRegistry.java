@@ -310,6 +310,16 @@ public class ProjectRegistry {
                 throw ProjectOperationException.invalid("门禁阈值只能是 0 到 100，实际为：" + th);
             }
         }
+        // 闭集，且填错的后果是<b>静默</b>的：usesUploadedArtifacts() 判的是「等不等于 uploaded」，
+        // 于是 upload、uploded、带空格的值统统被当成 local。容器化部署上打错一个字母，
+        // 平台就会拿本机路径的产物去解另一个 buildId 的探针数据 —— 行号错位，界面上看不出异样。
+        // 正是「宁可拒绝，也不出一份静默错误的报告」要消灭的那族问题
+        String src = cfg.getArtifactSource();
+        if (!"local".equalsIgnoreCase(src) && !"uploaded".equalsIgnoreCase(src)) {
+            throw ProjectOperationException.invalid(
+                    "产物来源只能是 local（用配置里的本地路径）或 uploaded（按 buildId 从产物仓库取），实际为："
+                            + src);
+        }
     }
 
     /**

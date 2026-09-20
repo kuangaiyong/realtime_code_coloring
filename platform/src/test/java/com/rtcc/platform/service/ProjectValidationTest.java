@@ -177,4 +177,38 @@ class ProjectValidationTest {
         assertEquals(List.of(ProjectConfig.DEFAULT_ID),
                 registry.configs().stream().map(ProjectConfig::getId).toList());
     }
+
+    /**
+     * 产物来源只有 local / uploaded 两个取值，填错必须当场拒绝。
+     *
+     * <p>不拦的话它会<b>静默退回 local</b>：{@code usesUploadedArtifacts()} 判的是
+     * 「等不等于 uploaded」，于是 {@code upload}、{@code uploded}、带空格的值统统算成 local。
+     * 容器化部署上打错一个字母，平台就会拿本机路径的产物去解另一个 buildId 的探针数据，
+     * 行号错位而界面上看不出任何异样 —— 正是本平台「宁可拒绝，也不出一份静默错误的报告」
+     * 要消灭的那族问题。字段是闭集，属于 validate 注释说的「不看就一定错」。
+     */
+    @Test
+    void 产物来源填错当场拒绝而不是静默退回local() {
+        for (String bad : List.of("upload", "uploded", " uploaded", "UPLOADED ", "remote", "")) {
+            ProjectConfig c = cfg("art-" + Math.abs(bad.hashCode()), "名字", List.of("localhost:6300"));
+            c.setArtifactSource(bad);
+            ProjectOperationException e = create(c);
+            assertEquals(HttpStatus.BAD_REQUEST, e.status(),
+                    "artifactSource=[" + bad + "] 没被拦住，会静默退回 local：" + e.getMessage());
+            assertTrue(e.getMessage().contains("产物来源"), e.getMessage());
+        }
+    }
+
+    /** 两个合法取值都要放行，大小写不敏感（usesUploadedArtifacts 本来就用 equalsIgnoreCase） */
+    @Test
+    void 合法的产物来源放行() {
+        for (String good : List.of("local", "uploaded", "Local", "UPLOADED")) {
+            ProjectConfig c = cfg("art-ok-" + Math.abs(good.hashCode()), "名字", List.of("localhost:6300"));
+            c.setArtifactSource(good);
+            ProjectOperationException e = create(c);
+            // 走到写库才失败，说明校验这一关是过了的
+            assertEquals(HttpStatus.SERVICE_UNAVAILABLE, e.status(),
+                    "artifactSource=" + good + " 不该被校验拦住：" + e.getMessage());
+        }
+    }
 }
