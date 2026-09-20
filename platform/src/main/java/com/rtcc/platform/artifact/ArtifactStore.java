@@ -50,7 +50,7 @@ public class ArtifactStore {
     /** {@code <root>/<projectId>/<buildId>/<lang>/} */
     public Path dirOf(String projectId, String buildId, ArtifactKind kind) {
         requireValidBuildId(buildId);
-        return root.resolve(projectId).resolve(buildId).resolve(kind.dir());
+        return projectDir(projectId).resolve(buildId).resolve(kind.dir());
     }
 
     /**
@@ -72,6 +72,36 @@ public class ArtifactStore {
         if (!SHA.matcher(buildId).matches()) {
             throw new IllegalArgumentException("buildId 必须是 40 位小写十六进制，实际为：" + buildId);
         }
+    }
+
+    /**
+     * 校验 projectId 能不能安全地当目录名用。
+     *
+     * <p><b>它与 buildId 是同一条路上的两个口子</b>：projectId 同样直接参与磁盘路径
+     * （{@code <root>/<projectId>/...}）。只堵 buildId 等于没堵 —— 实测过，
+     * {@code ?project=../../../../tmp/x} 会把产物写到产物根之外并照样回 200，
+     * 同一个口子走删除接口就是把根之外的整棵目录树删掉。
+     *
+     * <p><b>为什么做包含性检查而不限定字符集</b>：项目 id 由用户自取，现网已经存在
+     * 中文项目名，限字符集会把合法项目挡在外面。这里只要求「归一化之后仍落在根之下」，
+     * 绝对路径也一并挡住 —— {@link Path#resolve} 遇到绝对路径会把 base 整个替换掉，
+     * 那比 {@code ../} 更直接。
+     */
+    public void requireValidProjectId(String projectId) {
+        projectDir(projectId);
+    }
+
+    /** {@code <root>/<projectId>/}。一切按 projectId 拼路径的地方都必须走这里，否则校验就是摆设 */
+    private Path projectDir(String projectId) {
+        if (projectId == null || projectId.isBlank()) {
+            throw new IllegalArgumentException("projectId 不能为空");
+        }
+        Path base = root.toAbsolutePath().normalize();
+        Path dir = base.resolve(projectId).normalize();
+        if (!dir.startsWith(base) || dir.equals(base)) {
+            throw new IllegalArgumentException("projectId 会指向产物根之外，拒绝：" + projectId);
+        }
+        return dir;
     }
 
     /**
@@ -126,7 +156,7 @@ public class ArtifactStore {
     /** 取不到就是没上传过。返回空目录会被上游读成「这个构建没有代码」 */
     public Optional<Path> find(String projectId, String buildId, ArtifactKind kind) {
         requireValidBuildId(buildId);
-        Path dir = root.resolve(projectId).resolve(buildId).resolve(kind.dir());
+        Path dir = projectDir(projectId).resolve(buildId).resolve(kind.dir());
         if (!Files.isDirectory(dir)) {
             return Optional.empty();
         }
@@ -139,7 +169,7 @@ public class ArtifactStore {
 
     /** 这个项目存过哪些构建，新的在前 */
     public List<String> builds(String projectId) {
-        Path p = root.resolve(projectId);
+        Path p = projectDir(projectId);
         if (!Files.isDirectory(p)) {
             return List.of();
         }
@@ -163,10 +193,16 @@ public class ArtifactStore {
         List<String> all = builds(projectId);
         int removed = 0;
         for (int i = keep; i < all.size(); i++) {
-            deleteTree(root.resolve(projectId).resolve(all.get(i)));
+            deleteTree(projectDir(projectId).resolve(all.get(i)));
             removed++;
         }
         return removed;
+    }
+
+    /** 删掉一个构建的全部产物 */
+    public void remove(String projectId, String buildId) {
+        requireValidBuildId(buildId);
+        deleteTree(projectDir(projectId).resolve(buildId));
     }
 
     /**
