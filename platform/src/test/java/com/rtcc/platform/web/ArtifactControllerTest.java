@@ -11,6 +11,8 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -198,6 +200,29 @@ class ArtifactControllerTest {
         assertTrue(store.find("demo", OK, ArtifactKind.CPP).isEmpty());
     }
 
+    /**
+     * 磁盘上混进一个不是 buildId 的目录（手工建的、别的工具落下的）时，列表不能整个挂掉。
+     *
+     * <p>{@code builds()} 返回的是磁盘上的任意子目录名，紧接着 {@code find()} 内部
+     * {@code requireValidBuildId()} 就抛了 —— 实测过：整个 {@code /api/artifacts} 回<b>裸 500</b>，
+     * 连 {@code {"ok":false,"error":...}} 的格式都没有。
+     * 而这个接口存在的理由正是「运维要能看出磁盘上到底有什么，不然清理就是盲的」，
+     * 偏偏在磁盘上真有意外东西的时候瘫掉，自相矛盾。
+     */
+    @Test
+    void 磁盘上有不认识的目录名时列表照样出得来(@TempDir Path root) throws Exception {
+        ArtifactStore store = new ArtifactStore(root, 10);
+        ArtifactController c = new ArtifactController(store);
+        c.upload("demo", OK, "java", zip("Order.class", "字节码"));
+        Files.createDirectories(root.resolve("demo").resolve("不是sha的目录名"));
+
+        Map<String, Object> res = c.list("demo");
+
+        assertEquals(1, ((List<?>) res.get("artifacts")).size(), "不认识的目录名不该混进列表");
+        assertTrue(res.get("artifacts").toString().contains(OK));
+        assertEquals(1, res.get("skipped"), "跳过了几个要点明，否则运维不知道磁盘上还躺着别的东西");
+    }
+
     @Test
     void 删得掉(@TempDir Path root) throws Exception {
         ArtifactStore store = new ArtifactStore(root, 10);
@@ -207,5 +232,46 @@ class ArtifactControllerTest {
         c.delete("demo", OK);
 
         assertTrue(store.find("demo", OK, ArtifactKind.JAVA).isEmpty());
+    }
+
+    /**
+     * 平台自己的故障要报 5xx，不能报成「你传的包有问题」。
+     *
+     * <p>4xx 是「换个包重传就好」，5xx 是「去看平台的磁盘和权限」—— 两者混成一个码，
+     * CI 红了之后排查方向就会被引到错误的一侧：包明明是好的，却让人反复去查包。
+     * 口径与平台既有的 {@code ProjectOperationException}（400 / 409 / 503 三分）一致。
+     *
+     * <p>这里用「删不干净」来制造一次真实的平台侧故障（DOS 只读位），不用替身。
+     */
+    @Test
+    void 平台侧故障报五百而不是四百(@TempDir Path root) throws Exception {
+        ArtifactStore store = new ArtifactStore(root, 10);
+        ArtifactController c = new ArtifactController(store);
+        c.upload("demo", OK, "java", zip("stuck.class", "删不掉的那份"));
+        Path dir = store.find("demo", OK, ArtifactKind.JAVA).orElseThrow();
+        Files.setAttribute(dir.resolve("stuck.class"), "dos:readonly", true);
+
+        try {
+            ArtifactOperationException e = assertThrows(ArtifactOperationException.class,
+                    () -> c.delete("demo", OK));
+            assertTrue(e.status().is5xxServerError(),
+                    "平台删不掉自己的文件，却报成了调用方的错：" + e.status());
+        } finally {
+            Files.setAttribute(dir.resolve("stuck.class"), "dos:readonly", false);
+        }
+    }
+
+    /** 盘上有不认识的目录时，列表照常出，并点明跳过了几个 */
+    @Test
+    void 列表点明跳过了几个陌生目录(@TempDir Path root) throws Exception {
+        ArtifactStore store = new ArtifactStore(root, 10);
+        ArtifactController c = new ArtifactController(store);
+        c.upload("demo", OK, "java", zip("a.class", "x"));
+        Files.createDirectories(root.resolve("demo").resolve("手工放的目录"));
+
+        Map<String, Object> res = c.list("demo");
+
+        assertEquals(1, res.get("skipped"), "跳过的数量没点明，运维不知道盘上还有别的东西");
+        assertEquals(List.of(OK), store.builds("demo"), "陌生目录混进了构建列表");
     }
 }

@@ -1,5 +1,11 @@
 server:
   port: 18090
+  tomcat:
+    # 超过 multipart 上限时，Tomcat 只会继续读完这么多请求体再回响应；默认 2MB。
+    # 上传的产物动辄上百 MB，用默认值的话 Tomcat 吞满 2MB 就直接断开，
+    # CI 那头看到的是「连接被重置」而不是 413 和那句中文原因 ——
+    # 排查方向会被引到网络上去，而真正的原因是包超限了
+    max-swallow-size: 200MB
 
 spring:
   application:
