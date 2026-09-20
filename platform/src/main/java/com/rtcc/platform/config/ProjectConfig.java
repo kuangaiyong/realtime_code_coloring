@@ -69,6 +69,19 @@ public class ProjectConfig {
     /** Rust：被测产物。行号信息在它的 coverage mapping 里，相当于 Java 的 classes-dir */
     private String rustBinary;
 
+    /**
+     * 产物从哪来：{@code local}（上面那几个本地路径，默认）或 {@code uploaded}
+     * （按 buildId 从产物仓库取）。
+     *
+     * <p><b>默认必须是 local</b>：现有的裸机部署与 8 实例的全量验证链路都靠它，
+     * 默认值一旦改成 uploaded，所有现存项目会立刻开始「取不到产物」而拒绝出报告。
+     *
+     * <p>它是<b>项目级</b>的：同一个平台上，一个项目跑在裸机、另一个跑在容器里，
+     * 各自选各自的取法。产物仓库自身的根目录与保留数则是平台级，留在
+     * {@link CoverageProperties}，与工具链路径同理。
+     */
+    private String artifactSource = "local";
+
     /** 覆盖率门禁的阈值。CI 在合并前调 /api/coverage/gate，据此决定放行还是阻断 */
     private Gate gate = new Gate();
 
@@ -138,6 +151,12 @@ public class ProjectConfig {
 
     public String getRustBinary() { return rustBinary; }
     public void setRustBinary(String rustBinary) { this.rustBinary = rustBinary; }
+
+    public String getArtifactSource() { return artifactSource; }
+    public void setArtifactSource(String artifactSource) { this.artifactSource = artifactSource; }
+
+    /** 产物是否来自按 buildId 索引的仓库。判定集中在这里，免得各处各写各的字符串比较 */
+    public boolean usesUploadedArtifacts() { return "uploaded".equalsIgnoreCase(artifactSource); }
 
     public String getRepoDir() { return repoDir; }
     public void setRepoDir(String repoDir) { this.repoDir = repoDir; }

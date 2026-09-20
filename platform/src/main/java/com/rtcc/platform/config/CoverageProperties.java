@@ -53,6 +53,23 @@ public class CoverageProperties {
     /** Rust：把 profdata 导成 LCOV 的工具 */
     private String llvmCovTool = "llvm-cov";
 
+    /**
+     * 产物从哪来：{@code local}（上面那几个本地路径，默认）或 {@code uploaded}
+     * （按 buildId 从产物仓库取）。种进项目配置，此后各项目各自为政。
+     *
+     * <p><b>默认必须是 local</b>：现有的裸机部署与 8 实例的全量验证链路都靠它。
+     */
+    private String artifactSource = "local";
+
+    /**
+     * 产物仓库的根目录。<b>平台级，不进项目配置</b> —— 它跟着部署机器走，
+     * 与 go-tool / gcov-tool 那几项工具链路径同一个道理。
+     */
+    private String artifactRoot = "./.artifacts";
+
+    /** 每个项目保留最近几个构建的产物，超出的按时间淘汰。同样是平台级（磁盘是机器的） */
+    private int artifactKeep = 10;
+
     /** 覆盖率门禁的阈值。CI 在合并前调 /api/coverage/gate，据此决定放行还是阻断 */
     private Gate gate = new Gate();
 
@@ -85,6 +102,8 @@ public class CoverageProperties {
      *
      * 工具链路径（go-tool / gcov-tool / llvm-*）刻意不搬过去：那是部署机器的属性，
      * 不跟着项目走。见 {@link ProjectConfig} 的类注释。
+     * {@code artifact-root} / {@code artifact-keep} 同理留在平台级，
+     * 只有「产物从哪来」（{@code artifact-source}）是项目自己的选择。
      */
     public ProjectConfig toProjectConfig(String id, String name) {
         ProjectConfig c = new ProjectConfig();
@@ -102,6 +121,7 @@ public class CoverageProperties {
         c.setCppObjectsDir(cppObjectsDir);
         c.setRustSourceRoot(rustSourceRoot);
         c.setRustBinary(rustBinary);
+        c.setArtifactSource(artifactSource);
         c.setIntervalMs(intervalMs);
         c.setTimeoutMs(timeoutMs);
         ProjectConfig.Gate g = new ProjectConfig.Gate();
@@ -152,6 +172,15 @@ public class CoverageProperties {
 
     public String getRustBinary() { return rustBinary; }
     public void setRustBinary(String rustBinary) { this.rustBinary = rustBinary; }
+
+    public String getArtifactSource() { return artifactSource; }
+    public void setArtifactSource(String artifactSource) { this.artifactSource = artifactSource; }
+
+    public String getArtifactRoot() { return artifactRoot; }
+    public void setArtifactRoot(String artifactRoot) { this.artifactRoot = artifactRoot; }
+
+    public int getArtifactKeep() { return artifactKeep; }
+    public void setArtifactKeep(int artifactKeep) { this.artifactKeep = artifactKeep; }
 
     public String getLlvmProfdataTool() { return llvmProfdataTool; }
     public void setLlvmProfdataTool(String llvmProfdataTool) { this.llvmProfdataTool = llvmProfdataTool; }

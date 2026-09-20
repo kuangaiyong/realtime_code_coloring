@@ -1,6 +1,6 @@
 package com.rtcc.platform.artifact;
 
-import org.springframework.beans.factory.annotation.Value;
+import com.rtcc.platform.config.CoverageProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -20,9 +20,8 @@ import java.nio.file.Path;
 public class ArtifactStoreConfig {
 
     @Bean
-    public ArtifactStore artifactStore(
-            @Value("${coverage.artifact-root:./.artifacts}") String root,
-            @Value("${coverage.artifact-keep:10}") int keep) {
-        return new ArtifactStore(Path.of(root).toAbsolutePath().normalize(), keep);
+    public ArtifactStore artifactStore(CoverageProperties props) {
+        return new ArtifactStore(Path.of(props.getArtifactRoot()).toAbsolutePath().normalize(),
+                props.getArtifactKeep());
     }
 }
