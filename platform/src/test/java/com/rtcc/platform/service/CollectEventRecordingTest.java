@@ -76,7 +76,7 @@ class CollectEventRecordingTest {
                 new GoProbeClient(props), new GoCoverageAnalyzer(props, platform),
                 new CppProbeClient(props), new CppCoverageAnalyzer(props, platform),
                 new RustProbeClient(props), new RustCoverageAnalyzer(props, platform),
-                new GitService(props), props, noArtifacts(), new CoveragePublisher(),
+                new GitService(props), props, noArtifacts(), platform, new CoveragePublisher(),
                 new CoverageHistory(unreachable()), recorder);
     }
 
@@ -131,7 +131,7 @@ class CollectEventRecordingTest {
                 new GoProbeClient(props), new GoCoverageAnalyzer(props, platform),
                 new CppProbeClient(props), new CppCoverageAnalyzer(props, platform),
                 new RustProbeClient(props), new RustCoverageAnalyzer(props, platform),
-                new GitService(props), props, noArtifacts(), new CoveragePublisher(),
+                new GitService(props), props, noArtifacts(), platform, new CoveragePublisher(),
                 new CoverageHistory(unreachable()), rec).collect();
 
         assertEquals(List.of("CONFIG_ERROR"), rec.recorded);
@@ -151,7 +151,7 @@ class CollectEventRecordingTest {
                 new GoProbeClient(props), new GoCoverageAnalyzer(props, platform),
                 new CppProbeClient(props), new CppCoverageAnalyzer(props, platform),
                 new RustProbeClient(props), new RustCoverageAnalyzer(props, platform),
-                new GitService(props), props, noArtifacts(), new CoveragePublisher(),
+                new GitService(props), props, noArtifacts(), platform, new CoveragePublisher(),
                 new CoverageHistory(unreachable()), rec);
         rt.collect();
         rt.collect();

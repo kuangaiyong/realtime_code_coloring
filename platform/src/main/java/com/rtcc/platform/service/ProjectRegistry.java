@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -303,6 +304,12 @@ public class ProjectRegistry {
         // CI 拿到的是 500，而按本项目的约定「判不了」只应该是 409
         if (cfg.getGate() == null) {
             cfg.setGate(new ProjectConfig.Gate());
+        }
+        // goExclude 同理，而它的后果更隐蔽：ProjectConfig.copy() 会在它上面 NPE，
+        // 于是同一份配置在 local 模式下照跑不误（没人调 copy），一换成 uploaded
+        // 就每轮采集都 ANALYZE_ERROR —— 报出来的还是个光秃秃的 NullPointerException
+        if (cfg.getGoExclude() == null) {
+            cfg.setGoExclude(new ArrayList<>());
         }
         for (double th : new double[]{cfg.getGate().getIncrementalThreshold(),
                 cfg.getGate().getOverallThreshold()}) {

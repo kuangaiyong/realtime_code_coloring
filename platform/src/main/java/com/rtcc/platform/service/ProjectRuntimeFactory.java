@@ -59,6 +59,6 @@ public class ProjectRuntimeFactory {
                 new GoProbeClient(cfg), new GoCoverageAnalyzer(cfg, platform),
                 new CppProbeClient(cfg), new CppCoverageAnalyzer(cfg, platform),
                 new RustProbeClient(cfg), new RustCoverageAnalyzer(cfg, platform),
-                new GitService(cfg), cfg, artifacts, publisher, history, events);
+                new GitService(cfg), cfg, artifacts, platform, publisher, history, events);
     }
 }

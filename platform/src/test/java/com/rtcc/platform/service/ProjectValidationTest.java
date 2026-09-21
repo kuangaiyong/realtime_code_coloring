@@ -153,6 +153,23 @@ class ProjectValidationTest {
         assertEquals(80d, c.getGate().getIncrementalThreshold());
     }
 
+    /**
+     * goExclude 显式写 null 时同样要补上默认值，理由与 gate 那条一致但后果更隐蔽：
+     * {@code ProjectConfig.copy()} 会在它上面 NPE，而 copy() 只有 uploaded 模式才调 ——
+     * 于是同一份配置在 local 下照跑不误，一换成 uploaded 就每轮采集都 ANALYZE_ERROR，
+     * 报出来的还是个光秃秃的 NullPointerException，完全看不出是哪个字段。
+     */
+    @Test
+    void 排除列表为空时补上默认值而不是留个空指针() {
+        ProjectConfig c = cfg("p1", "名字", List.of("localhost:6300"));
+        c.setGoExclude(null);
+        // 走到写库才失败，说明 goExclude 已被补上、没被校验拦住、也没抛 NPE
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, create(c).status());
+        assertEquals(List.of(), c.getGoExclude());
+        // 真正要守的是这个：copy() 不能炸
+        assertEquals(List.of(), c.copy().getGoExclude());
+    }
+
     @Test
     void 门禁阈值超出百分比范围时拒绝() {
         for (double bad : new double[]{-1, 101}) {

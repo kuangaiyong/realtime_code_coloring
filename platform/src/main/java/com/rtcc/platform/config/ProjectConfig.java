@@ -171,6 +171,46 @@ public class ProjectConfig {
     public void setTimeoutMs(int timeoutMs) { this.timeoutMs = timeoutMs; }
 
     /**
+     * 复制一份，供「产物路径按 buildId 替换」用。
+     *
+     * <p><b>为什么必须是副本</b>：这个对象就是 {@code ProjectRegistry} 注册表里代表本项目的
+     * 那一个活对象，也是 {@code GET /api/projects} 原样吐回去的那一份。就地改产物路径的话，
+     * 用户在项目设置里看到的会变成平台内部的解压目录，而且改一次污染到底 ——
+     * 下一轮采集读到的「原始配置」已经是被改过的了。
+     *
+     * <p>可变字段（两个列表 + {@link Gate}）都另建一份，不与原配置共享：
+     * 共享的话改副本会连带改到原配置，与就地改是同一个后果，只是更难发现。
+     *
+     * <p><b>加字段时这里必须跟上</b>。漏一个的后果是「uploaded 模式下那一项悄悄变回默认值」
+     * —— 比如 baseline 丢了，增量口径会拿错基线算出一份看不出错的报告。
+     * {@code ArtifactResolveTest} 里有一条反射逐字段比对的用例守着这件事。
+     */
+    public ProjectConfig copy() {
+        ProjectConfig c = new ProjectConfig();
+        c.id = id;
+        c.name = name;
+        c.instances = new ArrayList<>(instances);
+        c.repoDir = repoDir;
+        c.baseline = baseline;
+        c.classesDir = classesDir;
+        c.javaSourceRoot = javaSourceRoot;
+        c.goSourceRoot = goSourceRoot;
+        c.goModulePath = goModulePath;
+        c.goExclude = new ArrayList<>(goExclude);
+        c.cppSourceRoot = cppSourceRoot;
+        c.cppObjectsDir = cppObjectsDir;
+        c.rustSourceRoot = rustSourceRoot;
+        c.rustBinary = rustBinary;
+        c.artifactSource = artifactSource;
+        c.intervalMs = intervalMs;
+        c.timeoutMs = timeoutMs;
+        c.gate = new Gate();
+        c.gate.setIncrementalThreshold(gate.getIncrementalThreshold());
+        c.gate.setOverallThreshold(gate.getOverallThreshold());
+        return c;
+    }
+
+    /**
      * 门禁阈值。只有两个数字，不做原型上那套多规则 + 优先级 —— 一个项目盯的就是
      * 一个服务，「哪条规则优先」在这里没有对应的现实。
      */

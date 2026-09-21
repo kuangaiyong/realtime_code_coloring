@@ -11,7 +11,9 @@ import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -287,39 +289,104 @@ public class ArtifactStore {
      *
      * <p><b>但「换了配置」不等于「它们能收到」。</b>这两个 Analyzer 是在
      * {@code ProjectRuntimeFactory.create} 里一次性造好、存成 {@code ProjectRuntime} 的
-     * final 字段的，而 buildId 每轮采集才知道 —— 接 uploaded 时必须用这里返回的配置
-     * <b>重造</b>它们，否则会出现「Java 用解压出来的产物、C++/Rust 用本机路径」的混合报告，
-     * 行号错位且界面上看不出。眼下 {@code ProjectRuntime} 只把返回值用在了 Java 的
-     * classes-dir 上，重造那一步还没有做。
+     * final 字段的，而 buildId 每轮采集才知道 —— 所以 uploaded 模式下 {@code ProjectRuntime}
+     * 必须用这里返回的配置<b>重造</b>它们，否则会出现「Java 用解压出来的产物、
+     * C++/Rust 用本机路径」的混合报告，行号错位且界面上看不出。
      *
-     * <p><b>本次提交只接通 local 这一条路</b>，uploaded <b>当场拒绝</b>而不是静默退回 local ——
-     * 退回的后果正是上一个提交（「产物来源填错当场拒绝」）论证过的那个：拿本机路径的产物
-     * 去解另一个 buildId 的探针数据。分两步提交是为了先单独证明「多这一次调用不改变现有行为」，
-     * 之后万一出问题，能立刻分清是接线的错还是取产物的错。
+     * <p><b>{@code needed} 是「这一轮真有实例的那几种语言」，不是「配置里填了路径的那几种」。</b>
+     * 后者会把「C++ 两台都掉线」变成整轮 ANALYZE_ERROR：那一轮 {@code cppDumps} 为空、
+     * C++ 归一化根本不跑，却因为「缺 cpp 产物」连累其余语言一起没有报告 ——
+     * 而平台的既定行为是少几台就降级成 PARTIAL、照常出报告。Go 永远不在这个集合里，
+     * 它的覆盖数据是自包含的（见 {@link ArtifactKind}）。
      *
-     * <p>接 uploaded 时这三条契约要一并落地，眼下一条都还没实现：
-     * <ul>
-     *   <li>{@code version} 为 null（实例没配 sessionid，或实例间版本不一致）一律拒绝：
-     *       不知道该取哪一份产物时只能不出报告，不能猜一个。<b>这不是边界情况</b> ——
-     *       没配 sessionid 是平台明确支持的降级态，默认部署下每轮采集都会走到</li>
-     *   <li>{@code version.dirty()} 为真一律拒绝：{@link BuildVersion} 把 {@code -dirty} 拆成了
-     *       独立的布尔位，{@code commit()} 给出的是干净的 40 位 sha，照它去取会取回
-     *       <b>干净构建</b>的产物来解脏字节码的探针数据 —— 正是
-     *       {@link #requireValidBuildId(String)} 在上传侧拒绝 {@code -dirty} 所要防的那件事</li>
-     *   <li>只解析这一轮真有实例的那几种语言：Go 不需要产物，一个纯 Go 项目不该因为
-     *       「没上传 java 产物」被整个打挂</li>
-     * </ul>
+     * @throws IOException 取不到产物、没有构建版本、或构建是脏的。<b>一律拒绝，不降级不跳过</b>：
+     *                     跳过那门语言的话界面上表现为「这些代码没被调用过」，与真相正相反，
+     *                     而且看不出是缺产物
      */
-    public ProjectConfig resolveInto(ProjectConfig cfg, BuildVersion version) throws IOException {
-        if (cfg.usesUploadedArtifacts()) {
-            // 校验是放行 uploaded 的（见 ProjectRegistry.validate），而这里还没接通。
-            // 此时原样返回 cfg 就等于静默退回 local：平台照旧拿本机路径的产物去解
-            // 另一个 buildId 的探针数据，行号错位而界面上一切正常。上一个提交刚把
-            // 「填错了字母」那个入口堵死，不能转手在「填对了」这个更大的入口上留同一个洞
-            throw new IOException("产物来源配的是 uploaded（按 buildId 从产物仓库取），"
-                    + "但这条路尚未接通，现在取不到产物；改回 local 用配置里的本地路径");
+    public ProjectConfig resolveInto(ProjectConfig cfg, BuildVersion version,
+                                     Set<ArtifactKind> needed) throws IOException {
+        if (!cfg.usesUploadedArtifacts()) {
+            return cfg;
         }
-        return cfg;
+        if (needed.isEmpty()) {
+            // 这一轮一个产物都用不上（纯 Go 项目，或这一轮只有 Go 实例连着）。
+            // 版本闸门必须排在这个判断<b>之后</b>：否则一个压根不需要产物的项目，
+            // 会因为「工作树脏」或「实例没配 sessionid」整轮打成 ANALYZE_ERROR ——
+            // 与上面「只解析真有实例的语言」是同一条理由，少做一步就漏了这个口子
+            return cfg;
+        }
+        if (version == null) {
+            // 不是边界情况：实例没配 sessionid 是平台明确支持的降级态（只是增量不可用），
+            // 实例之间版本不一致时 unifiedVersion 同样给 null。
+            // 这两种情况下「该取哪一份产物」这个前提不成立，只能拒绝，不能挑一个默认的
+            throw new IOException("产物按构建版本索引，但拿不到统一的构建版本："
+                    + "要么这些实例没上报（Java 的 sessionid / 其余语言的 COVERAGE_BUILD_ID），"
+                    + "要么各实例报的版本不一致 —— 无从知道该取哪一份产物");
+        }
+        if (version.dirty()) {
+            // 剥掉 -dirty 去取干净 commit 的产物，正是 requireValidBuildId 在上传侧
+            // 拒绝 -dirty 所要防的那件事：拿干净构建的字节码解脏字节码的探针数据
+            throw new IOException("被测实例跑的是未提交的改动（" + version.commit()
+                    + "-dirty），产物仓库里不会有与之对应的那一份：工作树脏时同一个 commit"
+                    + "能对应无数份不同的产物。按干净 commit 取回的产物解脏字节码的探针数据，"
+                    + "行号会错位且看不出来");
+        }
+        ProjectConfig copy = cfg.copy();
+        for (ArtifactKind kind : needed) {
+            Path dir = require(cfg.getId(), version.commit(), kind);
+            switch (kind) {
+                case JAVA -> copy.setClassesDir(dir.toString());
+                case CPP -> copy.setCppObjectsDir(dir.toString());
+                // Rust 要的是产物文件本身，不是目录
+                case RUST -> copy.setRustBinary(theOnlyFileIn(dir, version.commit()).toString());
+            }
+        }
+        return copy;
+    }
+
+    /**
+     * 取不到就是没上传过这个构建的这门语言的产物。消息里要同时有 buildId、语言和补救办法。
+     *
+     * <p><b>补救命令必须带上 {@code ?project=}</b>：上传接口的 project 默认是 {@code default}，
+     * 非默认项目照着一条不带它的命令做，包会传进 default 项目、接口还回 200，
+     * 下一轮采集仍报这同一句话 —— 照提示做了却没用，而且看不出为什么。
+     */
+    private Path require(String projectId, String buildId, ArtifactKind kind) throws IOException {
+        return find(projectId, buildId, kind).orElseThrow(() -> new IOException(
+                "缺少构建 " + buildId + " 的 " + kind.dir() + " 产物。请在构建后调 "
+                        + "POST /api/artifacts/" + buildId + "?project=" + projectId
+                        + "&lang=" + kind.dir()
+                        + " 把它推上来 —— 没有它解不出行号，而跳过这门语言会让界面显示成"
+                        + "「这些代码没被调用过」，与真相正相反"));
+    }
+
+    /**
+     * Rust 产物包里只该有那一个带 coverage mapping 的可执行文件。
+     *
+     * <p><b>刻意不是「取第一个」</b>：目录列举的顺序没有任何保证，包里混进
+     * {@code .pdb} / {@code .d} 之类时会随机选中一个错的，而 llvm-cov 拿到非产物文件后
+     * 报的错离真正的原因很远。多于一个就说清楚该怎么改。
+     *
+     * <p><b>而且要递归找</b>，不能只看顶层：{@link #save} 统计条目时把嵌套路径下的文件
+     * 一并算进去了，所以 {@code zip -r target/release/demo} 打的包上传会成功；
+     * 这里若只看顶层就会说「一个文件都没有」—— 又一次「上传说成功、取用说没有」，
+     * 正是这个类反复要消灭的那种自相矛盾。
+     */
+    private static Path theOnlyFileIn(Path dir, String buildId) throws IOException {
+        List<Path> files;
+        try (var s = Files.walk(dir)) {
+            files = s.filter(Files::isRegularFile).sorted().toList();
+        }
+        if (files.size() == 1) {
+            return files.get(0);
+        }
+        if (files.isEmpty()) {
+            throw new IOException("构建 " + buildId + " 的 rust 产物目录里一个文件都没有");
+        }
+        throw new IOException("构建 " + buildId + " 的 rust 产物包里有 " + files.size() + " 个文件（"
+                + files.stream().map(p -> dir.relativize(p).toString()).collect(Collectors.joining("、"))
+                + "），无法确定哪个才是带 coverage mapping 的产物；"
+                + "rust 产物包里只放那一个可执行文件");
     }
 
     /** 这个项目存过哪些构建，新的在前 */

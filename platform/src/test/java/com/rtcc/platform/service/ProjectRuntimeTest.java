@@ -56,6 +56,7 @@ class ProjectRuntimeTest {
                 new GitService(props), props,
                 // 够不到探针就返回了，走不到取产物那一步；产物来源也是默认的 local
                 new ArtifactStore(java.nio.file.Path.of("target", "artifacts-unused"), 10),
+                platform,
                 new CoveragePublisher(),
                 // 数据源指向一个必然连不上的地址：这些用例要证明的正是
                 // 「历史写不进去也不影响其余行为」
