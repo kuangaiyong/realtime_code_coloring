@@ -1,5 +1,6 @@
 package com.rtcc.platform.service;
 
+import com.rtcc.platform.artifact.ArtifactStore;
 import com.rtcc.platform.config.CoverageProperties;
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.config.ProjectStore;
@@ -38,7 +39,9 @@ class ProjectValidationTest {
         ProjectRuntimeFactory factory = new ProjectRuntimeFactory(
                 new ProbeClient(), new CoverageAnalyzer(), platform, new CoveragePublisher(),
                 new CoverageHistory(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")),
-                new CollectEvents(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")));
+                new CollectEvents(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")),
+                // 这些用例全在「写库之前」就被挡下或走到写库失败，取不到产物那一步到不了
+                new ArtifactStore(java.nio.file.Path.of("target", "artifacts-unused"), 10));
         // 库连不上时 loadAll 退回种子，因此这里拿到的是一个只有 default 的注册表
         registry = new ProjectRegistry(seed, store, factory, new CollectEvents(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")));
     }

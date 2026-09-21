@@ -9,6 +9,7 @@ import com.rtcc.platform.collector.GoProbeClient;
 import com.rtcc.platform.collector.ProbeClient;
 import com.rtcc.platform.collector.RustCoverageAnalyzer;
 import com.rtcc.platform.collector.RustProbeClient;
+import com.rtcc.platform.artifact.ArtifactStore;
 import com.rtcc.platform.config.CoverageProperties;
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.history.CollectEvents;
@@ -57,6 +58,14 @@ class CollectEventRecordingTest {
         return new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent");
     }
 
+    /**
+     * 这些用例都够不到探针，走不到取产物那一步；产物来源也是默认的 local，
+     * 解析只是原样返回配置。所以这个目录不会被碰到
+     */
+    private static ArtifactStore noArtifacts() {
+        return new ArtifactStore(java.nio.file.Path.of("target", "artifacts-unused"), 10);
+    }
+
     private static ProjectRuntime runtimeOn(int deadPort, Recorder recorder) {
         ProjectConfig props = new ProjectConfig();
         props.setId("evt");
@@ -67,7 +76,7 @@ class CollectEventRecordingTest {
                 new GoProbeClient(props), new GoCoverageAnalyzer(props, platform),
                 new CppProbeClient(props), new CppCoverageAnalyzer(props, platform),
                 new RustProbeClient(props), new RustCoverageAnalyzer(props, platform),
-                new GitService(props), props, new CoveragePublisher(),
+                new GitService(props), props, noArtifacts(), new CoveragePublisher(),
                 new CoverageHistory(unreachable()), recorder);
     }
 
@@ -122,7 +131,7 @@ class CollectEventRecordingTest {
                 new GoProbeClient(props), new GoCoverageAnalyzer(props, platform),
                 new CppProbeClient(props), new CppCoverageAnalyzer(props, platform),
                 new RustProbeClient(props), new RustCoverageAnalyzer(props, platform),
-                new GitService(props), props, new CoveragePublisher(),
+                new GitService(props), props, noArtifacts(), new CoveragePublisher(),
                 new CoverageHistory(unreachable()), rec).collect();
 
         assertEquals(List.of("CONFIG_ERROR"), rec.recorded);
@@ -142,7 +151,7 @@ class CollectEventRecordingTest {
                 new GoProbeClient(props), new GoCoverageAnalyzer(props, platform),
                 new CppProbeClient(props), new CppCoverageAnalyzer(props, platform),
                 new RustProbeClient(props), new RustCoverageAnalyzer(props, platform),
-                new GitService(props), props, new CoveragePublisher(),
+                new GitService(props), props, noArtifacts(), new CoveragePublisher(),
                 new CoverageHistory(unreachable()), rec);
         rt.collect();
         rt.collect();

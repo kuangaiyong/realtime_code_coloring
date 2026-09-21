@@ -1,5 +1,8 @@
 package com.rtcc.platform.artifact;
 
+import com.rtcc.platform.config.ProjectConfig;
+import com.rtcc.platform.model.BuildVersion;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -270,6 +273,53 @@ public class ArtifactStore {
         } catch (IOException e) {
             return Optional.empty();
         }
+    }
+
+    /**
+     * 按模式解析出这一轮归一化该用的产物路径。
+     *
+     * <p>{@code local} 模式原样返回入参 —— 现有的裸机部署走的就是这条，一步都不多做。
+     *
+     * <p><b>为什么返回的是一份配置、而不是几个路径</b>：三个 Analyzer 拿产物路径的方式
+     * 并不一致。{@code CoverageAnalyzer}（Java）由外部传，而 {@code CppCoverageAnalyzer}
+     * 与 {@code RustCoverageAnalyzer} 自己从 {@link ProjectConfig} 读，压根没有接收路径的入参。
+     * 所以换的是喂给它们的那份配置，而不是给它们加一个参数（见 spec §4.2 的 2026-09-03 修正）。
+     *
+     * <p><b>但「换了配置」不等于「它们能收到」。</b>这两个 Analyzer 是在
+     * {@code ProjectRuntimeFactory.create} 里一次性造好、存成 {@code ProjectRuntime} 的
+     * final 字段的，而 buildId 每轮采集才知道 —— 接 uploaded 时必须用这里返回的配置
+     * <b>重造</b>它们，否则会出现「Java 用解压出来的产物、C++/Rust 用本机路径」的混合报告，
+     * 行号错位且界面上看不出。眼下 {@code ProjectRuntime} 只把返回值用在了 Java 的
+     * classes-dir 上，重造那一步还没有做。
+     *
+     * <p><b>本次提交只接通 local 这一条路</b>，uploaded <b>当场拒绝</b>而不是静默退回 local ——
+     * 退回的后果正是上一个提交（「产物来源填错当场拒绝」）论证过的那个：拿本机路径的产物
+     * 去解另一个 buildId 的探针数据。分两步提交是为了先单独证明「多这一次调用不改变现有行为」，
+     * 之后万一出问题，能立刻分清是接线的错还是取产物的错。
+     *
+     * <p>接 uploaded 时这三条契约要一并落地，眼下一条都还没实现：
+     * <ul>
+     *   <li>{@code version} 为 null（实例没配 sessionid，或实例间版本不一致）一律拒绝：
+     *       不知道该取哪一份产物时只能不出报告，不能猜一个。<b>这不是边界情况</b> ——
+     *       没配 sessionid 是平台明确支持的降级态，默认部署下每轮采集都会走到</li>
+     *   <li>{@code version.dirty()} 为真一律拒绝：{@link BuildVersion} 把 {@code -dirty} 拆成了
+     *       独立的布尔位，{@code commit()} 给出的是干净的 40 位 sha，照它去取会取回
+     *       <b>干净构建</b>的产物来解脏字节码的探针数据 —— 正是
+     *       {@link #requireValidBuildId(String)} 在上传侧拒绝 {@code -dirty} 所要防的那件事</li>
+     *   <li>只解析这一轮真有实例的那几种语言：Go 不需要产物，一个纯 Go 项目不该因为
+     *       「没上传 java 产物」被整个打挂</li>
+     * </ul>
+     */
+    public ProjectConfig resolveInto(ProjectConfig cfg, BuildVersion version) throws IOException {
+        if (cfg.usesUploadedArtifacts()) {
+            // 校验是放行 uploaded 的（见 ProjectRegistry.validate），而这里还没接通。
+            // 此时原样返回 cfg 就等于静默退回 local：平台照旧拿本机路径的产物去解
+            // 另一个 buildId 的探针数据，行号错位而界面上一切正常。上一个提交刚把
+            // 「填错了字母」那个入口堵死，不能转手在「填对了」这个更大的入口上留同一个洞
+            throw new IOException("产物来源配的是 uploaded（按 buildId 从产物仓库取），"
+                    + "但这条路尚未接通，现在取不到产物；改回 local 用配置里的本地路径");
+        }
+        return cfg;
     }
 
     /** 这个项目存过哪些构建，新的在前 */

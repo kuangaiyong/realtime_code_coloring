@@ -11,6 +11,7 @@ import com.rtcc.platform.collector.GoCoverageAnalyzer;
 import com.rtcc.platform.collector.GoProbeClient;
 import com.rtcc.platform.collector.RustCoverageAnalyzer;
 import com.rtcc.platform.collector.RustProbeClient;
+import com.rtcc.platform.artifact.ArtifactStore;
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.history.CollectEvents;
 import com.rtcc.platform.history.CoverageHistory;
@@ -62,6 +63,8 @@ public class ProjectRuntime {
     private final RustCoverageAnalyzer rustAnalyzer;
     private final GitService git;
     private final ProjectConfig props;
+    /** 产物按 buildId 取时从这里解析出实际路径；local 模式下它只是原样返回配置 */
+    private final ArtifactStore artifacts;
     private final CoveragePublisher publisher;
     private final CoverageHistory history;
     /** 采集状态的变化事件。回答「昨天半夜那次为什么没数据」 */
@@ -119,7 +122,7 @@ public class ProjectRuntime {
                            GoProbeClient goProbe, GoCoverageAnalyzer goAnalyzer,
                            CppProbeClient cppProbe, CppCoverageAnalyzer cppAnalyzer,
                            RustProbeClient rustProbe, RustCoverageAnalyzer rustAnalyzer, GitService git,
-                           ProjectConfig props, CoveragePublisher publisher,
+                           ProjectConfig props, ArtifactStore artifacts, CoveragePublisher publisher,
                            CoverageHistory history, CollectEvents events) {
         this.probeClient = probeClient;
         this.analyzer = analyzer;
@@ -131,6 +134,7 @@ public class ProjectRuntime {
         this.rustAnalyzer = rustAnalyzer;
         this.git = git;
         this.props = props;
+        this.artifacts = artifacts;
         this.publisher = publisher;
         this.history = history;
         this.events = events;
@@ -408,13 +412,19 @@ public class ProjectRuntime {
 
         try {
             long tAna0 = System.nanoTime();
+            // 产物按 buildId 取时，得先知道这批实例跑的是哪个构建 —— 而这只有采集完才知道，
+            // 所以解析放在这里而不是造 runtime 的时候。local 模式原样返回 props，零开销。
+            // 换回来的只是产物路径那几项：源码根（getJavaSourceRoot 等）刻意仍取 props，
+            // 因为源码来自 git 工作树而不是产物包 —— 跟着产物走会去解压目录里找源文件
+            BuildVersion unified = unifiedVersion(reported);
+            ProjectConfig artifactCfg = artifacts.resolveInto(props, unified);
             // 四种语言的归一化互不相干：各自建临时目录，产出的文件路径也不相交。
             // 而其中三种要拉起外部进程（covdata / gcov / llvm-cov），串行做等于把四条
             // CPU 密集的管道排成一队 —— 机器上但凡有别的东西在跑，这一段就从 2s 涨到 5s+，
             // 端到端染色延迟随之越过 5s 那条核心断言线（实测过 8/8 全超）
             List<AnalyzeJob> jobs = new ArrayList<>(4);
             if (anyJava) {
-                File classesDir = new File(props.getClassesDir());
+                File classesDir = new File(artifactCfg.getClassesDir());
                 if (!classesDir.isDirectory()) {
                     // 探针是好的，问题出在平台侧配置。混同为「探针未连接」会让人去查被测服务，方向完全错。
                     // 这一项放在并行之外先判：它是纯粹的配置错，没必要陪着跑一轮外部工具
@@ -449,7 +459,7 @@ public class ProjectRuntime {
                     (System.nanoTime() - tAna0) / 1_000_000);
 
             Map<String, FileCoverage> previous = state.get().files();
-            state.set(new Snapshot(fresh, unifiedVersion(reported), versionConflict(statuses)));
+            state.set(new Snapshot(fresh, unified, versionConflict(statuses)));
             // 少一台实例，聚合结果就少一部分覆盖：那些行会显示成红色，但其实别的机器跑到了。
             // 这不是「数据不可用」而是「数据不完整」，所以照常出报告，但状态必须与全连上区分开
             setProbeStatus(connected == endpoints.size() ? "CONNECTED" : "PARTIAL",
@@ -542,7 +552,17 @@ public class ProjectRuntime {
                     } else {
                         ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
                         v = BuildVersion.parse(dump.sessions());
-                        files = analyzer.analyze(dump.exec(), new File(props.getClassesDir()),
+                        // 按这一台自报的构建取产物：对比视图本来就是逐台算的，
+                        // 各台版本不同时也该各用各的那一份。
+                        //
+                        // 接 uploaded 时这里还欠两件事，眼下 local 原样返回所以都不成立：
+                        // 一是取不到产物会落进下面那个 catch，被写成 status=DISCONNECTED ——
+                        // 实例明明是好的，人会照着去查被测服务，方向完全错
+                        //（doCollect 那边把它分成 CONFIG_ERROR / ANALYZE_ERROR 正是为了这个）；
+                        // 二是各台版本相同才是常态，逐台解析等于在 collectLock 里做 N 次解压，
+                        // 而这把锁与 3 秒一轮的采集是同一把
+                        files = analyzer.analyze(dump.exec(),
+                                new File(artifacts.resolveInto(props, v).getClassesDir()),
                                 props.getJavaSourceRoot());
                     }
                     int covered = 0, missed = 0;

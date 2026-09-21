@@ -9,6 +9,7 @@ import com.rtcc.platform.collector.GoProbeClient;
 import com.rtcc.platform.collector.ProbeClient;
 import com.rtcc.platform.collector.RustCoverageAnalyzer;
 import com.rtcc.platform.collector.RustProbeClient;
+import com.rtcc.platform.artifact.ArtifactStore;
 import com.rtcc.platform.config.CoverageProperties;
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.history.CollectEvents;
@@ -22,8 +23,10 @@ import org.springframework.stereotype.Component;
  * 仓库路径、产物目录、源码根。做成共享单例的话，两个项目的归一化会互相用错对方的路径，
  * 而错误的表现是「某些文件解不出行号」这类看不出根因的静默偏差。
  *
- * <p>不依赖项目配置的三个组件（{@link ProbeClient}、{@link CoverageAnalyzer}、
- * {@link CoverageHistory}）仍是共享单例，没有必要重复造。
+ * <p>不依赖项目配置的四个组件（{@link ProbeClient}、{@link CoverageAnalyzer}、
+ * {@link CoverageHistory}、{@link ArtifactStore}）仍是共享单例，没有必要重复造。
+ * 产物仓库尤其要看清是<b>全平台一份</b>：它内部按 projectId 分目录，
+ * 多项目隔离靠的是那一层路径校验，而不是每个项目各持一个仓库对象。
  */
 @Component
 public class ProjectRuntimeFactory {
@@ -35,16 +38,20 @@ public class ProjectRuntimeFactory {
     private final CoveragePublisher publisher;
     private final CoverageHistory history;
     private final CollectEvents events;
+    /** 产物仓库同样跟着部署机器走（根目录与保留数是平台级配置），所有项目共用这一份 */
+    private final ArtifactStore artifacts;
 
     public ProjectRuntimeFactory(ProbeClient probeClient, CoverageAnalyzer analyzer,
                                  CoverageProperties platform, CoveragePublisher publisher,
-                                 CoverageHistory history, CollectEvents events) {
+                                 CoverageHistory history, CollectEvents events,
+                                 ArtifactStore artifacts) {
         this.probeClient = probeClient;
         this.analyzer = analyzer;
         this.platform = platform;
         this.publisher = publisher;
         this.history = history;
         this.events = events;
+        this.artifacts = artifacts;
     }
 
     public ProjectRuntime create(ProjectConfig cfg) {
@@ -52,6 +59,6 @@ public class ProjectRuntimeFactory {
                 new GoProbeClient(cfg), new GoCoverageAnalyzer(cfg, platform),
                 new CppProbeClient(cfg), new CppCoverageAnalyzer(cfg, platform),
                 new RustProbeClient(cfg), new RustCoverageAnalyzer(cfg, platform),
-                new GitService(cfg), cfg, publisher, history, events);
+                new GitService(cfg), cfg, artifacts, publisher, history, events);
     }
 }
