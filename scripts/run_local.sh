@@ -333,6 +333,10 @@ verify() {
   echo
   "$PY" scripts/e2e_rust.py
   echo
+  # 排在这里有两个理由：它要与 default 项目逐行比对，所以必须在四种语言都采过数之后；
+  # 而它自己只建临时项目、不跑场景、不清零，放在 e2e_project 之前不会洗掉谁的数据
+  "$PY" scripts/e2e_artifact.py
+  echo
   # 放最后：它会建项目、跑场景（start 会清零计数器），排在别的用例前面会洗掉它们的数据
   "$PY" scripts/e2e_project.py
   echo
