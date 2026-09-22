@@ -287,4 +287,55 @@ class RustCoverageAnalyzerTest {
         assertEquals(38, m.firstLine(), "FN:38 给的就是首行号，不必像 C++ 那样按位置猜");
         assertNull(m.coveredBranches(), "Rust 拿不到分支，方法级同样是 null");
     }
+
+    /**
+     * LLVM 的 counter expression 会做减法（else 分支的次数 = 父计数 − if 分支计数）。
+     * dump 发生在业务线程两次递增之间时，抓到的两个计数器不一致，减法在 u64 下**下溢**，
+     * 输出 18446744073709551615（{@code u64::MAX}，即 −1 的补码）。
+     *
+     * <p>实测：负载下每约 8 次 {@code /api/coverage/instances} 调用命中 1 次，
+     * 而 {@code Long.parseLong} 解析不了超过 {@code Long.MAX_VALUE} 的无符号值 ——
+     * 一行算不出来，抛出的异常让**整台 Rust 实例的覆盖数据全部丢失**，
+     * 界面上与「这台什么都没跑」长得一模一样。
+     *
+     * <p>取舍：这一行既不能算 COVERED（下溢意味着次数根本没算出来），
+     * 也不能算 MISSED（那是在说一件没发生的事），所以**不进 IR** ——
+     * 既不进分子也不进分母，与非可执行行同一口径，覆盖率不被污染。
+     */
+    @Test
+    void 计数器下溢的行跳过而不是让整份数据失败(@TempDir Path repo) throws Exception {
+        String abs = repo.toAbsolutePath().normalize().toString().replace('\\', '/');
+        Map<String, FileCoverage> got = new RustCoverageAnalyzer(props(repo, "x"), new CoverageProperties()).parse("""
+                SF:%s/demo-service-rust/src/order.rs
+                DA:10,3
+                DA:11,18446744073709551615
+                DA:12,0
+                end_of_record
+                """.formatted(abs));
+
+        FileCoverage f = got.get("demo-service-rust/src/order.rs");
+        assertNotNull(f, "一行算不出来，不该让整台实例的数据全丢：" + got.keySet());
+        assertEquals(1, f.coveredLines(), "只有 DA:10 是真跑过的");
+        assertEquals(1, f.missedLines(), "只有 DA:12 是真没跑过的");
+        assertEquals(2, f.lines().size(), "下溢那一行不进 IR，既不算覆盖也不算未覆盖");
+    }
+
+    /**
+     * 跳过下溢行是为了不让一行连累整份数据，但**跳到一行不剩时必须拒绝出报告**：
+     * 回一个空结果，界面上与「Rust 一行都没跑过」长得完全一样，
+     * 而真实原因是这批数据根本不可用 —— 本项目最忌讳的那种坏法。
+     */
+    @Test
+    void 全部行都算不出来时拒绝出报告而不是回空(@TempDir Path repo) {
+        String abs = repo.toAbsolutePath().normalize().toString().replace('\\', '/');
+        IOException e = assertThrows(IOException.class,
+                () -> new RustCoverageAnalyzer(props(repo, "x"), new CoverageProperties()).parse("""
+                        SF:%s/demo-service-rust/src/order.rs
+                        DA:10,18446744073709551615
+                        DA:11,18446744073709551615
+                        end_of_record
+                        """.formatted(abs)));
+
+        assertTrue(e.getMessage().contains("算不出来"), e.getMessage());
+    }
 }

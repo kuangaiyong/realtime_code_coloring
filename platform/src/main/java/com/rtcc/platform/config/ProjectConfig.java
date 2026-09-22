@@ -69,6 +69,19 @@ public class ProjectConfig {
     /** Rust：被测产物。行号信息在它的 coverage mapping 里，相当于 Java 的 classes-dir */
     private String rustBinary;
 
+    /**
+     * 产物从哪来：{@code local}（上面那几个本地路径，默认）或 {@code uploaded}
+     * （按 buildId 从产物仓库取）。
+     *
+     * <p><b>默认必须是 local</b>：现有的裸机部署与 8 实例的全量验证链路都靠它，
+     * 默认值一旦改成 uploaded，所有现存项目会立刻开始「取不到产物」而拒绝出报告。
+     *
+     * <p>它是<b>项目级</b>的：同一个平台上，一个项目跑在裸机、另一个跑在容器里，
+     * 各自选各自的取法。产物仓库自身的根目录与保留数则是平台级，留在
+     * {@link CoverageProperties}，与工具链路径同理。
+     */
+    private String artifactSource = "local";
+
     /** 覆盖率门禁的阈值。CI 在合并前调 /api/coverage/gate，据此决定放行还是阻断 */
     private Gate gate = new Gate();
 
@@ -139,6 +152,12 @@ public class ProjectConfig {
     public String getRustBinary() { return rustBinary; }
     public void setRustBinary(String rustBinary) { this.rustBinary = rustBinary; }
 
+    public String getArtifactSource() { return artifactSource; }
+    public void setArtifactSource(String artifactSource) { this.artifactSource = artifactSource; }
+
+    /** 产物是否来自按 buildId 索引的仓库。判定集中在这里，免得各处各写各的字符串比较 */
+    public boolean usesUploadedArtifacts() { return "uploaded".equalsIgnoreCase(artifactSource); }
+
     public String getRepoDir() { return repoDir; }
     public void setRepoDir(String repoDir) { this.repoDir = repoDir; }
 
@@ -150,6 +169,46 @@ public class ProjectConfig {
 
     public int getTimeoutMs() { return timeoutMs; }
     public void setTimeoutMs(int timeoutMs) { this.timeoutMs = timeoutMs; }
+
+    /**
+     * 复制一份，供「产物路径按 buildId 替换」用。
+     *
+     * <p><b>为什么必须是副本</b>：这个对象就是 {@code ProjectRegistry} 注册表里代表本项目的
+     * 那一个活对象，也是 {@code GET /api/projects} 原样吐回去的那一份。就地改产物路径的话，
+     * 用户在项目设置里看到的会变成平台内部的解压目录，而且改一次污染到底 ——
+     * 下一轮采集读到的「原始配置」已经是被改过的了。
+     *
+     * <p>可变字段（两个列表 + {@link Gate}）都另建一份，不与原配置共享：
+     * 共享的话改副本会连带改到原配置，与就地改是同一个后果，只是更难发现。
+     *
+     * <p><b>加字段时这里必须跟上</b>。漏一个的后果是「uploaded 模式下那一项悄悄变回默认值」
+     * —— 比如 baseline 丢了，增量口径会拿错基线算出一份看不出错的报告。
+     * {@code ArtifactResolveTest} 里有一条反射逐字段比对的用例守着这件事。
+     */
+    public ProjectConfig copy() {
+        ProjectConfig c = new ProjectConfig();
+        c.id = id;
+        c.name = name;
+        c.instances = new ArrayList<>(instances);
+        c.repoDir = repoDir;
+        c.baseline = baseline;
+        c.classesDir = classesDir;
+        c.javaSourceRoot = javaSourceRoot;
+        c.goSourceRoot = goSourceRoot;
+        c.goModulePath = goModulePath;
+        c.goExclude = new ArrayList<>(goExclude);
+        c.cppSourceRoot = cppSourceRoot;
+        c.cppObjectsDir = cppObjectsDir;
+        c.rustSourceRoot = rustSourceRoot;
+        c.rustBinary = rustBinary;
+        c.artifactSource = artifactSource;
+        c.intervalMs = intervalMs;
+        c.timeoutMs = timeoutMs;
+        c.gate = new Gate();
+        c.gate.setIncrementalThreshold(gate.getIncrementalThreshold());
+        c.gate.setOverallThreshold(gate.getOverallThreshold());
+        return c;
+    }
 
     /**
      * 门禁阈值。只有两个数字，不做原型上那套多规则 + 优先级 —— 一个项目盯的就是

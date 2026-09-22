@@ -9,6 +9,7 @@ import com.rtcc.platform.collector.GoProbeClient;
 import com.rtcc.platform.collector.ProbeClient;
 import com.rtcc.platform.collector.RustCoverageAnalyzer;
 import com.rtcc.platform.collector.RustProbeClient;
+import com.rtcc.platform.artifact.ArtifactStore;
 import com.rtcc.platform.config.CoverageProperties;
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.history.CollectEvents;
@@ -39,19 +40,30 @@ class CollectEventRecordingTest {
     /** 记下每一次 record 调用，替代真实数据库 */
     private static final class Recorder extends CollectEvents {
         private final List<String> recorded = new ArrayList<>();
+        /** 每条事件点名了哪几台。掉线事件不点名的话，人只能去翻日志 */
+        private final List<List<String>> instances = new ArrayList<>();
 
         Recorder(DataSource ds) {
             super(ds);
         }
 
         @Override
-        public void record(String projectId, String status, String detail) {
+        public void record(String projectId, String status, String detail, List<String> eps) {
             recorded.add(status);
+            instances.add(eps);
         }
     }
 
     private static DataSource unreachable() {
         return new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent");
+    }
+
+    /**
+     * 这些用例都够不到探针，走不到取产物那一步；产物来源也是默认的 local，
+     * 解析只是原样返回配置。所以这个目录不会被碰到
+     */
+    private static ArtifactStore noArtifacts() {
+        return new ArtifactStore(java.nio.file.Path.of("target", "artifacts-unused"), 10);
     }
 
     private static ProjectRuntime runtimeOn(int deadPort, Recorder recorder) {
@@ -64,7 +76,7 @@ class CollectEventRecordingTest {
                 new GoProbeClient(props), new GoCoverageAnalyzer(props, platform),
                 new CppProbeClient(props), new CppCoverageAnalyzer(props, platform),
                 new RustProbeClient(props), new RustCoverageAnalyzer(props, platform),
-                new GitService(props), props, new CoveragePublisher(),
+                new GitService(props), props, noArtifacts(), platform, new CoveragePublisher(),
                 new CoverageHistory(unreachable()), recorder);
     }
 
@@ -87,6 +99,45 @@ class CollectEventRecordingTest {
                 "每轮都记的话，3 秒一轮就是一天 28800 行，真正的转折点会被淹掉");
     }
 
+    /**
+     * 掉线事件必须<b>点名是哪台</b>。原先实例名只拼在 detail 那段话里，
+     * 既筛不了也排不了序；现在单独一列，页面才能按实例过滤。
+     * 只说「部分掉线」等于让人去翻日志。
+     */
+    @Test
+    void 掉线事件点名了是哪台实例() throws Exception {
+        Recorder rec = new Recorder(unreachable());
+        int port = deadPort();
+        runtimeOn(port, rec).collect();
+
+        assertEquals(1, rec.instances.size());
+        assertEquals(List.of("java://localhost:" + port), rec.instances.get(0),
+                "掉线的那台要单独记下来，不能只留在 detail 的文字里");
+    }
+
+    /**
+     * 反过来也要成立：配置错误与具体某台实例无关（地址都解析不出来），
+     * 硬塞一个实例名进去，人会照着那个名字去查一台并不存在的机器。
+     */
+    @Test
+    void 配置错误不点名任何实例() throws Exception {
+        Recorder rec = new Recorder(unreachable());
+        ProjectConfig props = new ProjectConfig();
+        props.setId("evt");
+        props.setInstances(List.of("这不是一个合法地址"));
+        props.setTimeoutMs(300);
+        CoverageProperties platform = new CoverageProperties();
+        new ProjectRuntime(new ProbeClient(), new CoverageAnalyzer(),
+                new GoProbeClient(props), new GoCoverageAnalyzer(props, platform),
+                new CppProbeClient(props), new CppCoverageAnalyzer(props, platform),
+                new RustProbeClient(props), new RustCoverageAnalyzer(props, platform),
+                new GitService(props), props, noArtifacts(), platform, new CoveragePublisher(),
+                new CoverageHistory(unreachable()), rec).collect();
+
+        assertEquals(List.of("CONFIG_ERROR"), rec.recorded);
+        assertEquals(List.of(), rec.instances.get(0), "配置错误与哪一台无关，不该点名");
+    }
+
     @Test
     void 状态真的变了才记() throws Exception {
         Recorder rec = new Recorder(unreachable());
@@ -100,7 +151,7 @@ class CollectEventRecordingTest {
                 new GoProbeClient(props), new GoCoverageAnalyzer(props, platform),
                 new CppProbeClient(props), new CppCoverageAnalyzer(props, platform),
                 new RustProbeClient(props), new RustCoverageAnalyzer(props, platform),
-                new GitService(props), props, new CoveragePublisher(),
+                new GitService(props), props, noArtifacts(), platform, new CoveragePublisher(),
                 new CoverageHistory(unreachable()), rec);
         rt.collect();
         rt.collect();

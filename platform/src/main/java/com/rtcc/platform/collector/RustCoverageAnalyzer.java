@@ -97,6 +97,9 @@ public class RustCoverageAnalyzer {
         String currentPath = null;
         List<FileCoverage.LineCoverage> current = null;
         int files = 0;
+        // 执行次数算不出来的行数与首个样例，循环结束后统一报一次
+        int badCount = 0;
+        String badSample = null;
         for (String line : lcov.split("\r?\n")) {
             if (line.startsWith("SF:")) {
                 files++;
@@ -130,7 +133,29 @@ public class RustCoverageAnalyzer {
             } else if (line.startsWith("DA:") && current != null) {
                 String[] kv = line.substring(3).split(",");
                 if (kv.length >= 2) {
-                    long count = Long.parseLong(kv[1].strip());
+                    // 执行次数在 lcov 里是 u64，parseLong 解析不了超过 Long.MAX_VALUE 的值。
+                    // LLVM 的 counter expression 会做减法（else 分支次数 = 父计数 − if 分支计数），
+                    // dump 抓到两个不一致的计数器快照时减法下溢，输出 u64::MAX。实测负载下
+                    // 每约 8 次 /api/coverage/instances 命中一次 —— 一行算不出来不能连累
+                    // 整台实例的数据全丢，那在界面上与「这台什么都没跑」长得一模一样
+                    long count;
+                    try {
+                        count = Long.parseUnsignedLong(kv[1].strip());
+                    } catch (NumberFormatException e) {
+                        count = -1;   // 认不出的格式与下溢同样处理：这一行的次数拿不到
+                    }
+                    // 解出来是负数说明原值超过 Long.MAX_VALUE。没有哪一行能执行 9.2e18 次，
+                    // 所以这只可能是下溢：既不算 COVERED（次数根本没算出来），
+                    // 也不算 MISSED（那是在说一件没发生的事）—— 不进 IR，
+                    // 既不进分子也不进分母，与非可执行行同一口径。
+                    // 逐行打日志会刷屏（parse 每 3 秒一轮），所以只计数、循环结束后报一次
+                    if (count < 0) {
+                        if (badSample == null) {
+                            badSample = line;
+                        }
+                        badCount++;
+                        continue;
+                    }
                     current.add(new FileCoverage.LineCoverage(
                             Integer.parseInt(kv[0].strip()), count > 0 ? "COVERED" : "MISSED",
                             null, null));
@@ -140,6 +165,12 @@ public class RustCoverageAnalyzer {
                 currentPath = null;
             }
         }
+        if (badCount > 0) {
+            log.warn("Rust 覆盖数据有 {} 行的执行次数算不出来，这些行不计入覆盖（首例：{}）——"
+                    + " LLVM 的 counter expression 做减法时，若 dump 抓到的计数器快照不一致就会下溢",
+                    badCount, badSample);
+        }
+
         // llvm-cov 可以正常退出却什么都没输出。静默放过的话界面上 Rust 直接消失，
         // 与「Rust 代码一行都没被调用」长得完全一样 —— 这正是最该拒绝出报告的那类情况
         if (files == 0) {
@@ -175,6 +206,12 @@ public class RustCoverageAnalyzer {
                     methodsOf(fnDetail.get(path)),
                     lines));
         });
+        // 跳过的行把结果掏空时不能安静地返回空 —— 空结果与「Rust 一行都没跑过」
+        // 在界面上一模一样，而真实原因是数据不可用。这正是该拒绝出报告的那类情况
+        if (result.isEmpty() && badCount > 0) {
+            throw new IOException("Rust 覆盖数据里 " + badCount
+                    + " 行的执行次数全部算不出来，没有一行可用（首例：" + badSample + "）");
+        }
         return result;
     }
 

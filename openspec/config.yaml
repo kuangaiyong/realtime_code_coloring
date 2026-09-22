@@ -1,0 +1,46 @@
+schema: spec-driven
+
+# 本文件由 openspec CLI 在对应工序按需注入，不进常驻上下文。
+# 只写 CLAUDE.md 里没有的工序级口径 —— CLAUDE.md 是常驻的，重复一遍等于白花 token。
+
+context: |
+  验收基线（低于基线一律判失败，不许解释过去）：
+    bash scripts/run_local.sh verify  →  ≥ 233 条 PASS / 0 FAIL
+    mvn -B test                       →  ≥ 164 全过
+  这两个数字随功能增加只升不降；新增用例后把新基线写回本文件。
+
+  Maven 命令前缀（本机 JDK/Maven 不在 PATH）：
+    export JAVA_HOME=/c/Users/Administrator/devtools/jdk-17.0.20+8
+    export PATH="$JAVA_HOME/bin:/c/Users/Administrator/devtools/apache-maven-3.9.16/bin:$PATH"
+
+  验收顺序固定 stop → start → verify。改了 static/ 或资源目录必须重新 mvn package，
+  打包前先停平台（它握着那个 jar）。E2E 客户端超时统一 60s。
+
+rules:
+  proposal:
+    - 必须有「非目标（明确不做）」一节，写清为什么不做
+    - Why 一节要说清「不改会怎样」，而不只是「改了会更好」
+  design:
+    - 每个决策写成三行：选了什么 — 为什么 — 如果错了代价是什么
+    - 不写实现代码；接口签名可以写，方法体不写
+  tasks:
+    - 每个任务写完整的**测试代码**（它是规格的可执行形式），但**一律不写实现代码**——
+      实现代码写进计划等于同一段代码付费生成三次
+    - 每个任务给出可直接执行的验收命令与期望数字（如「≥ 233 PASS / 0 FAIL」）
+    - 任务之间标明依赖；无依赖的任务显式写「无」，供派工时判断能否并行
+    - 新增或改动核心功能时，必须含一条「同步 CLAUDE.md §二核心功能表 + 补 E2E」
+  specs:
+    - 每条 Requirement 至少一个 #### Scenario:，写成可被 E2E 直接翻译的形式
+    - 「拒绝出报告」的路径同样要写进 spec —— 一份静默错误的报告比没有报告更糟
+
+operations:
+  apply:
+    guidance:
+      - 红-绿-红验证-绿，四次真实执行：先写测试跑红、实现后跑绿、
+        故意改坏一处确认测试真的红、还原后再跑绿。四次都要粘真实命令与真实输出片段
+      - evidence.md 用追加写入，每任务约 20 行：命令 + 关键输出行 + 数字，不贴完整日志
+      - checkbox 只在该任务的规定行为完全实现时才打 [x]；部分完成、延后、绕过一律不打
+      - 任务需要的工作超出 tasks.md 所写时，先说出来，不静默扩大或缩小范围
+  archive:
+    guidance:
+      - 归档前确认交付报告里「没做到的 / 绕过的 / 没验的」一节已写（无也要显式写「无」）

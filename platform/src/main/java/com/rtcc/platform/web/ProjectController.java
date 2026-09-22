@@ -110,6 +110,21 @@ public class ProjectController {
         return checker.check(registry.config(id));
     }
 
+    /**
+     * 探这个项目的<b>某一台</b>实例，当场回报接上没有。接入自检表上那行「测这一台」用它。
+     *
+     * <p>与 {@code /check} 的区别是范围：那个要碰仓库、碰产物目录、挨个连全部实例，
+     * 而人改完启动参数重启服务之后，想知道的只是「我这一台好了没有」。
+     *
+     * <p><b>请求体里的 endpoint 只用于在该项目已配置的实例里选一条</b>，
+     * 不在里面就回 400 —— 理由见 {@link ProjectChecker#probeOne}。只读，不清零。
+     */
+    @PostMapping("/{id}/instances/probe")
+    public Map<String, Object> probeInstance(@PathVariable String id,
+                                             @RequestBody Map<String, String> body) {
+        return checker.probeOne(registry.config(id), body.get("endpoint"));
+    }
+
     /** 立即采集一次，不等轮询周期。向导建完项目后马上要看到数据 */
     @PostMapping("/{id}/collect")
     public Map<String, Object> collect(@PathVariable String id) {

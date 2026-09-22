@@ -407,6 +407,54 @@ async function baselineOptions(page, testid) {
         pass(`跨构建横轴带上了时间：${from} → ${to}（${mid}）`);
       }
     }
+
+    // 曲线下方的事件带：覆盖率掉下去的那一段，人第一个想知道的是当时发生了什么。
+    // <b>刻意不在曲线上打点</b> —— 横轴是「第几个点」不是时间（svgPoints 按索引均分），
+    // 两次构建间隔 1 小时和 3 天在图上一样宽，按时间比例标记会标到视觉上错误的位置，
+    // 而图看着是对的。所以只在下方列出区间内的事件
+    const band = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="trend-events"]');
+      if (!el) return null;
+      return {
+        text: el.innerText.replace(/\s+/g, ' '),
+        rows: document.querySelectorAll('[data-testid="trend-event-row"]').length,
+        // 只取最近若干条事件，而跨构建区间可能横跨几周 —— 区间更早的部分不在这批里，
+        // 不说的话人会把「列出来的」当成「全部的」
+        truncated: !!document.querySelector('[data-testid="trend-events-cut"]'),
+        hasLink: !!document.querySelector('[data-testid="trend-events-all"]')
+      };
+    });
+    if (!band) {
+      // 曲线画不出来时事件带也不该在 —— 它挂在曲线下面，没有区间就没有「区间内的事件」
+      const drawn = await page.evaluate(() => !!document.querySelector('[data-testid="trend-xaxis"]'));
+      if (drawn) fail('跨构建曲线画出来了，但下方没有事件带');
+      else pass('曲线画不出来时事件带一并省略：没有区间就没有「区间内的事件」');
+    } else if (!band.hasLink) {
+      fail(`事件带没有通往采集事件页的入口：${band.text.slice(0, 60)}`);
+    } else if (!/次异常|没有异常/.test(band.text)) {
+      fail(`事件带没说清区间内有没有异常：${band.text.slice(0, 60)}`);
+    } else {
+      pass(`趋势下方有事件带：${band.text.slice(0, 46)}…（${band.rows} 行`
+        + `${band.truncated ? '，并说明了只统计最近若干条' : ''}）`);
+    }
+
+    // 点一下要能到采集事件页 —— 这一带的全部价值就是「从坑跳到解释」
+    if (band && band.hasLink) {
+      await page.click(band.rows
+        ? '[data-testid="trend-event-row"]' : '[data-testid="trend-events-all"]');
+      const jumped = await waitFor(page, () =>
+        !!document.querySelector('[data-testid="view-events"]'), null, 8000);
+      if (jumped < 0) {
+        fail('点趋势下方的事件没跳到采集事件页');
+      } else {
+        pass('从趋势的事件带点得进采集事件页');
+      }
+      await page.click('[data-testid="nav-overview"]');
+      await waitFor(page, () => !!document.querySelector('[data-testid="view-overview"]'), null, 8000);
+      await page.click('[data-testid="trend-build"]');
+      await sleep(1200);
+    }
+
     await page.click('[data-testid="trend-session"]');
 
     // ---------- 4d · 染色页的文件列表：三组数与导出 ----------
@@ -601,13 +649,13 @@ async function baselineOptions(page, testid) {
     for (const v of ['coloring', 'overview', 'gate', 'report']) {
       if (await scopedBar(v)) barOn.push(v); else barOff.push(v + '(缺)');
     }
-    for (const v of ['onboard', 'events', 'settings']) {
+    for (const v of ['onboard', 'help', 'events', 'settings']) {
       if (await scopedBar(v)) barOff.push(v + '(多)');
     }
     if (barOff.length) {
       fail(`口径栏出现的位置不对：${barOff.join('、')}`);
     } else {
-      pass(`口径栏只出现在会显示数字的 ${barOn.length} 个视图上，设置/事件/接入页没有`);
+      pass(`口径栏只出现在会显示数字的 ${barOn.length} 个视图上，设置/事件/接入/帮助页没有`);
     }
 
     // ---------- 4f · 场景进行中：页面上唯一的解释 ----------
@@ -942,6 +990,229 @@ async function baselineOptions(page, testid) {
     } else {
       pass(`各实例覆盖已加载，自检表由 ${colsBefore} 列增至 ${colsBefore + 3} 列（${(grew / 1000).toFixed(1)}s）`);
     }
+
+    // ---------- 5b · 接入参数表单：命令按填的值算，不留待替换的占位符 ----------
+    // 这一页此前是一屏需要人工替换的示例文字，而<b>替换错的后果大多是静默的</b>：
+    // includes 填宽了框架类进分母、覆盖率莫名偏低，填窄了被测代码根本不插桩，
+    // 漏掉 sessionid 则页面只说一句「没上报构建版本」—— 三种错都看不出根因在这里
+    const obFields = async () => page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="ob-form"] .ob-field')].map(e => e.dataset.field));
+
+    await page.click('[data-testid="ob-lang-java"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="ob-form"]'), null, 5000) < 0) {
+      die('接入页的参数表单没渲染出来');
+    }
+    const javaFields = await obFields();
+    await page.click('[data-testid="ob-lang-cpp"]');
+    await sleep(300);
+    const cppFields = await obFields();
+    if (javaFields.includes('pkg') && !cppFields.includes('pkg') && cppFields.includes('cppObjectsDir')) {
+      pass(`参数项跟着语言换：Java ${javaFields.length} 项 / C++ ${cppFields.length} 项，互不串`);
+    } else {
+      fail(`参数项没跟着语言换：java=${javaFields.join(',')} cpp=${cppFields.join(',')}`);
+    }
+
+    await page.click('[data-testid="ob-lang-java"]');
+    await sleep(300);
+    // 没填时必须仍给出完整命令 —— 人第一次进来往往是「先看看要做什么」，
+    // 空着把命令藏起来等于把这一页原本的价值也弄丢了
+    const cmdBefore = await page.evaluate(textOf, '[data-testid="ob-cmd"]');
+    if (!/com\.example/.test(cmdBefore)) fail('参数没填时应保留示例占位符，实际没有');
+    else pass('参数没填时仍给出完整的示例命令');
+
+    for (const [k, v] of [['pkg', 'com.acme.billing'], ['agentJar', '/opt/jacocoagent.jar'],
+                          ['appJar', '/srv/billing.jar'], ['classesDir', '/srv/app/target/classes']]) {
+      await fill('ob-in-' + k, v);
+    }
+    await sleep(400);
+    const cmdAfter = await page.evaluate(textOf, '[data-testid="ob-cmd"]');
+    if (/com\.example/.test(cmdAfter) || /your-service\.jar/.test(cmdAfter)) {
+      fail(`填了参数占位符还在：${cmdAfter.split('\n').pop()}`);
+    } else if (!cmdAfter.includes('includes=com.acme.billing.*')) {
+      // 包名拼 .* 少一个点或多一个点，是这类改动最容易悄悄引入的错
+      fail(`包名没拼对：${cmdAfter.split('\n').pop()}`);
+    } else {
+      pass('填入参数后示例占位符全部消失，包名拼接正确');
+    }
+
+    // 刷新后还在：填完参数正要去「项目设置」保存，那一趟来回不能把它清掉
+    await page.reload({ waitUntil: 'networkidle2' });
+    await waitFor(page, () => !!document.querySelector('[data-testid="ob-in-pkg"]'), null, 15000);
+    const kept = await page.evaluate(() => document.querySelector('[data-testid="ob-in-pkg"]').value);
+    if (kept !== 'com.acme.billing') fail(`刷新后表单值丢了：「${kept}」`);
+    else pass('刷新后表单值还在（存在浏览器本地，不入库、不进项目配置）');
+
+    // 平台侧配置按同一份表单算出。没填的项也要列出来 ——
+    // 漏掉的话，人照抄完还差几项却不知道差在哪
+    const cfgText = await page.evaluate(textOf, '[data-testid="ob-cfg"]');
+    if (!cfgText.includes('classes-dir: /srv/app/target/classes')) {
+      fail(`配置片段没跟着表单算：${cfgText}`);
+    } else if (!cfgText.includes('java-source-root: <还没填>')) {
+      fail(`没填的项应列出来并标明还没填：${cfgText}`);
+    } else {
+      pass('平台侧配置按表单算出，没填的项也列出来并标明「还没填」');
+    }
+
+    // 硬边界：配置的保存入口只应该有「项目设置」一处。两个地方都能改的话，
+    // 改出不同的值时没人看得出是哪一处生效了 —— 这条断言防的是日后「顺手加个保存按钮」
+    const hasSave = await page.evaluate(() => {
+      const v = document.querySelector('[data-testid="view-onboard"]');
+      return [...v.querySelectorAll('button')].some(b => /保存|存盘|提交/.test(b.innerText));
+    });
+    if (hasSave) fail('服务接入页出现了保存按钮 —— 配置的保存入口只应该有「项目设置」一处');
+    else pass('服务接入页没有任何写配置的操作，与「项目设置」不重复');
+
+    // 四步条：完成态只给平台能观测到的那几步。
+    // <b>「重启被测服务」永远不打勾</b> —— 它发生在被测方，平台无从得知，
+    // 打勾会变成一句没有依据的断言，而人会据此以为自己已经做过了
+    const steps = await page.evaluate(() => ({
+      s3: document.querySelector('[data-testid="ob-step-3"]').className,
+      s4: document.querySelector('[data-testid="ob-step-4"]').className
+    }));
+    if (/done/.test(steps.s3)) fail('「重启被测服务」不该有完成态 —— 平台无从得知');
+    else pass('「重启被测服务」一步没有完成态：平台观测不到的事不打勾');
+    if (!/done/.test(steps.s4)) fail(`探针已连上，第 4 步却不是完成态：${steps.s4}`);
+    else pass('第 4 步的完成态取自平台真实的探测结果');
+
+    // ---------- 5c · 探针物料：内网无外网，这是唯一拿得到它们的途径 ----------
+    await page.click('[data-testid="ob-lang-go"]');
+    await sleep(400);
+    const goPre = await page.evaluate(textOf, '[data-testid="ob-artifact-pre"]');
+    const dlHref = await page.evaluate(() => {
+      const a = document.querySelector('[data-testid="ob-download"]');
+      return a ? a.getAttribute('href') : null;
+    });
+    if (!goPre) {
+      fail('Go 的物料前提说明没渲染');
+    } else if (!/同包/.test(goPre)) {
+      // 不满足前提的人下载完接不上、还不知道为什么 —— 前提必须写在下载处
+      fail(`Go 物料没写明「与 main 同包」这个前提：${goPre}`);
+    } else if (dlHref !== '/api/probe/artifacts/go') {
+      fail(`Go 的下载链接不对：${dlHref}`);
+    } else {
+      pass('探针物料有下载入口，且在下载处写明了适用前提（Go 需与 main 同包）');
+    }
+
+    // ---------- 5d · 「测这一台」：不必等下一个轮询周期 ----------
+    // 人刚改完启动参数重启了服务，等 3 秒一轮才知道成没成，
+    // 那段等待里最常见的动作是反复刷新页面
+    const probeEp = sum.instances[0].endpoint;
+    await page.click(`[data-testid="ob-probe-${probeEp}"]`);
+    const probeMs = await waitFor(page, (e) =>
+      !!document.querySelector(`[data-testid="ob-probe-res-${e}"]`), probeEp, 15000);
+    if (probeMs < 0) {
+      fail('点「测这一台」没有出结果');
+    } else {
+      const txt = await page.evaluate((e) =>
+        document.querySelector(`[data-testid="ob-probe-res-${e}"]`).innerText, probeEp);
+      if (!/已连上/.test(txt)) fail(`探测 ${probeEp} 的结果不对：${txt}`);
+      else pass(`「测这一台」${probeMs}ms 当场出结果：${txt}`);
+    }
+
+    // ---------- 5e · 跳「项目设置」时带上已填的值 ----------
+    await page.click('[data-testid="ob-lang-java"]');
+    await sleep(300);
+    await page.click('[data-testid="ob-to-settings"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="st-classesDir"]'), null, 15000) < 0) {
+      fail('点「去项目设置」没跳过去');
+    } else {
+      const v = await page.evaluate(() =>
+        document.querySelector('[data-testid="st-classesDir"]').value);
+      if (v !== '/srv/app/target/classes') fail(`设置页没预填带过来的值：「${v}」`);
+      else pass('跳「项目设置」时带上了接入页已填的值，不必重打一遍');
+      // 带过来的值还没保存，不说的话人会以为已经存上了，不点保存就走
+      if (!await page.evaluate(() => !!document.querySelector('[data-testid="st-prefilled"]'))) {
+        fail('预填了却没说「还没保存」—— 人会以为已经存上了');
+      } else {
+        pass('设置页说明了这几项是带过来的、还没保存');
+      }
+      // 用一次就清：不清的话此后每次进设置页都会被这份陈旧的值覆盖，
+      // 而人不会知道自己刚改的值为什么又变回去了 —— 比不预填更糟
+      await page.click('[data-testid="nav-onboard"]');
+      await waitFor(page, () => !!document.querySelector('[data-testid="view-onboard"]'), null, 5000);
+      await page.click('[data-testid="nav-settings"]');
+      await waitFor(page, () => !!document.querySelector('[data-testid="st-classesDir"]'), null, 15000);
+      if (await page.evaluate(() => !!document.querySelector('[data-testid="st-prefilled"]'))) {
+        fail('预填值没有用完即清 —— 每次进设置页都会被这份陈旧的值覆盖');
+      } else {
+        pass('预填值用一次就清，再进设置页不会被陈旧值覆盖');
+      }
+    }
+    // 这一节改过表单与设置页，回到服务接入页收尾，不影响后面的断言
+    await page.click('[data-testid="nav-onboard"]');
+    await waitFor(page, () => !!document.querySelector('[data-testid="view-onboard"]'), null, 5000);
+
+    // ---------- 5f · 接入页只留要填的，说明都在「接入帮助」 ----------
+    // 改版前这一页是一屏文档裹着一个表单（4 处风险提示 + 19 处字段说明 +
+    // 4 处语言坑 + 1 段配置说明，两千多字），要接入的人在里面找不到「我该填什么」
+    const obShape = await page.evaluate(() => {
+      const v = document.querySelector('[data-testid="view-onboard"]');
+      return {
+        notes: v.querySelectorAll('.note').length,
+        hintBlocks: v.querySelectorAll('.ob-field .hint').length,
+        infoIcons: v.querySelectorAll('.ob-field .fi').length,
+        fields: v.querySelectorAll('.ob-field').length,
+        helpHref: (v.querySelector('[data-testid="ob-help-link"]') || {}).getAttribute
+          ? v.querySelector('[data-testid="ob-help-link"]').getAttribute('href') : null
+      };
+    });
+    if (obShape.notes || obShape.hintBlocks) {
+      fail(`接入页还留着说明块（note ${obShape.notes} / hint ${obShape.hintBlocks}），应已搬去帮助页`);
+    } else if (obShape.infoIcons !== obShape.fields) {
+      // 每个字段都要有 ⓘ：这几条讲的是「填错了看不出来」，
+      // 人在填的那一刻看不到就等于没写 —— 这是它们没被一起搬走的唯一理由
+      fail(`${obShape.fields} 个字段只有 ${obShape.infoIcons} 个有说明图标`);
+    } else if (!/\/help\//.test(obShape.helpHref || '')) {
+      // 撤掉正文之后，这是通往原理的唯一一条路
+      fail(`接入页没有通往帮助页的入口：${obShape.helpHref}`);
+    } else {
+      pass(`接入页只留表单：0 个说明块、${obShape.fields} 个字段各有一个说明图标，另有帮助页入口`);
+    }
+
+    // 说明搬走了不等于还看得到 —— 悬停必须出完整那句
+    await page.hover('[data-testid="ob-hint-pkg"]');
+    await sleep(700);
+    const tipText = await page.evaluate(() => {
+      const t = document.querySelector('.el-popper');
+      return t ? t.innerText : null;
+    });
+    if (!tipText || !/填宽了|填窄了/.test(tipText)) {
+      fail(`字段说明图标悬停没出内容：${tipText}`);
+    } else {
+      pass('字段说明降级成图标后，悬停仍给出完整那句（includes 填宽/填窄的后果）');
+    }
+
+    // ---------- 5g · 接入帮助：说明的新家，且支持按语言深链接 ----------
+    await page.click('[data-testid="nav-help"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-help"]'), null, 8000) < 0) {
+      fail('打不开「接入帮助」视图');
+    } else {
+      const hp = await page.evaluate(() => {
+        const v = document.querySelector('[data-testid="view-help"]');
+        return { len: v.innerText.replace(/\s+/g, '').length, notes: v.querySelectorAll('.note').length };
+      });
+      if (hp.len < 500 || !hp.notes) {
+        fail(`帮助页内容太少，说明可能没搬过来：${hp.len} 字 / ${hp.notes} 个提示块`);
+      } else {
+        pass(`接入帮助页承接了说明：${hp.len} 字、${hp.notes} 个提示块`);
+      }
+      // 从接入页点某语言的「详细说明」跳过来，必须落在那门语言上 ——
+      // 人是带着「我要看 Rust 的」这个意图点过来的，落回 Java 等于没跳
+      await page.goto(`${PLATFORM}/#/p/default/help/rust`, { waitUntil: 'networkidle2' });
+      await waitFor(page, () => !!document.querySelector('[data-testid="view-help"]'), null, 8000);
+      const onRust = await page.evaluate(() =>
+        !!document.querySelector('[data-testid="hp-lang-rust"].on'));
+      if (!onRust) fail('深链接 /help/rust 没落在 Rust 那一节');
+      else pass('帮助页支持按语言深链接（/help/rust 直接落在 Rust）');
+      // 帮助页一个覆盖数字都不显示，口径栏不该出现在这里
+      if (await page.evaluate(() => !!document.querySelector('[data-testid="mode-full"]'))) {
+        fail('帮助页出现了口径栏，但它一个覆盖数字都不显示');
+      } else {
+        pass('帮助页没有口径栏：它不显示任何覆盖数字');
+      }
+    }
+    await page.click('[data-testid="nav-onboard"]');
+    await waitFor(page, () => !!document.querySelector('[data-testid="view-onboard"]'), null, 5000);
 
     // ---------- 6 · 实时染色链路（本脚本的核心断言） ----------
     await page.click('[data-testid="nav-coloring"]');
@@ -1298,6 +1569,58 @@ async function baselineOptions(page, testid) {
         fail(`事件页列出 ${got} 条，接口给了 ${evAfter.events.length} 条`);
       } else {
         pass(`事件页列出 ${evAfter.events.length} 条，与接口一致`);
+      }
+
+      // 持续时长不能是负数。曾经是：时间列用 NOW(3) 写入（服务端本地墙钟），
+      // 而连接串写着 serverTimezone=UTC，驱动把那个墙钟当 UTC 读回 ——
+      // 事件时间戳比浏览器的「现在」还晚 8 小时，页面上是「-28672 秒（至今）」
+      const durations = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="event-row"]')].map(r => r.children[2].innerText.trim()));
+      const negative = durations.filter(d => d.startsWith('-'));
+      if (negative.length) {
+        fail(`${negative.length} 条事件的持续时长是负数（时间戳比现在还晚）：${negative.slice(0, 3).join('、')}`);
+      } else {
+        pass(`${durations.length} 条事件的持续时长全部非负（时间按 UTC 存取）`);
+      }
+
+      // 掉线事件要点名是哪台。只说「部分实例掉线」等于让人去翻日志；
+      // 实例名虽然也拼在「原因」那段话里，但那是给人读的，筛选不了
+      const named = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="event-row"]')]
+          .filter(r => r.dataset.status === 'PARTIAL')
+          .map(r => r.children[3].innerText.trim()));
+      const withName = named.filter(t => t && !t.includes('—'));
+      if (!named.length) {
+        // 这一节前面刚停过一台实例，必然有 PARTIAL —— 一条都没有说明断言站错了地方
+        fail('事件页里一条 PARTIAL 都没有，无法验证「涉及实例」列');
+      } else if (!withName.length) {
+        fail(`${named.length} 条 PARTIAL 事件都没点名是哪台实例`);
+      } else {
+        pass(`PARTIAL 事件点名了涉及的实例（${withName[0]}）`);
+      }
+
+      // 汇总条：逐条看得出「那一刻发生了什么」，看不出「这段时间稳不稳」
+      const bar = await page.evaluate(textOf, '[data-testid="event-summary"]');
+      if (!bar || !/异常\s*\d+\s*次/.test(bar.replace(/\s+/g, ' '))) {
+        fail(`事件页没有汇总条，或没给出异常次数：${bar}`);
+      } else {
+        pass(`事件页有汇总条：${bar.replace(/\s+/g, ' ').slice(0, 60)}`);
+      }
+
+      // 只看异常：事故复盘时 200 条里大半是 CONNECTED，翻起来费劲
+      const total = await page.evaluate(countOf, '[data-testid="event-row"]');
+      await page.click('[data-testid="event-only-bad"]');
+      await sleep(400);
+      const filtered = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('[data-testid="event-row"]')];
+        return { n: rows.length, allBad: rows.every(r => r.dataset.status !== 'CONNECTED') };
+      });
+      if (!filtered.allBad) {
+        fail('勾了「只看异常」，列表里仍有 CONNECTED');
+      } else if (filtered.n >= total) {
+        fail(`勾了「只看异常」但行数没减少（${total} → ${filtered.n}）`);
+      } else {
+        pass(`「只看异常」筛选生效：${total} → ${filtered.n} 条，且全部非 CONNECTED`);
       }
     }
 

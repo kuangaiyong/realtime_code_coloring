@@ -1,5 +1,6 @@
 package com.rtcc.platform.service;
 
+import com.rtcc.platform.artifact.ArtifactStore;
 import com.rtcc.platform.collector.CoverageAnalyzer;
 import com.rtcc.platform.collector.ProbeClient;
 import com.rtcc.platform.config.CoverageProperties;
@@ -36,6 +37,14 @@ class ProjectLoadFailureTest {
         return new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent");
     }
 
+    /**
+     * 造 runtime 要这个参数，但这些用例够不到探针、产物来源也是默认的 local，
+     * 走不到取产物那一步。构造函数不碰磁盘，所以这个目录连建都不会建
+     */
+    private static ArtifactStore noArtifacts() {
+        return new ArtifactStore(java.nio.file.Path.of("target", "artifacts-unused"), 10);
+    }
+
     /** 库连不上，所以「不是 404」只会以 503 的形式出现 —— 这正是要断言的那一半 */
     private ProjectRegistry registry() {
         CoverageProperties platform = new CoverageProperties();
@@ -50,7 +59,8 @@ class ProjectLoadFailureTest {
         };
         ProjectRuntimeFactory factory = new ProjectRuntimeFactory(
                 new ProbeClient(), new CoverageAnalyzer(), platform, new CoveragePublisher(),
-                new CoverageHistory(unreachable()), new CollectEvents(unreachable())) {
+                new CoverageHistory(unreachable()), new CollectEvents(unreachable()),
+                noArtifacts()) {
             @Override
             public ProjectRuntime create(ProjectConfig cfg) {
                 if (BAD_NAME.equals(cfg.getName())) {

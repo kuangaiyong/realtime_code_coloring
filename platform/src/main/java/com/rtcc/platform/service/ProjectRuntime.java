@@ -11,6 +11,9 @@ import com.rtcc.platform.collector.GoCoverageAnalyzer;
 import com.rtcc.platform.collector.GoProbeClient;
 import com.rtcc.platform.collector.RustCoverageAnalyzer;
 import com.rtcc.platform.collector.RustProbeClient;
+import com.rtcc.platform.artifact.ArtifactKind;
+import com.rtcc.platform.artifact.ArtifactStore;
+import com.rtcc.platform.config.CoverageProperties;
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.history.CollectEvents;
 import com.rtcc.platform.history.CoverageHistory;
@@ -62,6 +65,13 @@ public class ProjectRuntime {
     private final RustCoverageAnalyzer rustAnalyzer;
     private final GitService git;
     private final ProjectConfig props;
+    /** 产物按 buildId 取时从这里解析出实际路径；local 模式下它只是原样返回配置 */
+    private final ArtifactStore artifacts;
+    /**
+     * 工具链可执行文件的路径。本类只在一处用它：uploaded 模式下产物路径每轮都可能变，
+     * 而 C++/Rust 的 Analyzer 是构造时就绑定 {@link ProjectConfig} 的，只能重造一个
+     */
+    private final CoverageProperties platform;
     private final CoveragePublisher publisher;
     private final CoverageHistory history;
     /** 采集状态的变化事件。回答「昨天半夜那次为什么没数据」 */
@@ -119,7 +129,8 @@ public class ProjectRuntime {
                            GoProbeClient goProbe, GoCoverageAnalyzer goAnalyzer,
                            CppProbeClient cppProbe, CppCoverageAnalyzer cppAnalyzer,
                            RustProbeClient rustProbe, RustCoverageAnalyzer rustAnalyzer, GitService git,
-                           ProjectConfig props, CoveragePublisher publisher,
+                           ProjectConfig props, ArtifactStore artifacts, CoverageProperties platform,
+                           CoveragePublisher publisher,
                            CoverageHistory history, CollectEvents events) {
         this.probeClient = probeClient;
         this.analyzer = analyzer;
@@ -131,9 +142,58 @@ public class ProjectRuntime {
         this.rustAnalyzer = rustAnalyzer;
         this.git = git;
         this.props = props;
+        this.artifacts = artifacts;
+        this.platform = platform;
         this.publisher = publisher;
         this.history = history;
         this.events = events;
+    }
+
+    /**
+     * 取产物失败与实例掉线是两件完全不同的事，必须分开报。
+     *
+     * <p>混成一个的后果很具体：实例活得好好的，界面却说它「未连上」，
+     * 人照着去查被测服务和探针端口，而真正的原因是平台侧少了一份产物。
+     * {@code doCollect} 那边把同类问题分成 CONFIG_ERROR / ANALYZE_ERROR 正是为了这个。
+     */
+    private static class ArtifactUnavailable extends Exception {
+        /**
+         * 这一台自报的构建版本。抛出时它已经读到了，必须照实带出去 ——
+         * 脏构建正是「取不到产物」最常见的原因，把 dirty 报成 false 等于抹掉了根因，
+         * 只剩错误字符串里还留着真相
+         */
+        final BuildVersion version;
+
+        ArtifactUnavailable(IOException cause, BuildVersion version) {
+            super(cause.getMessage(), cause);
+            this.version = version;
+        }
+    }
+
+    /** 把 {@link ArtifactStore#resolveInto} 的 IOException 换成一个能与「掉线」分开接的类型 */
+    private ProjectConfig artifactCfgFor(BuildVersion v, ArtifactKind kind) throws ArtifactUnavailable {
+        try {
+            return artifacts.resolveInto(props, v, EnumSet.of(kind));
+        } catch (IOException e) {
+            throw new ArtifactUnavailable(e, v);
+        }
+    }
+
+    /**
+     * uploaded 模式下要用解析出来的配置重造 Analyzer —— 它在构造时就把 ProjectConfig
+     * 存成了自己的 final 字段，{@code analyze} 没有接收路径的入参。
+     *
+     * <p>判据是<b>对象同一性</b>：local 模式下 {@code resolveInto} 保证原样返回入参
+     * （{@code ArtifactResolveTest} 的「本地模式原样返回」用 assertSame 钉住了这一点），
+     * 于是这里沿用构造时那个实例，零开销、行为逐字不变。
+     */
+    private CppCoverageAnalyzer cppFor(ProjectConfig cfg) {
+        return cfg == props ? cppAnalyzer : new CppCoverageAnalyzer(cfg, platform);
+    }
+
+    /** 同 {@link #cppFor} */
+    private RustCoverageAnalyzer rustFor(ProjectConfig cfg) {
+        return cfg == props ? rustAnalyzer : new RustCoverageAnalyzer(cfg, platform);
     }
 
     /**
@@ -234,6 +294,16 @@ public class ProjectRuntime {
      * 当下的原因在 lastError 里始终看得到。
      */
     private void setProbeStatus(String status, String detail) {
+        setProbeStatus(status, detail, List.of());
+    }
+
+    /**
+     * @param instances 这次是<b>哪几台</b>出的问题。事件页据此单列一列、可筛选 ——
+     *                  detail 里虽然也拼着实例名，但那是给人读的一段话，
+     *                  拿它筛选就得反过来解析文本，提示语一改就抽不出来了。
+     *                  配置错误、归一化失败这类与具体实例无关的，传空
+     */
+    private void setProbeStatus(String status, String detail, List<String> instances) {
         probeStatus = status;
         lastError = detail;
         // 被顶替掉的实例不再代表这个项目，它的状态变化不该记进事件流
@@ -241,7 +311,7 @@ public class ProjectRuntime {
             return;
         }
         lastRecordedStatus = status;
-        events.record(props.getId(), status, detail);
+        events.record(props.getId(), status, detail, instances);
     }
 
     /**
@@ -391,19 +461,40 @@ public class ProjectRuntime {
             }
             setProbeStatus("DISCONNECTED", statuses.isEmpty()
                     ? "未配置任何被测实例（coverage.instances）"
-                    : statuses.get(0).error());
+                    : statuses.get(0).error(),
+                    statuses.stream().map(InstanceStatus::endpoint).toList());
             return;
         }
 
         try {
             long tAna0 = System.nanoTime();
+            // 产物按 buildId 取时，得先知道这批实例跑的是哪个构建 —— 而这只有采集完才知道，
+            // 所以解析放在这里而不是造 runtime 的时候。local 模式原样返回 props，零开销。
+            // 换回来的只是产物路径那几项：源码根（getJavaSourceRoot 等）刻意仍取 props，
+            // 因为源码来自 git 工作树而不是产物包 —— 跟着产物走会去解压目录里找源文件。
+            //
+            // 只解析这一轮<b>真有实例</b>的那几种语言，而不是「配置里填了路径」的那几种：
+            // C++ 两台都掉线时 cppDumps 为空、C++ 归一化根本不跑，若仍要求它的产物，
+            // 就会把「少两台降级成 PARTIAL、照常出报告」变成「整轮 ANALYZE_ERROR、什么都没有」
+            BuildVersion unified = unifiedVersion(reported);
+            EnumSet<ArtifactKind> needed = EnumSet.noneOf(ArtifactKind.class);
+            if (anyJava) {
+                needed.add(ArtifactKind.JAVA);
+            }
+            if (!cppDumps.isEmpty()) {
+                needed.add(ArtifactKind.CPP);
+            }
+            if (!rustDumps.isEmpty()) {
+                needed.add(ArtifactKind.RUST);
+            }
+            ProjectConfig artifactCfg = artifacts.resolveInto(props, unified, needed);
             // 四种语言的归一化互不相干：各自建临时目录，产出的文件路径也不相交。
             // 而其中三种要拉起外部进程（covdata / gcov / llvm-cov），串行做等于把四条
             // CPU 密集的管道排成一队 —— 机器上但凡有别的东西在跑，这一段就从 2s 涨到 5s+，
             // 端到端染色延迟随之越过 5s 那条核心断言线（实测过 8/8 全超）
             List<AnalyzeJob> jobs = new ArrayList<>(4);
             if (anyJava) {
-                File classesDir = new File(props.getClassesDir());
+                File classesDir = new File(artifactCfg.getClassesDir());
                 if (!classesDir.isDirectory()) {
                     // 探针是好的，问题出在平台侧配置。混同为「探针未连接」会让人去查被测服务，方向完全错。
                     // 这一项放在并行之外先判：它是纯粹的配置错，没必要陪着跑一轮外部工具
@@ -415,10 +506,15 @@ public class ProjectRuntime {
                 jobs.add(new AnalyzeJob("go", () -> goAnalyzer.analyze(goDumps)));
             }
             if (!cppDumps.isEmpty()) {
-                jobs.add(new AnalyzeJob("cpp", () -> cppAnalyzer.analyze(cppDumps)));
+                // uploaded 模式下必须换成认得解压目录的那个；local 模式下 cppFor 返回的
+                // 就是构造时那个实例。不换的话会出现「Java 用解压产物、C++ 用本机 .gcno」
+                // 的混合报告 —— gcov 拿到同名同结构的旧 .gcno 会照常产出数据，行号却是错的
+                CppCoverageAnalyzer cpp = cppFor(artifactCfg);
+                jobs.add(new AnalyzeJob("cpp", () -> cpp.analyze(cppDumps)));
             }
             if (!rustDumps.isEmpty()) {
-                jobs.add(new AnalyzeJob("rust", () -> rustAnalyzer.analyze(rustDumps)));
+                RustCoverageAnalyzer rust = rustFor(artifactCfg);
+                jobs.add(new AnalyzeJob("rust", () -> rust.analyze(rustDumps)));
             }
             Map<String, FileCoverage> fresh = new LinkedHashMap<>();
             for (Object r : ParallelFetch.map(jobs, ProjectRuntime::runAnalyze)) {
@@ -438,14 +534,16 @@ public class ProjectRuntime {
                     (System.nanoTime() - tAna0) / 1_000_000);
 
             Map<String, FileCoverage> previous = state.get().files();
-            state.set(new Snapshot(fresh, unifiedVersion(reported), versionConflict(statuses)));
+            state.set(new Snapshot(fresh, unified, versionConflict(statuses)));
             // 少一台实例，聚合结果就少一部分覆盖：那些行会显示成红色，但其实别的机器跑到了。
             // 这不是「数据不可用」而是「数据不完整」，所以照常出报告，但状态必须与全连上区分开
             setProbeStatus(connected == endpoints.size() ? "CONNECTED" : "PARTIAL",
                     connected == endpoints.size() ? null
                             : statuses.stream().filter(s -> !"CONNECTED".equals(s.status()))
                                     .map(s -> s.endpoint() + "（" + s.error() + "）")
-                                    .collect(Collectors.joining("、", "以下实例不可达，聚合结果缺少它们的覆盖：", "")));
+                                    .collect(Collectors.joining("、", "以下实例不可达，聚合结果缺少它们的覆盖：", "")),
+                    statuses.stream().filter(s -> !"CONNECTED".equals(s.status()))
+                            .map(InstanceStatus::endpoint).toList());
             lastCollectedAt = Instant.now();
 
             // 记进历史，供跨构建趋势。只记「全部实例版本一致且工作树干净」的构建：
@@ -522,14 +620,20 @@ public class ProjectRuntime {
                                 new byte[][]{goProbe.meta(ep), goProbe.counters(ep)}));
                     } else if (ProbeEndpoint.CPP.equals(ep.language())) {
                         v = BuildVersion.parseId(cppProbe.buildId(ep));
-                        files = cppAnalyzer.analyze(List.of(cppProbe.dump(ep)));
+                        files = cppFor(artifactCfgFor(v, ArtifactKind.CPP))
+                                .analyze(List.of(cppProbe.dump(ep)));
                     } else if (ProbeEndpoint.RUST.equals(ep.language())) {
                         v = BuildVersion.parseId(rustProbe.buildId(ep));
-                        files = rustAnalyzer.analyze(List.of(rustProbe.dump(ep)));
+                        files = rustFor(artifactCfgFor(v, ArtifactKind.RUST))
+                                .analyze(List.of(rustProbe.dump(ep)));
                     } else {
                         ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
                         v = BuildVersion.parse(dump.sessions());
-                        files = analyzer.analyze(dump.exec(), new File(props.getClassesDir()),
+                        // 按这一台自报的构建取产物，而不是按全局那个统一版本：
+                        // 对比视图本来就是逐台算的，各台版本不同时正该各用各的那一份。
+                        // 逐台解析不贵 —— resolveInto 只是查目录在不在，解压发生在上传那一刻
+                        files = analyzer.analyze(dump.exec(),
+                                new File(artifactCfgFor(v, ArtifactKind.JAVA).getClassesDir()),
                                 props.getJavaSourceRoot());
                     }
                     int covered = 0, missed = 0;
@@ -545,6 +649,19 @@ public class ProjectRuntime {
                     row.put("missedLines", missed);
                     row.put("fileCount", files.size());
                     row.put("error", null);
+                } catch (ArtifactUnavailable e) {
+                    // 实例是好的，缺的是平台侧的产物。标成 DISCONNECTED 会让人去查
+                    // 被测服务与探针端口，而该查的是「这个构建的产物推上来了没有」
+                    row.put("status", "ANALYZE_ERROR");
+                    // 版本照实报：这一台报的是什么、脏没脏，恰恰是判断该去推产物
+                    // 还是该去提交代码的依据
+                    row.put("buildCommit", e.version == null ? null : e.version.commit());
+                    row.put("dirty", e.version != null && e.version.dirty());
+                    row.put("overallRatio", null);
+                    row.put("coveredLines", null);
+                    row.put("missedLines", null);
+                    row.put("fileCount", null);
+                    row.put("error", e.getMessage());
                 } catch (Exception e) {
                     // 一台取不到不该让整张对比表失败：其余实例的数据仍然是真的。
                     // 但这一行必须显式标成取不到，不能留空让人读成「这台什么都没跑」

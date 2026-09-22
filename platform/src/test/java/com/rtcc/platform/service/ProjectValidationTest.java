@@ -1,5 +1,6 @@
 package com.rtcc.platform.service;
 
+import com.rtcc.platform.artifact.ArtifactStore;
 import com.rtcc.platform.config.CoverageProperties;
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.config.ProjectStore;
@@ -38,7 +39,9 @@ class ProjectValidationTest {
         ProjectRuntimeFactory factory = new ProjectRuntimeFactory(
                 new ProbeClient(), new CoverageAnalyzer(), platform, new CoveragePublisher(),
                 new CoverageHistory(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")),
-                new CollectEvents(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")));
+                new CollectEvents(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")),
+                // 这些用例全在「写库之前」就被挡下或走到写库失败，取不到产物那一步到不了
+                new ArtifactStore(java.nio.file.Path.of("target", "artifacts-unused"), 10));
         // 库连不上时 loadAll 退回种子，因此这里拿到的是一个只有 default 的注册表
         registry = new ProjectRegistry(seed, store, factory, new CollectEvents(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")));
     }
@@ -150,6 +153,23 @@ class ProjectValidationTest {
         assertEquals(80d, c.getGate().getIncrementalThreshold());
     }
 
+    /**
+     * goExclude 显式写 null 时同样要补上默认值，理由与 gate 那条一致但后果更隐蔽：
+     * {@code ProjectConfig.copy()} 会在它上面 NPE，而 copy() 只有 uploaded 模式才调 ——
+     * 于是同一份配置在 local 下照跑不误，一换成 uploaded 就每轮采集都 ANALYZE_ERROR，
+     * 报出来的还是个光秃秃的 NullPointerException，完全看不出是哪个字段。
+     */
+    @Test
+    void 排除列表为空时补上默认值而不是留个空指针() {
+        ProjectConfig c = cfg("p1", "名字", List.of("localhost:6300"));
+        c.setGoExclude(null);
+        // 走到写库才失败，说明 goExclude 已被补上、没被校验拦住、也没抛 NPE
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, create(c).status());
+        assertEquals(List.of(), c.getGoExclude());
+        // 真正要守的是这个：copy() 不能炸
+        assertEquals(List.of(), c.copy().getGoExclude());
+    }
+
     @Test
     void 门禁阈值超出百分比范围时拒绝() {
         for (double bad : new double[]{-1, 101}) {
@@ -176,5 +196,39 @@ class ProjectValidationTest {
         assertThrows(ProjectOperationException.class, () -> registry.get("p1"));
         assertEquals(List.of(ProjectConfig.DEFAULT_ID),
                 registry.configs().stream().map(ProjectConfig::getId).toList());
+    }
+
+    /**
+     * 产物来源只有 local / uploaded 两个取值，填错必须当场拒绝。
+     *
+     * <p>不拦的话它会<b>静默退回 local</b>：{@code usesUploadedArtifacts()} 判的是
+     * 「等不等于 uploaded」，于是 {@code upload}、{@code uploded}、带空格的值统统算成 local。
+     * 容器化部署上打错一个字母，平台就会拿本机路径的产物去解另一个 buildId 的探针数据，
+     * 行号错位而界面上看不出任何异样 —— 正是本平台「宁可拒绝，也不出一份静默错误的报告」
+     * 要消灭的那族问题。字段是闭集，属于 validate 注释说的「不看就一定错」。
+     */
+    @Test
+    void 产物来源填错当场拒绝而不是静默退回local() {
+        for (String bad : List.of("upload", "uploded", " uploaded", "UPLOADED ", "remote", "")) {
+            ProjectConfig c = cfg("art-" + Math.abs(bad.hashCode()), "名字", List.of("localhost:6300"));
+            c.setArtifactSource(bad);
+            ProjectOperationException e = create(c);
+            assertEquals(HttpStatus.BAD_REQUEST, e.status(),
+                    "artifactSource=[" + bad + "] 没被拦住，会静默退回 local：" + e.getMessage());
+            assertTrue(e.getMessage().contains("产物来源"), e.getMessage());
+        }
+    }
+
+    /** 两个合法取值都要放行，大小写不敏感（usesUploadedArtifacts 本来就用 equalsIgnoreCase） */
+    @Test
+    void 合法的产物来源放行() {
+        for (String good : List.of("local", "uploaded", "Local", "UPLOADED")) {
+            ProjectConfig c = cfg("art-ok-" + Math.abs(good.hashCode()), "名字", List.of("localhost:6300"));
+            c.setArtifactSource(good);
+            ProjectOperationException e = create(c);
+            // 走到写库才失败，说明校验这一关是过了的
+            assertEquals(HttpStatus.SERVICE_UNAVAILABLE, e.status(),
+                    "artifactSource=" + good + " 不该被校验拦住：" + e.getMessage());
+        }
     }
 }

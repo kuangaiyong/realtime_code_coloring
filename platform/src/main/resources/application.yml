@@ -1,9 +1,25 @@
 server:
   port: 18090
+  tomcat:
+    # 超过 multipart 上限时，Tomcat 最多再读完这么多剩余请求体；默认 2MB。
+    #
+    # 实测过（1MB 上限传 20MB）：配成与上限相等、以及完全不配（默认 2MB），
+    # 两种情况下 413 与那句中文原因都能正常送达 —— 吞不完只影响连接能否复用，
+    # 不影响响应本身。所以它不是「不配就拿不到 413」，别按那个理由去解读。
+    #
+    # 仍然配它，是为了慢速网络下传大包：服务端在上限处就回了响应，
+    # 若不继续读完剩余部分就关连接，客户端那头可能在写到一半时撞上 broken pipe。
+    # 这个时序在本机回环上复现不出来，所以上面那次实测证不了它有用，也证不了它没用
+    max-swallow-size: 200MB
 
 spring:
   application:
     name: coverage-platform
+  servlet:
+    multipart:
+      # Spring 默认 1MB，一个 Rust 产物就顶穿。超过这个值框架直接回 413
+      max-file-size: 200MB
+      max-request-size: 200MB
   # 覆盖率历史（跨构建趋势）。凭据一律走环境变量，不写进仓库；
   # 本机由 run_local.sh 从 gitignore 掉的 .env.local 里读出来注入。
   #
@@ -51,6 +67,10 @@ coverage:
   # 用系统 LLVM 往往版本对不上，取 rustup 的 llvm-tools 组件最稳
   rust-source-root: demo-service-rust
   rust-binary: ../demo-service-rust/target/x86_64-pc-windows-msvc/release/demo-service-rust.exe
+  # 产物仓库。给「平台够不着容器文件系统」那种部署用 —— CI 按 buildId 把产物推上来。
+  # 这三项是平台级配置（跟着部署机器走），与项目无关，所以在 yml 而不在库里
+  artifact-root: ${COVERAGE_ARTIFACT_ROOT:./.artifacts}
+  artifact-keep: 10
   interval-ms: 3000
   timeout-ms: 3000
   # 覆盖率门禁：CI 合并前调 /api/coverage/gate，据 passed 放行或阻断。

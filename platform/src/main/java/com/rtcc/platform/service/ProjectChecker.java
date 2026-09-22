@@ -418,6 +418,77 @@ public class ProjectChecker {
         return cfg.getInstances() == null ? List.of() : cfg.getInstances();
     }
 
+    /**
+     * 探<b>一台</b>已配置的实例，当场回报它接上没有。
+     *
+     * <p>与 {@link #check} 的区别是范围：那个要碰仓库、碰产物目录、挨个连全部实例；
+     * 这个只连一台，给「接入自检表上点某一行的『测这一台』」用 ——
+     * 人刚改完启动参数重启了服务，等下一个 3 秒轮询周期才知道成没成，
+     * 这段等待里最常见的动作是反复刷新页面。
+     *
+     * <p><b>endpoint 只用来在这个项目已配置的实例里选一条，绝不按字面地址去连。</b>
+     * 接受任意 host:port 的话，这个接口就成了一台可以从平台发起的内网端口探测器 ——
+     * 平台通常部署在能连到全部测试环境的位置，而探针端口本来就没有鉴权。
+     * 比较前两边都过一遍 {@link ProbeEndpoint#parse}，否则配置里写
+     * {@code localhost:6300}（省略语言前缀）时，请求里写全的那个会被判成「不在里面」。
+     *
+     * <p><b>只读</b>：取版本走的是 {@link #buildId}，Java 侧的 dump 传 {@code reset=false}，
+     * 不会把被测实例的计数器清掉 —— 清掉的话，点一下「测这一台」就洗掉了别人正在看的覆盖数据。
+     */
+    public Map<String, Object> probeOne(ProjectConfig cfg, String endpoint) {
+        // 与 check 里同一条理由：timeoutMs 会同时用作 socket.connect 与 setSoTimeout 的超时，
+        // 而 0 在这两处的语义都是「无限等待」—— 对着一个连不上的地址打一次，
+        // 这个 Tomcat 工作线程就再也不回来了。必须先判再连
+        if (cfg.getTimeoutMs() <= 0) {
+            throw ProjectOperationException.invalid(
+                    "探针读取超时必须大于 0 毫秒，当前是 " + cfg.getTimeoutMs()
+                            + "；0 在 socket 层的语义是「无限等待」，探针不可达时这次探测永远不会返回");
+        }
+        if (endpoint == null || endpoint.isBlank()) {
+            throw ProjectOperationException.invalid("没有指定要探测哪一台实例");
+        }
+        ProbeEndpoint want;
+        try {
+            want = ProbeEndpoint.parse(endpoint);
+        } catch (IllegalArgumentException e) {
+            throw ProjectOperationException.invalid(e.getMessage());
+        }
+        ProbeEndpoint ep = instances(cfg).stream()
+                .map(spec -> {
+                    try {
+                        return ProbeEndpoint.parse(spec);
+                    } catch (IllegalArgumentException e) {
+                        return null; // 配置里那条本来就是坏的，check 会点名，这里跳过
+                    }
+                })
+                .filter(x -> x != null && x.toString().equals(want.toString()))
+                .findFirst()
+                .orElseThrow(() -> ProjectOperationException.invalid(
+                        endpoint + " 不是项目 " + cfg.getId() + " 配置里的实例。"
+                                + "这个接口只探已配置的实例，不接受任意地址"));
+
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("endpoint", ep.toString());
+        try {
+            String id = buildId(ep, cfg);
+            res.put("connected", true);
+            // buildId 为 null 是一种独立的坏法：探针在跑，但没配 sessionid /
+            // COVERAGE_BUILD_ID，增量口径不可用。它不是「没连上」，
+            // 调用方要能把这两件事分开说 —— 混成一句「已连上」的话，
+            // 人正是为了增量才来接入的，却看不出还差一步
+            res.put("buildId", id);
+            res.put("dirty", id != null && id.endsWith("-dirty"));
+            res.put("error", null);
+        } catch (Exception e) {
+            res.put("connected", false);
+            res.put("buildId", null);
+            res.put("dirty", false);
+            // 点名具体原因，不是一句「失败」—— 只说失败等于让人去翻日志
+            res.put("error", describe(e));
+        }
+        return res;
+    }
+
     private String buildId(ProbeEndpoint ep, ProjectConfig cfg) throws Exception {
         // 直接 new：这三个客户端已经不各持一个 HttpClient 了（共用连接池，见
         // SharedHttpClients），造一个就只是建个对象，不必再为此缓存 ——

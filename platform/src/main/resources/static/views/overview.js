@@ -1,6 +1,7 @@
-import { store, loadBuildTrend, hasData } from '../store.js';
+import { store, loadBuildTrend, hasData, projectUrl } from '../store.js';
+import { api } from '../api.js';
 
-const { computed } = Vue;
+const { computed, ref, onMounted, watch } = Vue;
 
 /**
  * 把一串 0–100 的数值算成折线的坐标。
@@ -33,6 +34,23 @@ function axisLabels(from, to) {
   }
   const md = (d) => d.toLocaleDateString([], { month: '2-digit', day: '2-digit' }) + ' ' + hm(d);
   return { from: md(a), to: md(b) };
+}
+
+/** 事件带取多少条、显示多少条。取多了每次进页面白拉，显示多了就成了第二个事件页 */
+const EVENT_LIMIT = 200;
+const EVENT_SHOWN = 3;
+
+/** 与采集事件页同一套说法。两页对同一个状态给出不同的词，人会以为是两回事 */
+const STATUS_TEXT = {
+  PARTIAL: '部分实例掉线',
+  DISCONNECTED: '探针不可达',
+  ANALYZE_ERROR: '分析失败',
+  CONFIG_ERROR: '配置有误',
+  UNKNOWN: '尚未采集'
+};
+
+function statusText(s) {
+  return STATUS_TEXT[s] || s;
 }
 
 /**
@@ -178,15 +196,94 @@ export const Overview = {
       };
     });
 
+    // ---- 曲线下方的事件带 ----
+    //
+    // 这一页原先只有「测得怎么样」，答不出「那个坑是怎么回事」——
+    // 而覆盖率掉下去的那一段，人第一个想知道的就是当时发生了什么。
+    //
+    // <b>不在曲线上打点</b>：横轴是「第几个点」而不是时间（svgPoints 按索引均分），
+    // 两次构建间隔 1 小时和 3 天在图上一样宽。按时间比例标记会标到视觉上错误的位置，
+    // 而图看着是对的 —— 正是本项目最忌讳的那种错。所以只在下方列出区间内的事件。
+    const events = ref([]);
+    const eventsErr = ref(null);
+
+    /**
+     * 事件只在状态<b>变化</b>时产生，跟着 3 秒轮询刷没有意义，还每轮多拉 200 条。
+     * 进这一页时取一次，切口径时不用重取（区间变了，但事件集合没变）。
+     */
+    async function loadEvents() {
+      try {
+        const r = await api.get(projectUrl('/events?limit=' + EVENT_LIMIT));
+        events.value = r.available ? r.events : [];
+        eventsErr.value = r.available ? null : r.error;
+      } catch (e) {
+        events.value = [];
+        eventsErr.value = e.message;
+      }
+    }
+    onMounted(loadEvents);
+    // 换项目要重取 —— 不换的话，这一页会把上一个项目的事件挂在新项目的曲线下面
+    watch(() => store.projectId, loadEvents);
+
+    /**
+     * 当前曲线覆盖的时间区间。<b>两种口径的区间完全不同</b>，不跟着口径走的话，
+     * 会话口径下（几分钟）会列出几周前的事件，读的人以为那个坑就是它造成的。
+     */
+    const trendRange = computed(() => {
+      if (store.trendScope === 'build') {
+        const b = store.buildTrend;
+        if (b.length < 2) return null;
+        return { from: new Date(b[0].peakAt).getTime(),
+                 to: new Date(b[b.length - 1].peakAt).getTime() };
+      }
+      const t = store.trend;
+      if (t.length < 2) return null;
+      return { from: t[0].t, to: t[t.length - 1].t };
+    });
+
+    /** 落在区间内的异常事件，新的在前。CONNECTED 不列 —— 曲线掉下去时人要看的是异常 */
+    const rangeEvents = computed(() => {
+      const r = trendRange.value;
+      if (!r) return [];
+      return events.value.filter(e => {
+        if (e.status === 'CONNECTED') return false;
+        const at = new Date(e.at).getTime();
+        return at >= r.from && at <= r.to;
+      });
+    });
+
+    /**
+     * 事件带的一句话。
+     *
+     * <b>「可能不全」必须说出来</b>：只取最近 EVENT_LIMIT 条，而跨构建区间可能横跨几周 ——
+     * 区间内更早的事件已经不在这批里了。不说的话，人会把「列出来的」当成「全部的」，
+     * 又是一个看着完整、其实不全的静默错误。
+     */
+    const eventBand = computed(() => {
+      const r = trendRange.value;
+      if (!r || eventsErr.value) return null;
+      const list = rangeEvents.value;
+      // 取回来的最后一条（最旧）仍晚于区间起点，说明区间更早的部分没被这批覆盖到
+      const oldest = events.value.length ? new Date(events.value[events.value.length - 1].at).getTime() : null;
+      const truncated = events.value.length >= EVENT_LIMIT && oldest !== null && oldest > r.from;
+      return { list: list.slice(0, EVENT_SHOWN), total: list.length, truncated };
+    });
+
     async function setTrendScope(next) {
       store.trendScope = next;
       // 跨构建数据来自历史表，不随 3 秒轮询变，切过去时取一次即可
       if (next === 'build') await loadBuildTrend();
     }
 
+    /** 点事件带跳采集事件页。那一页有完整列表与筛选，这里只做入口 */
+    function toEvents() {
+      location.hash = '#/p/' + encodeURIComponent(store.projectId) + '/events';
+    }
+
     return {
       store, files, scope, lineStat, branchRows, methodStat,
-      collectedAt, trendView, setTrendScope
+      collectedAt, trendView, setTrendScope,
+      eventBand, eventsErr, toEvents, statusText, EVENT_LIMIT
     };
   },
   template: `
@@ -254,6 +351,35 @@ export const Overview = {
           <span>{{ trendView.xAxis.from }}</span>
           <span>{{ trendView.xAxis.mid }}</span>
           <span>{{ trendView.xAxis.to }}</span>
+        </div>
+
+        <!-- 曲线掉下去的那一段，人第一个想知道的是当时发生了什么。
+             <b>不在曲线上打点</b>：横轴是「第几个点」不是时间，按时间比例标会标错位置，
+             而图看着是对的 —— 只在下方列出区间内的事件 -->
+        <div v-if="eventBand" class="ev-band" data-testid="trend-events">
+          <template v-if="eventBand.total">
+            <div class="hd">
+              <span>这段区间内 <b>{{ eventBand.total }}</b> 次异常</span>
+              <!-- 只取了最近若干条，跨构建区间可能横跨几周 —— 不说的话，
+                   人会把「列出来的」当成「全部的」 -->
+              <span v-if="eventBand.truncated" class="cut" data-testid="trend-events-cut">
+                仅统计最近 {{ EVENT_LIMIT }} 条事件，区间更早的部分未计入
+              </span>
+              <span class="grow"></span>
+              <a href="#" data-testid="trend-events-all" @click.prevent="toEvents">查看全部 →</a>
+            </div>
+            <div v-for="(e, i) in eventBand.list" :key="e.at + i" class="row"
+                 data-testid="trend-event-row" @click="toEvents">
+              <span class="t mono">{{ new Date(e.at).toLocaleString() }}</span>
+              <span class="s">{{ statusText(e.status) }}</span>
+              <span class="i mono">{{ (e.instances || []).join('、') || '—' }}</span>
+            </div>
+          </template>
+          <div v-else class="hd">
+            <span>这段区间内没有异常</span>
+            <span class="grow"></span>
+            <a href="#" data-testid="trend-events-all" @click.prevent="toEvents">采集事件 →</a>
+          </div>
         </div>
       </div>
     </div>

@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -304,11 +305,27 @@ public class ProjectRegistry {
         if (cfg.getGate() == null) {
             cfg.setGate(new ProjectConfig.Gate());
         }
+        // goExclude 同理，而它的后果更隐蔽：ProjectConfig.copy() 会在它上面 NPE，
+        // 于是同一份配置在 local 模式下照跑不误（没人调 copy），一换成 uploaded
+        // 就每轮采集都 ANALYZE_ERROR —— 报出来的还是个光秃秃的 NullPointerException
+        if (cfg.getGoExclude() == null) {
+            cfg.setGoExclude(new ArrayList<>());
+        }
         for (double th : new double[]{cfg.getGate().getIncrementalThreshold(),
                 cfg.getGate().getOverallThreshold()}) {
             if (th < 0 || th > 100) {
                 throw ProjectOperationException.invalid("门禁阈值只能是 0 到 100，实际为：" + th);
             }
+        }
+        // 闭集，且填错的后果是<b>静默</b>的：usesUploadedArtifacts() 判的是「等不等于 uploaded」，
+        // 于是 upload、uploded、带空格的值统统被当成 local。容器化部署上打错一个字母，
+        // 平台就会拿本机路径的产物去解另一个 buildId 的探针数据 —— 行号错位，界面上看不出异样。
+        // 正是「宁可拒绝，也不出一份静默错误的报告」要消灭的那族问题
+        String src = cfg.getArtifactSource();
+        if (!"local".equalsIgnoreCase(src) && !"uploaded".equalsIgnoreCase(src)) {
+            throw ProjectOperationException.invalid(
+                    "产物来源只能是 local（用配置里的本地路径）或 uploaded（按 buildId 从产物仓库取），实际为："
+                            + src);
         }
     }
 

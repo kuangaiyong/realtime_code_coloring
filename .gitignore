@@ -3,6 +3,13 @@ target/
 *.exec
 *.log
 
+# 上传上来的被测编译产物（按 buildId 存，默认根 platform/.artifacts）。
+# 运行期数据不是源码：一次 Java 上传就落下上百个 .class、几十 MB，混进提交没人看得出来。
+# 注意它不会让被测实例自报 -dirty —— run_local.sh 的脏标记只看 SOURCE_ROOTS
+#（demo-service*，见该脚本第 50 行）；但它照样会把 git status 搅浑，
+# 而本项目的顺序是「先在 dev 提交、再跑 verify」
+.artifacts/
+
 .idea/
 *.iml
 .vscode/
@@ -23,7 +30,14 @@ __pycache__/
 # 本机的 Claude Code 自定义命令与技能，属个人工具配置，与项目无关。
 # 注意只忽略这两个子目录 —— .claude/launch.json 是项目的预览配置，要入库
 .claude/commands/
-.claude/skills/
+# openspec 等插件生成的 skill 不入库；项目自己的 rtcc-* skill 要入库
+.claude/skills/*
+!.claude/skills/rtcc-*/
 
-# OpenSpec 的本地工作目录
-openspec/
+# OpenSpec：长期规格 specs/ 与项目口径 config.yaml 是资产，入库；
+# changes/ 是过程草稿（做完即失效），不入库
+openspec/changes/
+
+# Codex 的仓库级 skills 是指向 .claude/skills/rtcc-* 的本机目录联接（单一事实源在 .claude 侧），
+# 联接本身不入库；换机器用 New-Item -ItemType Junction 重建即可
+.agents/
