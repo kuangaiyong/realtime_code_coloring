@@ -33,6 +33,8 @@ public class ArtifactStoreConfig {
                             + "：空值会让产物落进平台的工作目录");
         }
         return new ArtifactStore(Path.of(root).toAbsolutePath().normalize(),
-                props.getArtifactKeep());
+                props.getArtifactKeep(),
+                props.getArtifactMaxUnzippedBytes(),
+                props.getArtifactMaxEntries());
     }
 }

@@ -50,6 +50,43 @@ class ArtifactControllerTest {
         return bos.toByteArray();
     }
 
+    /**
+     * 解压膨胀的包必须回 <b>400 而不是 5xx</b>。
+     *
+     * <p>这两类在 CI 那头的动作完全相反：4xx 是「你的包有问题，换一个」，
+     * 5xx 是「平台挂了，等会儿重推」。膨胀包若被报成 5xx，CI 会认定是平台的锅，
+     * 把同一个包一遍遍重推 —— 每一次都让平台再解压一次，把「一个坏包」放大成持续的磁盘压力。
+     *
+     * <p>状态码这件事单测 ArtifactStore 是验不到的：那一层只知道抛 BadArtifactException，
+     * 它映射成几百是控制器的事。
+     */
+    @Test
+    void 解压膨胀的包回四百而不是五百(@TempDir Path root) throws Exception {
+        ArtifactStore store = new ArtifactStore(root, 10, 1024 * 1024, 100_000);
+        ArtifactController c = new ArtifactController(store);
+        // 50MB 的零，压缩后几十 KB —— 轻松穿过 200MB 的上传上限
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        try (ZipOutputStream z = new ZipOutputStream(bos)) {
+            z.putNextEntry(new ZipEntry("Big.class"));
+            byte[] chunk = new byte[64 * 1024];
+            for (int i = 0; i < 800; i++) {
+                z.write(chunk);
+            }
+            z.closeEntry();
+        }
+        MockMultipartFile 膨胀包 = new MockMultipartFile(
+                "file", "a.zip", "application/zip", bos.toByteArray());
+
+        ArtifactOperationException e = assertThrows(ArtifactOperationException.class,
+                () -> c.upload("demo", OK, "java", 膨胀包));
+
+        assertEquals(400, e.status().value(), "膨胀包被报成了平台故障，CI 会一直重推");
+        assertTrue(e.getMessage().contains("artifact-max-unzipped-bytes"), e.getMessage());
+        // 与坏包同理：不能留下空壳占着 keep 配额
+        assertFalse(store.builds("demo").contains(OK), store.builds("demo").toString());
+        assertFalse(Files.exists(root.resolve("demo").resolve(OK)), "磁盘上留下了空的构建目录");
+    }
+
     @Test
     void 上传后能查到也能取到(@TempDir Path root) throws Exception {
         ArtifactStore store = new ArtifactStore(root, 10);
