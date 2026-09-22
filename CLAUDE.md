@@ -138,6 +138,16 @@ sessionid 就带 `-dirty`，平台按设计拒绝出增量报告，增量与漂�
 所以本项目的顺序是「先在 dev 提交、再跑 verify」，而不是反过来。
 
 单测：`mvn -B test`（真实 socket、真实 git 仓库，同样无 mock）。
+**但工具链不在默认 PATH 里** —— 它们由 `run_local.sh` 顶部注入，单独跑 mvn 会得到
+`exit=127` + `mvn: command not found`，看着像「测试失败」，其实一条都没跑。先注入再跑：
+
+```bash
+export JAVA_HOME=/c/Users/Administrator/devtools/jdk-17.0.20+8
+export PATH="$JAVA_HOME/bin:/c/Users/Administrator/devtools/apache-maven-3.9.16/bin:$PATH"
+```
+
+这是全局 CLAUDE.md「退出码 0 不等于成功」的反面：**非 0 也不等于被测代码有问题**，
+先看输出第一行是什么，再决定要不要去查代码。
 
 ### 工具链依赖
 
