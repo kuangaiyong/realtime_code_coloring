@@ -7,9 +7,11 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -40,10 +42,29 @@ public class ArtifactStore {
      */
     private static final Pattern SHA = Pattern.compile("^[0-9a-f]{40}$");
 
+    /**
+     * 解压后允许写出的总字节数，默认 1 GiB。
+     *
+     * <p>实测本仓库四种语言的真实产物：Java 的 demo 5 个文件 9 KB、平台自己 100 个文件 2.8 MB、
+     * Rust 产物 208 KB —— 默认值比最大的那份还宽 380 倍，真实项目再大几个数量级也够。
+     * 它挡的不是「大产物」，是<b>压缩比异常</b>的包。
+     */
+    public static final long DEFAULT_MAX_UNZIPPED_BYTES = 1024L * 1024 * 1024;
+
+    /** 解压条目数上限，默认 10 万。大型 Java 单体的 class 数量通常在两三万这个量级 */
+    public static final int DEFAULT_MAX_ENTRIES = 100_000;
+
     private final Path root;
     private final int keep;
+    private final long maxUnzippedBytes;
+    private final int maxEntries;
 
+    /** 用默认上限。测试与不关心解压上限的调用方走这个 —— 上限的取值由 yml 决定，不在这里分叉 */
     public ArtifactStore(Path root, int keep) {
+        this(root, keep, DEFAULT_MAX_UNZIPPED_BYTES, DEFAULT_MAX_ENTRIES);
+    }
+
+    public ArtifactStore(Path root, int keep, long maxUnzippedBytes, int maxEntries) {
         if (root == null) {
             throw new IllegalArgumentException("产物根目录不能为空");
         }
@@ -56,8 +77,22 @@ public class ArtifactStore {
                     "coverage.artifact-keep 至少是 1，实际为 " + keep
                             + "：配成 0 或负数会让每次上传都把刚存好的那份产物立刻删掉");
         }
+        // 这两项配成 0 或负数会让<b>每一次上传都失败</b>，且报的是「产物包解压后超过上限」——
+        // 一句与真正原因（配置写错了）毫不相干的话。同 keep 一样，宁可起不来
+        if (maxUnzippedBytes < 1) {
+            throw new IllegalArgumentException(
+                    "coverage.artifact-max-unzipped-bytes 至少是 1，实际为 " + maxUnzippedBytes
+                            + "：配成 0 或负数会让每一次上传都以「解压后超过上限」失败");
+        }
+        if (maxEntries < 1) {
+            throw new IllegalArgumentException(
+                    "coverage.artifact-max-entries 至少是 1，实际为 " + maxEntries
+                            + "：配成 0 或负数会让每一次上传都以「条目数超过上限」失败");
+        }
         this.root = root;
         this.keep = keep;
+        this.maxUnzippedBytes = maxUnzippedBytes;
+        this.maxEntries = maxEntries;
     }
 
     public Path root() {
@@ -66,6 +101,14 @@ public class ArtifactStore {
 
     public int keep() {
         return keep;
+    }
+
+    public long maxUnzippedBytes() {
+        return maxUnzippedBytes;
+    }
+
+    public int maxEntries() {
+        return maxEntries;
     }
 
     /** {@code <root>/<projectId>/<buildId>/<lang>/} */
@@ -129,6 +172,46 @@ public class ArtifactStore {
         projectDir(projectId);
     }
 
+    /**
+     * 把一个条目写出去，<b>边写边累计</b>，超过总字节上限就当场中止。
+     *
+     * <p><b>为什么不能用 {@code Files.copy(in, out)}</b>：它一口气把整个条目写完才返回，
+     * 等它返回再检查已经晚了 —— 一个声明 10 GB 的条目在被发现之前就已经落盘。
+     * 这里改成先加、先判、再写：撞上上限时这一批字节还没写出去，
+     * 磁盘上最多比上限多出不到一个缓冲区。
+     *
+     * <p><b>为什么不看 {@code ZipEntry.getSize()}</b>：那是 zip 头里<b>自称</b>的大小，
+     * 可以是 -1（流式写出的包不填），也可以直接撒谎 —— zip bomb 正是这么骗过
+     * 只查声明值的校验的。唯一可信的是实际写出了多少字节。
+     *
+     * @param already 此前各条目已累计的字节数
+     * @return 加上本条目之后的累计字节数
+     */
+    private long copyCounting(InputStream in, Path out, long already, String entryName)
+            throws IOException {
+        byte[] buf = new byte[8192];
+        long total = already;
+        try (OutputStream os = Files.newOutputStream(out,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+                StandardOpenOption.WRITE)) {
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                total += n;
+                if (total > maxUnzippedBytes) {
+                    throw new BadArtifactException(
+                            "产物包解压后超过上限 " + maxUnzippedBytes + " 字节（由"
+                                    + " coverage.artifact-max-unzipped-bytes 决定），"
+                                    + "撑破上限的是条目 " + entryName + "。"
+                                    + "上传包本身的 200MB 上限拦不住这个 ——"
+                                    + "一个高压缩比的包压着很小、解开却能把平台磁盘写满");
+                }
+                os.write(buf, 0, n);
+            }
+        }
+        return total;
+    }
+
     /** {@code <root>/<projectId>/}。一切按 projectId 拼路径的地方都必须走这里，否则校验就是摆设 */
     private Path projectDir(String projectId) {
         if (projectId == null || projectId.isBlank()) {
@@ -163,9 +246,20 @@ public class ArtifactStore {
         try {
             Path base = tmp.toAbsolutePath().normalize();
             int files = 0;
+            int entries = 0;
+            long unzipped = 0;
             try (ZipInputStream in = new ZipInputStream(zip)) {
                 ZipEntry e;
                 while ((e = in.getNextEntry()) != null) {
+                    // 条目数单独限，因为它挡的是另一类膨胀：几十万个<b>空</b>条目总字节数几乎为零，
+                    // 字节上限一点都拦不住，但足以把文件系统拖垮（每个条目都是一次 inode 分配）
+                    if (++entries > maxEntries) {
+                        throw new BadArtifactException(
+                                "产物包解压后的条目数超过上限 " + maxEntries + " 个（由"
+                                        + " coverage.artifact-max-entries 决定）。"
+                                        + "真实产物到不了这个量级，这更像是一个高压缩比的包 ——"
+                                        + "平台的磁盘是共享的，不能让一次上传把它写满");
+                    }
                     // Zip Slip：条目名里带 ../ 就能写到目标目录之外。
                     // 上传接口是写平台磁盘的，这条必须挡住
                     Path out = base.resolve(e.getName()).normalize();
@@ -176,7 +270,7 @@ public class ArtifactStore {
                         Files.createDirectories(out);
                     } else {
                         Files.createDirectories(out.getParent());
-                        Files.copy(in, out, StandardCopyOption.REPLACE_EXISTING);
+                        unzipped = copyCounting(in, out, unzipped, e.getName());
                         // 只数<b>文件</b>：一个只含目录条目的 zip 同样是「没有产物」，
                         // 但目录条目会让计数非零，于是换入一个只有空子目录的 <lang>/，
                         // 而 find() 的判据是「存在且非空」—— 空子目录照样让它判为就绪

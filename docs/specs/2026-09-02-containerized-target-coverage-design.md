@@ -289,8 +289,10 @@ coverage:
 - **`uploaded` 项目在页面上建不出来** —— 新建向导第 6 步的自检（`ProjectChecker.checkPaths`）
   不看 `artifact-source`，无条件校验三条本地产物路径，而 uploaded 项目按设计不需要它们；
   自检不过，创建按钮就是灰的。目前只能经 API 建。页面加 `artifact-source` 选项时一并修
-- **上传接口没有鉴权，也没防解压膨胀** —— 只限了上传包本身 200MB，
-  没限解压后的总字节数与条目数。内网假设之下可以接受，暴露前必须补
+- **上传接口没有鉴权** —— 任何能访问平台的人都能推产物、删产物。
+  内网假设之下可以接受，暴露前必须补
+  （<b>解压膨胀已补</b>：`artifact-max-unzipped-bytes` 1 GiB + `artifact-max-entries` 10 万，
+  边写边判、撞闸回 400，见 `ArtifactUnzipLimitTest`）
 - **413 那条没有自动化回归**（见 7.1 第 4 条）
 
 ---

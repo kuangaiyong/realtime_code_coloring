@@ -70,6 +70,21 @@ public class CoverageProperties {
     /** 每个项目保留最近几个构建的产物，超出的按时间淘汰。同样是平台级（磁盘是机器的） */
     private int artifactKeep = 10;
 
+    /**
+     * 解压后允许写出的总字节数，默认 1 GiB。
+     *
+     * <p>上传包本身的 200MB 上限（{@code spring.servlet.multipart.max-file-size}）
+     * 拦不住高压缩比的包 —— 压着很小、解开却能把平台磁盘写满。
+     * 默认值取自 {@code ArtifactStore.DEFAULT_MAX_UNZIPPED_BYTES}，两处要一起改。
+     */
+    private long artifactMaxUnzippedBytes = 1024L * 1024 * 1024;
+
+    /**
+     * 解压条目数上限，默认 10 万。挡的是另一类膨胀：几十万个空条目总字节数几乎为零，
+     * 字节上限一点都拦不住。默认值取自 {@code ArtifactStore.DEFAULT_MAX_ENTRIES}。
+     */
+    private int artifactMaxEntries = 100_000;
+
     /** 覆盖率门禁的阈值。CI 在合并前调 /api/coverage/gate，据此决定放行还是阻断 */
     private Gate gate = new Gate();
 
@@ -181,6 +196,12 @@ public class CoverageProperties {
 
     public int getArtifactKeep() { return artifactKeep; }
     public void setArtifactKeep(int artifactKeep) { this.artifactKeep = artifactKeep; }
+
+    public long getArtifactMaxUnzippedBytes() { return artifactMaxUnzippedBytes; }
+    public void setArtifactMaxUnzippedBytes(long v) { this.artifactMaxUnzippedBytes = v; }
+
+    public int getArtifactMaxEntries() { return artifactMaxEntries; }
+    public void setArtifactMaxEntries(int v) { this.artifactMaxEntries = v; }
 
     public String getLlvmProfdataTool() { return llvmProfdataTool; }
     public void setLlvmProfdataTool(String llvmProfdataTool) { this.llvmProfdataTool = llvmProfdataTool; }

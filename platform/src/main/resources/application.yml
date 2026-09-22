@@ -68,9 +68,15 @@ coverage:
   rust-source-root: demo-service-rust
   rust-binary: ../demo-service-rust/target/x86_64-pc-windows-msvc/release/demo-service-rust.exe
   # 产物仓库。给「平台够不着容器文件系统」那种部署用 —— CI 按 buildId 把产物推上来。
-  # 这三项是平台级配置（跟着部署机器走），与项目无关，所以在 yml 而不在库里
+  # 这几项是平台级配置（跟着部署机器走），与项目无关，所以在 yml 而不在库里
   artifact-root: ${COVERAGE_ARTIFACT_ROOT:./.artifacts}
   artifact-keep: 10
+  # 解压膨胀的两道闸。上面 spring.servlet.multipart 的 200MB 限的是<b>上传包本身</b>，
+  # 拦不住高压缩比的包 —— 压着几 KB、解开能把磁盘写满。两道分别挡两类膨胀：
+  # 字节数挡「少数巨大条目」，条目数挡「海量空条目」（后者总字节几乎为零，字节闸一点用没有）。
+  # 取值参照实测：本仓库最大的一份真实产物是平台自己的 100 个文件 2.8MB，默认值宽 380 倍
+  artifact-max-unzipped-bytes: 1073741824
+  artifact-max-entries: 100000
   interval-ms: 3000
   timeout-ms: 3000
   # 覆盖率门禁：CI 合并前调 /api/coverage/gate，据 passed 放行或阻断。
