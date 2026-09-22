@@ -2,6 +2,8 @@ package com.rtcc.platform.artifact;
 
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.model.BuildVersion;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -30,6 +32,8 @@ import java.util.zip.ZipInputStream;
  */
 public class ArtifactStore {
 
+    private static final Logger log = LoggerFactory.getLogger(ArtifactStore.class);
+
     /**
      * 只认 40 位小写 hex。<b>buildId 直接参与磁盘路径</b>，不校验就是路径穿越 ——
      * 一个 {@code ../../} 能让上传接口写到平台的任意位置。
@@ -40,6 +44,18 @@ public class ArtifactStore {
     private final int keep;
 
     public ArtifactStore(Path root, int keep) {
+        if (root == null) {
+            throw new IllegalArgumentException("产物根目录不能为空");
+        }
+        // keep < 1 会让 prune 把<b>刚刚换入的那个构建</b>一起删掉：上传接口照样回 200、
+        // kept 是空的，下一轮采集却说「这个构建没上传产物」—— 上传说成功、取用说没有。
+        // 这是平台级配置（yml，改了要重启），写错就该在启动时炸掉、说清楚是哪一项，
+        // 而不是等到某次上传之后才以一种完全不着边际的方式表现出来
+        if (keep < 1) {
+            throw new IllegalArgumentException(
+                    "coverage.artifact-keep 至少是 1，实际为 " + keep
+                            + "：配成 0 或负数会让每次上传都把刚存好的那份产物立刻删掉");
+        }
         this.root = root;
         this.keep = keep;
     }
@@ -221,8 +237,20 @@ public class ArtifactStore {
         if (aside != null) {
             deleteTree(aside);
         }
-        // 目录的 mtime 决定保留顺序，显式刷一下：换入过程中它可能没被更新
-        Files.setLastModifiedTime(dir.getParent(), java.nio.file.attribute.FileTime.from(java.time.Instant.now()));
+        // 目录的 mtime 决定保留顺序，显式刷一下：换入过程中它可能没被更新。
+        //
+        // <b>刷不动也只能算了，绝不能让它把这次上传判成失败</b>：走到这里时新产物已经换入、
+        // 旧产物已经删掉，这次上传<b>是成功的</b>。若任由异常冲出去，调用方会拿到
+        // 500「平台侧故障」，CI 据此重推 —— 而磁盘上那份产物明明是好的。
+        // 它真正的影响只在保留顺序上：mtime 偏旧可能让这个构建被提前淘汰，所以要留一行日志
+        try {
+            Files.setLastModifiedTime(dir.getParent(),
+                    java.nio.file.attribute.FileTime.from(java.time.Instant.now()));
+        } catch (IOException e) {
+            log.warn("产物已存好，但刷新 {} 的修改时间失败：{}。"
+                            + "这只影响保留顺序（可能比别的构建先被淘汰），不影响这次上传",
+                    dir.getParent(), e.toString());
+        }
         prune(projectId);
     }
 
@@ -305,6 +333,20 @@ public class ArtifactStore {
      */
     public ProjectConfig resolveInto(ProjectConfig cfg, BuildVersion version,
                                      Set<ArtifactKind> needed) throws IOException {
+        // 先判这个值合不合法，再判它是不是 uploaded。
+        //
+        // <b>为什么这里还要再校验一遍</b>：ProjectRegistry.validate 只挂在 create / update 上，
+        // 而本项目改配置的正规方式之一是<b>直接改库里那份 JSON</b>（见 CLAUDE.md §三）——
+        // 从那条路进来的值不过 validate，yml 种子也不过。而 usesUploadedArtifacts()
+        // 判的是「等不等于 uploaded」，于是 upload、uploded、带空格的值统统被当成 local：
+        // 容器化部署上打错一个字母，平台就拿本机路径的产物去解另一个 buildId 的探针数据。
+        // 堵在<b>使用点</b>才堵得全 —— 入口有好几个，用的地方只有这一个
+        String source = cfg.getArtifactSource();
+        if (!"local".equalsIgnoreCase(source) && !"uploaded".equalsIgnoreCase(source)) {
+            throw new IOException("产物来源只能是 local（用配置里的本地路径）"
+                    + "或 uploaded（按 buildId 从产物仓库取），实际为：" + source
+                    + "。不认识的值不会被当成 local —— 那会拿本机产物去解另一个构建的探针数据");
+        }
         if (!cfg.usesUploadedArtifacts()) {
             return cfg;
         }

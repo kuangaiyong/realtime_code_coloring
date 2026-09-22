@@ -19,6 +19,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -208,6 +209,46 @@ class ArtifactResolveTest {
         assertTrue(out.getRustBinary().endsWith("demo-service-rust.exe"), out.getRustBinary());
     }
 
+    /**
+     * 不认识的产物来源<b>在使用点</b>也要拒绝，不能当成 local。
+     *
+     * <p>{@code ProjectRegistry.validate} 只挂在 create / update 上，而本项目改配置的
+     * 正规方式之一是直接改库里那份 JSON（见 CLAUDE.md §三），yml 种子同样不过 validate。
+     * 从那些路进来的坏值若被 {@code usesUploadedArtifacts()} 当成 local，
+     * 容器化部署上打错一个字母，平台就会拿本机路径的产物去解另一个 buildId 的探针数据 ——
+     * 行号错位而界面上一切正常。入口有好几个，用的地方只有这一个，所以堵在这里才堵得全。
+     */
+    @Test
+    void 不认识的产物来源在使用点也拒绝(@TempDir Path root) {
+        ArtifactStore store = new ArtifactStore(root, 10);
+
+        for (String bad : List.of("upload", "uploded", " uploaded", "remote", "")) {
+            IOException e = assertThrows(IOException.class,
+                    () -> store.resolveInto(cfg(bad), CLEAN, EnumSet.of(ArtifactKind.JAVA)),
+                    "artifactSource=[" + bad + "] 被当成了 local");
+            assertTrue(e.getMessage().contains("产物来源"), e.getMessage());
+        }
+    }
+
+    /**
+     * {@code artifact-keep} 配成 0 或负数时必须在造仓库那一刻就炸。
+     *
+     * <p>不拦的话 {@code prune} 会把<b>刚刚换入的那个构建</b>一起删掉：上传接口照样回 200、
+     * {@code kept} 是空的，下一轮采集却说「这个构建没上传产物」——
+     * 上传说成功、取用说没有，正是这个类反复要消灭的那种自相矛盾。
+     * 它是平台级配置（yml，改了要重启），写错就该在启动时说清楚是哪一项。
+     */
+    @Test
+    void 保留数必须至少为一(@TempDir Path root) {
+        for (int bad : new int[]{0, -1}) {
+            IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                    () -> new ArtifactStore(root, bad), "keep=" + bad);
+            assertTrue(e.getMessage().contains("artifact-keep"), e.getMessage());
+        }
+        // 1 是合法的下界：只留最新的那一个
+        assertEquals(1, new ArtifactStore(root, 1).keep());
+    }
+
     /** 没有构建版本时（实例没配 sessionid，或各实例版本不一致）同样不能猜一个路径出来 */
     @Test
     void 没有构建版本时明确报错(@TempDir Path root) {
@@ -284,6 +325,23 @@ class ArtifactResolveTest {
         src.getGate().setOverallThreshold(33d);
 
         ProjectConfig copy = src.copy();
+        // 先证明 fixture 本身是全的。少了这一步，这条用例并不像它看起来那样「自动跟上」：
+        // 新加一个字段却忘了在上面 setXxx 的话，src 与 copy 会同为默认值，
+        // 下面的逐字段比对照样全过 —— 而 copy() 是不是漏了它，恰恰一点都没验到
+        ProjectConfig untouched = new ProjectConfig();
+        for (Field f : ProjectConfig.class.getDeclaredFields()) {
+            if (Modifier.isStatic(f.getModifiers())) {
+                continue;
+            }
+            f.setAccessible(true);
+            if (f.get(src) instanceof ProjectConfig.Gate g) {
+                assertNotEquals(80d, g.getIncrementalThreshold(), "gate 的阈值没在 fixture 里改过");
+                continue;
+            }
+            assertNotEquals(f.get(untouched), f.get(src),
+                    "字段 " + f.getName() + " 没在这条用例的 fixture 里设过值 —— "
+                            + "它与默认值相同，于是 copy() 漏掉它也测不出来");
+        }
 
         for (Field f : ProjectConfig.class.getDeclaredFields()) {
             if (Modifier.isStatic(f.getModifiers())) {

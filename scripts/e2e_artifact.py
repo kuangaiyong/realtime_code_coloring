@@ -214,6 +214,12 @@ def main():
     # 版本拿不到 / 不一致 / 是脏的，这条用例都是「判不了」而不是「判不过」——
     # 产物仓库按设计拒绝脏构建（同一个 commit 能对应无数份不同的产物），
     # 两者的下一步动作完全不同
+    # 清理排在<b>所有前置检查之前</b>：残留的 artifact-e2e 是个活项目，平台会一直采它，
+    # 此后每一轮 verify 都在双项目负载下跑，而 ui_verify 断言端到端 ≤5s ——
+    # 那条会随机变红，且看不出与这里有关。而前置检查恰恰是「上一次为什么没跑完」
+    # 最可能命中的地方（工作树脏），把清理放在它后面，等于专挑最该清的那次不清
+    http(f"{PLATFORM}/api/projects/{PID}", "DELETE")
+
     status, base = summary("default")
     build = base.get("buildCommit")
     verr = base.get("versionError")

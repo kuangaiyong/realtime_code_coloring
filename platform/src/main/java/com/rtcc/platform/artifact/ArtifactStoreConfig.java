@@ -21,7 +21,18 @@ public class ArtifactStoreConfig {
 
     @Bean
     public ArtifactStore artifactStore(CoverageProperties props) {
-        return new ArtifactStore(Path.of(props.getArtifactRoot()).toAbsolutePath().normalize(),
+        String root = props.getArtifactRoot();
+        // 空字符串不会回落到默认值：环境变量设了但为空（COVERAGE_ARTIFACT_ROOT=）时，
+        // Spring 认为这个属性<b>有值</b>，于是 Path.of("") 经 toAbsolutePath()
+        // 变成平台的<b>工作目录</b> —— 产物会散进仓库，四个被测源码根随之变脏，
+        // 实例自报 sessionid 带上 -dirty，增量口径整个不可用。
+        // 一个「环境变量少填了个值」引发的故障，表现在一个毫不相干的地方
+        if (root == null || root.isBlank()) {
+            throw new IllegalArgumentException(
+                    "coverage.artifact-root 不能为空（检查 COVERAGE_ARTIFACT_ROOT 是不是设了但没给值）"
+                            + "：空值会让产物落进平台的工作目录");
+        }
+        return new ArtifactStore(Path.of(root).toAbsolutePath().normalize(),
                 props.getArtifactKeep());
     }
 }
