@@ -300,7 +300,10 @@ def run(build, instances):
     check(f"project={PID}" in err,
           f"补救命令带上了 ?project={PID}（不带的话包会传进 default 项目还回 200）")
     check(not s.get("files"), "没有凭空出一份文件列表")
-    print(f"         {err[:150]}")
+    # 别截短到把 &lang= 的值切掉：这条消息的全部价值就是「补救命令怎么写」，
+    # 而 150 字恰好断在 &lang= 之后 —— 看日志的人会以为平台漏填了 lang，
+    # 转头去查一个根本不存在的 bug（本人已中招一次）
+    print(f"         {err[:240]}")
 
     # ---- 3. 传三种语言的真实产物，外加一份诱饵 ----
     print("\n>> 3. 上传三种语言的真实产物（Go 不需要产物，不传），外加一个诱饵构建")
@@ -414,7 +417,7 @@ def run(build, instances):
     # 要验的是「没把这次失败当成一次成功的采集」，而 lastCollectedAt 只在成功路径上刷新
     check(s.get("lastCollectedAt") == collected_at,
           f"采集时间没有前进 —— 这次失败没有被记成一次成功的采集（仍是 {collected_at}）")
-    print(f"         {err[:150]}")
+    print(f"         {err[:240]}")
 
     # ---- 7. local 项目不受影响 ----
     print("\n>> 7. 默认项目（local）自始至终不受影响")
