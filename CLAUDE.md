@@ -149,6 +149,11 @@ export PATH="$JAVA_HOME/bin:/c/Users/Administrator/devtools/apache-maven-3.9.16/
 这是全局 CLAUDE.md「退出码 0 不等于成功」的反面：**非 0 也不等于被测代码有问题**，
 先看输出第一行是什么，再决定要不要去查代码。
 
+临时写 python 脚本（注入变异、复现脚本）同理：PATH 里排在前面的
+`WindowsApps/python` 是 0 字节的 Store 别名，直接调得到 `Permission denied`。
+用 `/c/Users/Administrator/AppData/Local/Python/bin/python`（`run_local.sh` 的
+`resolve_python` 就是跳过它，但那只管 verify 自己）。
+
 ### 工具链依赖
 
 平台侧需要 **JDK 17 + Maven + Go + GCC（MinGW-w64）+ Rust（rustup）**；
