@@ -330,6 +330,19 @@ def main():
     check(bad_sum["probeStatus"] == "ANALYZE_ERROR" and "classes-dir" in str(bad_sum.get("lastError")),
           f"探针连得上但产物目录不对时报 ANALYZE_ERROR 并点名：{bad_sum.get('lastError')}",
           f"产物目录不对却没报错：probeStatus={bad_sum['probeStatus']} lastError={bad_sum.get('lastError')}")
+    # 实例对比也得这么说：探针是好的、数据也取到了，解不出来的是平台。报成 DISCONNECTED
+    # 会把人引去查被测服务与探针端口（修之前正是如此，自报版本还被抹成了空）。
+    # 点名要认那句预检的原话 —— 旧报错里的路径 no-such-classes-dir 本身就带着「classes-dir」。
+    # 真有一台瞬时取不到数时，它那行的原因与产物目录无关，不算误报
+    per = must(*http(f"{PLATFORM}/api/projects/{P1}/coverage/instances"), what=f"{P1} 用错误配置按实例取数")
+    named = [r for r in per["instances"] if r["status"] == "ANALYZE_ERROR" and r.get("buildCommit")
+             and "classes-dir 不是有效目录" in str(r.get("error"))]
+    misled = [r for r in per["instances"] if r["status"] != "ANALYZE_ERROR"
+              and "no-such-classes-dir" in str(r.get("error"))]
+    check(named and not misled,
+          f"实例对比同样报 ANALYZE_ERROR、点名 classes-dir 并带出自报版本（{len(named)}/{len(per['instances'])} 台）",
+          "实例对比没把它当平台侧故障报："
+          + str([(r["endpoint"], r["status"], r.get("buildCommit"), r.get("error")) for r in per["instances"]]))
     print()
 
     # ---------------------------------------------------------------- 趋势隔离

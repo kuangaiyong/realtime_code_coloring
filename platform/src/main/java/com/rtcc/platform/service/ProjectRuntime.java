@@ -150,33 +150,18 @@ public class ProjectRuntime {
     }
 
     /**
-     * 取产物失败与实例掉线是两件完全不同的事，必须分开报。
+     * classes-dir 必须是个目录，归一化之前先判。聚合与实例对比共用这一处，两边的说法因此逐字一致。
      *
-     * <p>混成一个的后果很具体：实例活得好好的，界面却说它「未连上」，
-     * 人照着去查被测服务和探针端口，而真正的原因是平台侧少了一份产物。
-     * {@code doCollect} 那边把同类问题分成 CONFIG_ERROR / ANALYZE_ERROR 正是为了这个。
+     * <p>不判的后果不只是报错不点名：指向一个<b>文件</b>时 JaCoCo 不抛异常，静默地分析出 0 个类，
+     * 那一台就成了「连上了、覆盖 0%」—— 读起来是这台什么都没跑，而它明明跑过代码（实例对比实测过）。
+     * 探针是好的，问题出在平台侧配置；混同为「探针未连接」会让人去查被测服务，方向完全错。
      */
-    private static class ArtifactUnavailable extends Exception {
-        /**
-         * 这一台自报的构建版本。抛出时它已经读到了，必须照实带出去 ——
-         * 脏构建正是「取不到产物」最常见的原因，把 dirty 报成 false 等于抹掉了根因，
-         * 只剩错误字符串里还留着真相
-         */
-        final BuildVersion version;
-
-        ArtifactUnavailable(IOException cause, BuildVersion version) {
-            super(cause.getMessage(), cause);
-            this.version = version;
+    private static File classesDirOf(ProjectConfig cfg) {
+        File dir = new File(cfg.getClassesDir());
+        if (!dir.isDirectory()) {
+            throw new IllegalStateException("classes-dir 不是有效目录：" + dir.getAbsolutePath());
         }
-    }
-
-    /** 把 {@link ArtifactStore#resolveInto} 的 IOException 换成一个能与「掉线」分开接的类型 */
-    private ProjectConfig artifactCfgFor(BuildVersion v, ArtifactKind kind) throws ArtifactUnavailable {
-        try {
-            return artifacts.resolveInto(props, v, EnumSet.of(kind));
-        } catch (IOException e) {
-            throw new ArtifactUnavailable(e, v);
-        }
+        return dir;
     }
 
     /**
@@ -494,12 +479,8 @@ public class ProjectRuntime {
             // 端到端染色延迟随之越过 5s 那条核心断言线（实测过 8/8 全超）
             List<AnalyzeJob> jobs = new ArrayList<>(4);
             if (anyJava) {
-                File classesDir = new File(artifactCfg.getClassesDir());
-                if (!classesDir.isDirectory()) {
-                    // 探针是好的，问题出在平台侧配置。混同为「探针未连接」会让人去查被测服务，方向完全错。
-                    // 这一项放在并行之外先判：它是纯粹的配置错，没必要陪着跑一轮外部工具
-                    throw new IllegalStateException("classes-dir 不是有效目录：" + classesDir.getAbsolutePath());
-                }
+                // 这一项放在并行之外先判：它是纯粹的配置错，没必要陪着跑一轮外部工具
+                File classesDir = classesDirOf(artifactCfg);
                 jobs.add(new AnalyzeJob("java", () -> analyzer.analyze(javaMerged, classesDir, props.getJavaSourceRoot())));
             }
             if (!goDumps.isEmpty()) {
@@ -610,30 +591,42 @@ public class ProjectRuntime {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("endpoint", ep.toString());
                 row.put("language", ep.language());
+                // 取数与 doCollect 走同一个 fetchOne，DISCONNECTED 在两处因此是同一个意思：探针没交出数据。
+                // 原先这里另写了一遍取数，跟归一化包在同一个 try 里，平台解不出来也报成探针不可达 ——
+                // 聚合视图说这台连上了，对比表却说它不可达，自报的版本还被抹成空
+                Fetched got = fetchOne(ep);
+                if (got.error() != null) {
+                    // 一台取不到不该让整张对比表失败：其余实例的数据仍然是真的。
+                    // 但这一行必须显式标成取不到，不能留空让人读成「这台什么都没跑」
+                    row.put("status", "DISCONNECTED");
+                    row.put("buildCommit", null);
+                    row.put("dirty", false);
+                    row.put("overallRatio", null);
+                    row.put("coveredLines", null);
+                    row.put("missedLines", null);
+                    row.put("fileCount", null);
+                    row.put("error", got.error());
+                    rows.add(row);
+                    continue;
+                }
+                BuildVersion v = got.version();
                 try {
                     Map<String, FileCoverage> files;
-                    BuildVersion v;
                     if (ProbeEndpoint.GO.equals(ep.language())) {
-                        v = BuildVersion.parseId(goProbe.buildId(ep));
                         // 显式类型见证：List.of 的可变参数会把 byte[][] 拆成 List<byte[]>
-                        files = goAnalyzer.analyze(List.<byte[][]>of(
-                                new byte[][]{goProbe.meta(ep), goProbe.counters(ep)}));
+                        files = goAnalyzer.analyze(List.<byte[][]>of(got.go()));
                     } else if (ProbeEndpoint.CPP.equals(ep.language())) {
-                        v = BuildVersion.parseId(cppProbe.buildId(ep));
-                        files = cppFor(artifactCfgFor(v, ArtifactKind.CPP))
-                                .analyze(List.of(cppProbe.dump(ep)));
+                        files = cppFor(artifacts.resolveInto(props, v, EnumSet.of(ArtifactKind.CPP)))
+                                .analyze(List.of(got.cpp()));
                     } else if (ProbeEndpoint.RUST.equals(ep.language())) {
-                        v = BuildVersion.parseId(rustProbe.buildId(ep));
-                        files = rustFor(artifactCfgFor(v, ArtifactKind.RUST))
-                                .analyze(List.of(rustProbe.dump(ep)));
+                        files = rustFor(artifacts.resolveInto(props, v, EnumSet.of(ArtifactKind.RUST)))
+                                .analyze(List.of(got.rust()));
                     } else {
-                        ProbeDump dump = probeClient.dump(ep.host(), ep.port(), false, props.getTimeoutMs());
-                        v = BuildVersion.parse(dump.sessions());
                         // 按这一台自报的构建取产物，而不是按全局那个统一版本：
                         // 对比视图本来就是逐台算的，各台版本不同时正该各用各的那一份。
                         // 逐台解析不贵 —— resolveInto 只是查目录在不在，解压发生在上传那一刻
-                        files = analyzer.analyze(dump.exec(),
-                                new File(artifactCfgFor(v, ArtifactKind.JAVA).getClassesDir()),
+                        files = analyzer.analyze(got.java().exec(),
+                                classesDirOf(artifacts.resolveInto(props, v, EnumSet.of(ArtifactKind.JAVA))),
                                 props.getJavaSourceRoot());
                     }
                     int covered = 0, missed = 0;
@@ -649,25 +642,14 @@ public class ProjectRuntime {
                     row.put("missedLines", missed);
                     row.put("fileCount", files.size());
                     row.put("error", null);
-                } catch (ArtifactUnavailable e) {
-                    // 实例是好的，缺的是平台侧的产物。标成 DISCONNECTED 会让人去查
-                    // 被测服务与探针端口，而该查的是「这个构建的产物推上来了没有」
-                    row.put("status", "ANALYZE_ERROR");
-                    // 版本照实报：这一台报的是什么、脏没脏，恰恰是判断该去推产物
-                    // 还是该去提交代码的依据
-                    row.put("buildCommit", e.version == null ? null : e.version.commit());
-                    row.put("dirty", e.version != null && e.version.dirty());
-                    row.put("overallRatio", null);
-                    row.put("coveredLines", null);
-                    row.put("missedLines", null);
-                    row.put("fileCount", null);
-                    row.put("error", e.getMessage());
                 } catch (Exception e) {
-                    // 一台取不到不该让整张对比表失败：其余实例的数据仍然是真的。
-                    // 但这一行必须显式标成取不到，不能留空让人读成「这台什么都没跑」
-                    row.put("status", "DISCONNECTED");
-                    row.put("buildCommit", null);
-                    row.put("dirty", false);
+                    // 探针是好的、数据也取到了，是平台自己解不出来：缺产物、产物目录指错、外部工具失败、
+                    // 覆盖数据算不出来。标成 DISCONNECTED 会让人去查被测服务与探针端口，而该查的是平台这一侧
+                    row.put("status", "ANALYZE_ERROR");
+                    // 版本照实报：这一台报的是什么、脏没脏，恰恰是判断该去推产物还是该去提交代码的依据。
+                    // 脏构建正是「取不到产物」最常见的原因，把 dirty 报成 false 等于抹掉了根因
+                    row.put("buildCommit", v == null ? null : v.commit());
+                    row.put("dirty", v != null && v.dirty());
                     row.put("overallRatio", null);
                     row.put("coveredLines", null);
                     row.put("missedLines", null);
