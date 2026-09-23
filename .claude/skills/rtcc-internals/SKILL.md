@@ -1,6 +1,6 @@
 ---
 name: rtcc-internals
-description: 代码染色平台的实现内情：P2/P3/P4 分层验收的实际执行情况（哪里改了 Analyzer、为什么）、Go 与 Java 行级粒度差异、前端零构建 Vue 3 的七个反复踩到的点、采集耗时的分项构成（端到端延迟逼近 5s 时先看这里）。改前端、排查延迟、接入新语言时读这份。
+description: 代码染色平台的实现内情：P2/P3/P4 分层验收的实际执行情况（哪里改了 Analyzer、为什么）、Go 与 Java 行级粒度差异、前端零构建 Vue 3 的七个反复踩到的点、采集耗时的分项构成（端到端延迟逼近 5s 时先看这里）、前端验收起不来（Failed to launch the browser process）时先查什么。改前端、排查延迟、接入新语言、前端验收启动 Chrome 失败时读这份。
 ---
 
 ### P2 验收标准的执行情况（如实记录）
@@ -139,6 +139,18 @@ P2 定下的判据是「接入新语言不修改 Analyzer / Web 任何代码，�
 `${COVERAGE_DB_PASSWORD:}` 三个占位符，由 `run_local.sh` 读 `.env.local` 注入。
 **换机器部署时要照着重建这个文件**，否则跨构建趋势（`/api/coverage/trend`）
 会以 `available:false` + 原因返回 —— 采集与染色不受影响，只是历史存不进去。
+
+### 前端验收起不来：`Failed to launch the browser process: Code: 0`
+
+stderr 为空、`Code: 0` —— 先看 `C:\Program Files\Google\Chrome\Application` 的修改时间
+是不是刚好在失败那一刻。2026-09-23 实测撞上过 Chrome 自动更新在替换版本（失败 09:55:18，
+安装目录 09:55:32 被改写）：launcher 直接退出，这一套约 88 条断言一条没跑，
+verify 报成 170 PASS / 1 FAIL。**失败点在打开任何页面之前，与被测代码无关**；等一两分钟、
+在同一个 commit 上重跑就是 258 / 0。别当成代码问题去翻 diff。
+
+查 Chrome 版本看安装目录下的版本号目录名（如 `153.0.8010.53`），**别跑 `chrome.exe --version`**：
+Windows 上它不往控制台打印，而是用默认用户目录**真的开一个浏览器** ——
+正在 RDP 桌面上用 Chrome 的人会莫名其妙多出一个窗口，命令本身也挂住不返回。
 
 
 ### 采集耗时的构成（端到端延迟又逼近 5s 时先看这里）

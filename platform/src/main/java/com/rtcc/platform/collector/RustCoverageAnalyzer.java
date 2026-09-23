@@ -120,9 +120,30 @@ public class RustCoverageAnalyzer {
                 // FNDA:<执行次数>,<符号>
                 String[] kv = line.substring(5).split(",", 2);
                 if (kv.length == 2) {
+                    long count;
+                    try {
+                        count = Long.parseUnsignedLong(kv[0].strip());
+                    } catch (NumberFormatException e) {
+                        count = -1;
+                    }
+                    // 与 DA 同样是 u64，处理却相反：<b>不跳过，拒绝出报告</b>。
+                    // FNF/FNH 取自 llvm-cov 的汇总，而 llvm-cov 按无符号比较，把 u64::MAX
+                    // 算成「已执行」（2026-09-23 用同构的 LH 实测：23 个下溢轮全部如此）。
+                    // 跳过这条只会让方法明细少一条、文件级方法数照样算它已覆盖 —— 父子对不上，
+                    // 文件级被悄悄抬高。该怎么计从没定义过，定之前宁可整轮拒绝。
+                    // 实测当前工具链下 FNDA 取自函数入口的<b>物理计数器</b>（13 条里 12 条逐一相等，
+                    // 另 1 条是没调用过的函数给 0），只增不减、不会下溢 —— 同样负载下 DA 32/40 轮
+                    // 下溢，FNDA 520 个样本 0 次。所以这里一旦触发，多半是 rustc 改了计数器分配
+                    if (count < 0) {
+                        throw new IOException("Rust 覆盖数据里有方法的执行次数算不出来（" + line.strip()
+                                + "）。当前工具链下 FNDA 取自函数入口计数器、不会下溢，"
+                                + "出现这一条多半是 rustc 升级后改了计数器的分配方式 ——"
+                                + "不能照 DA 那样跳过（llvm-cov 的方法汇总会把它算成已执行，"
+                                + "方法明细与文件级方法数会对不上），需要先定下方法级的计数口径");
+                    }
                     int[] v = fnDetail.computeIfAbsent(currentPath, k -> new LinkedHashMap<>())
                             .computeIfAbsent(kv[1].strip(), k -> new int[2]);
-                    v[1] = Long.parseLong(kv[0].strip()) > 0 ? 1 : 0;
+                    v[1] = count > 0 ? 1 : 0;
                 }
             } else if (line.startsWith("FNF:") && currentPath != null) {
                 fnByFile.computeIfAbsent(currentPath, k -> new int[2])[0] =

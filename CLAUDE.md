@@ -149,6 +149,11 @@ export PATH="$JAVA_HOME/bin:/c/Users/Administrator/devtools/apache-maven-3.9.16/
 这是全局 CLAUDE.md「退出码 0 不等于成功」的反面：**非 0 也不等于被测代码有问题**，
 先看输出第一行是什么，再决定要不要去查代码。
 
+临时写 python 脚本（注入变异、复现脚本）同理：PATH 里排在前面的
+`WindowsApps/python` 是 0 字节的 Store 别名，直接调得到 `Permission denied`。
+用 `/c/Users/Administrator/AppData/Local/Python/bin/python`（`run_local.sh` 的
+`resolve_python` 就是跳过它，但那只管 verify 自己）。
+
 ### 工具链依赖
 
 平台侧需要 **JDK 17 + Maven + Go + GCC（MinGW-w64）+ Rust（rustup）**；
@@ -279,6 +284,9 @@ project **做包含性检查**（归一化后必须仍落在产物根之下 —�
    > **但上面这条防护不能撤**：同一轮排查发现 Rust 在负载下会 u64 溢出
    > （`For input string: "18446744073709551615"`），同样表现为「一台取不到数」——
    > 触发源不止一个，「判不了」的诊断仍然必需。
+   > 2026-09-23 补：它当时像「取不到数」，是因为实例对比把平台侧解不出来也标成了 DISCONNECTED。
+   > 现在两者分开了 —— 重试时打出来的那一行若是 ANALYZE_ERROR，该查的是平台
+   > （产物、工具链、覆盖数据本身），不是那台实例。
 5. **`verify` 假定平台已经在跑**。它只重启被测实例，不启动平台；平台没起时
    第一套用例就以「连接被拒绝」失败。更麻烦的是它已经把 8 个被测实例拉起来了，
    而 Java 实例握着 `platform/target/classes/probe/jacocoagent.jar`，接着跑 `start` 会在

@@ -562,30 +562,66 @@ public class ArtifactStore {
      *
      * <p><b>按个数而不是按天数</b>：一个长期不发布的服务会把自己正在跑的那份产物清掉，
      * 而那时平台会开始拒绝出报告 —— 一个由「太久没发版」引发的故障，没人查得到。
+     *
+     * <p>挪不开（旧实例还在跑这个构建、采集正读着它）就<b>跳过</b>，下一次上传时再清 ——
+     * 它原封未动，仍是一份完整的产物。见 {@link #removeBuild}。
      */
     public int prune(String projectId) {
         List<String> all = builds(projectId);
         int removed = 0;
         for (int i = keep; i < all.size(); i++) {
-            deleteTree(projectDir(projectId).resolve(all.get(i)));
-            removed++;
+            try {
+                removeBuild(projectDir(projectId).resolve(all.get(i)));
+                removed++;
+            } catch (IOException e) {
+                log.warn("清理旧构建 {} 时挪不开，这次跳过、下次上传时再清（它原封未动，仍是完整的）：{}",
+                        all.get(i), e.toString());
+            }
         }
         return removed;
     }
 
-    /** 删掉一个构建的全部产物 */
+    /**
+     * 删掉一个构建的全部产物。
+     *
+     * <p>挪不开时抛出，此时产物<b>原封未动</b> —— 多半是采集正读着里面的文件，稍后重试即可。
+     * 见 {@link #removeBuild}。
+     */
     public void remove(String projectId, String buildId) throws IOException {
         requireValidBuildId(buildId);
         Path dir = projectDir(projectId).resolve(buildId);
-        deleteTree(dir);
-        // 删不干净必须报错，不能照样回 ok:true。deleteTree 是宽容删除（单个文件删不掉就跳过），
-        // 留下的残缺目录会被 find() 判为就绪 —— 平台接着拿不完整的字节码去算覆盖率，
-        // 算出的结果界面上看不出异样。这正是 save() 这轮消灭掉的失败模式，
-        // 不能在删除这条路上原样留着。prune() 那边仍用宽容删除：它删的是已经过期的产物，
-        // 少删一个只占点磁盘，下一轮会再试 —— 两处语义不同，不要统一。
-        if (Files.exists(dir)) {
-            throw new IOException("产物没有删干净，残留在 " + dir
-                    + "：残留会被当成一份就绪的产物用，需要人工清掉");
+        try {
+            removeBuild(dir);
+        } catch (IOException e) {
+            throw new IOException("产物没删，原封未动（" + dir + "）：整个构建目录挪不开，"
+                    + "多半是平台正在采集、读着里面的文件 —— 稍后重试即可。原因：" + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 删一个构建目录：<b>先整体改名挪开，再删挪开的那一份</b>，不原地逐个删。
+     *
+     * <p>原地删是逐个文件删，删到一半停下（采集正读着其中一个 class —— Windows 上 JaCoCo 的
+     * {@code FileInputStream} 会占住它）就是一个<b>半截目录</b>：名字仍是合法 buildId，
+     * {@link #find} 只看「存在且非空」，把它当成完整产物交给归一化。2026-09-23 实测：
+     * 占用哪怕只持续 100ms，原地删也只剩被占的那个文件、find() 判为就绪；
+     * prune 那条路上连报错都没有，上传照样回 200。
+     *
+     * <p>改名则要么整体成功、要么整体没动 —— 目录里有文件被占用时 Windows 拒绝改名
+     * （实测 AccessDeniedException、文件一个不少），与 {@code save()} 换入同一个手法。
+     * 挪开之后删不掉的残留（只读位这类）待在 {@code <buildId>.del-*} 底下：不是合法 buildId，
+     * find() 与 builds() 都看不见，列表里显示成陌生目录，只占磁盘。
+     */
+    private static void removeBuild(Path buildDir) throws IOException {
+        if (!Files.exists(buildDir)) {
+            return;
+        }
+        Path aside = buildDir.resolveSibling(buildDir.getFileName() + ".del-" + System.nanoTime());
+        moveAtomic(buildDir, aside);
+        deleteTree(aside);
+        if (Files.exists(aside)) {
+            log.warn("构建 {} 已删除，但挪开的目录 {} 没删干净，留在盘上只占磁盘（列表里显示为陌生目录）",
+                    buildDir.getFileName(), aside);
         }
     }
 
@@ -608,12 +644,13 @@ public class ArtifactStore {
     /**
      * 宽容删除：单个文件删不掉不该让整次操作失败。
      *
-     * <p>用在三处，共同点是<b>删不干净也不会让任何人拿到错的产物</b> ——
-     * {@link #prune} 删的是要退休的旧构建（下一轮还会再试）、{@code save()} 失败时清临时目录、
-     * 以及换入成功后清那份已经挪开的旧产物。
+     * <p>用在三处，共同点是<b>删的都是 {@link #find} 看不见的路径</b>，删不干净也不会让
+     * 任何人拿到错的产物 —— {@code save()} 失败时清临时目录、换入成功后清那份已经挪开的旧产物、
+     * 以及 {@link #removeBuild} 清它挪开的构建目录。
      *
-     * <p>注意 {@code save()} 的<b>换入</b>刻意不走这里：那一步要么整体成功、要么整体没动
-     * （靠目录改名做到），因为「删了一半」正好会造出一个 {@link #find} 判为就绪的残缺产物。
+     * <p><b>绝不能直接拿它删一个 find() 看得见的目录</b>（构建目录、{@code <lang>/}）：
+     * 「删了一半」正好会造出一个判为就绪的残缺产物。那些一律先整体改名挪开 ——
+     * {@code save()} 的换入与 {@link #removeBuild} 都是这么做的。
      */
     private static void deleteTree(Path dir) {
         if (!Files.exists(dir)) {
@@ -624,7 +661,7 @@ public class ArtifactStore {
                 try {
                     Files.deleteIfExists(p);
                 } catch (IOException ignored) {
-                    // 单个文件删不掉不该让整次操作失败：下次 prune 会再试
+                    // 单个文件删不掉不该让整次操作失败：删的是 find() 看不见的路径，残留只占磁盘
                 }
             });
         } catch (IOException ignored) {

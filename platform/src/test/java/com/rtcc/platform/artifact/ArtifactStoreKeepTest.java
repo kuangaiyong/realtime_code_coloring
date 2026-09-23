@@ -308,17 +308,58 @@ class ArtifactStoreKeepTest {
                 "清理把别的工具的目录删了");
     }
 
+    /** 目录下全部文件的相对路径，排好序 —— 用来断言「一个不少」 */
+    private static List<String> files(Path dir) throws Exception {
+        try (var s = Files.walk(dir)) {
+            return s.filter(Files::isRegularFile)
+                    .map(p -> dir.relativize(p).toString().replace('\\', '/')).sorted().toList();
+        }
+    }
+
     /**
-     * 删不干净必须报错，不能照样说「删掉了」。
+     * 删除撞上文件占用时必须<b>原封不动</b>，绝不能删成半截。
      *
-     * <p>{@code remove()} 内部是宽容删除（单个文件删不掉就跳过），残留下来的目录
-     * 会被 {@code find()} 判为就绪 —— 调用方以为这个构建已经清掉了，平台却还在
-     * 拿那份残缺产物算覆盖率。与 {@code save()} 换入那条守的是同一件事。
+     * <p>{@code find()} 只看「存在且非空」，半截目录会被当成一份就绪的产物 ——
+     * 平台接着拿不完整的字节码去解探针数据，界面上看不出任何异样。
+     * 而占用是真实会发生的：采集时 JaCoCo 用 {@code FileInputStream} 读 class，
+     * Windows 上会占住文件，删「正在被采集的那个构建」就会撞上。
+     * {@code e2e_artifact.py} 的 {@code drop_artifact} 就撞上过，靠重试 DELETE 糊了过去，
+     * 失败那次与重试之间盘上一直是个半截目录。
      *
-     * <p>删不掉是<b>真实</b>造出来的（DOS 只读位），没有替身。
+     * <p>占用用 JaCoCo 同样的方式真实造出来，没有替身。
      */
     @Test
-    void 删不干净要报错而不是说删掉了(@TempDir Path root) throws Exception {
+    void 删除撞上占用时原封不动而不是删成半截(@TempDir Path root) throws Exception {
+        ArtifactStore store = new ArtifactStore(root, 10);
+        store.save("demo", sha(1), ArtifactKind.JAVA,
+                new ByteArrayInputStream(zipOfTwo("A.class", "甲", "B.class", "乙")));
+        Path dir = store.find("demo", sha(1), ArtifactKind.JAVA).orElseThrow();
+
+        try (java.io.FileInputStream held = new java.io.FileInputStream(dir.resolve("B.class").toFile())) {
+            java.io.IOException e = assertThrows(java.io.IOException.class,
+                    () -> store.remove("demo", sha(1)), "文件被占着却说删掉了");
+            // 要么整体删掉、要么整体没动 —— 绝不能是只剩被占住那个文件的中间态
+            assertEquals(List.of("A.class", "B.class"), files(dir), "删成了半截，残缺目录会被当成就绪");
+            assertTrue(e.getMessage().contains("原封未动"),
+                    "要让调用方知道产物还完整、稍后重试即可：" + e.getMessage());
+        }
+
+        // 占用解除后删得掉，挪开的那个目录也不留下
+        store.remove("demo", sha(1));
+        assertTrue(store.find("demo", sha(1), ArtifactKind.JAVA).isEmpty());
+        assertEquals(List.of(), store.strangers("demo"), "挪开删除用的目录没删掉");
+    }
+
+    /**
+     * 文件本身删不掉（只读位这类不会自己消失的原因）时，<b>构建照样要从平台眼里消失</b>，
+     * 残留只能待在一个 {@code find()} / {@code builds()} 都看不见的名字底下 ——
+     * 它在列表里显示成陌生目录，运维看得见、占的只是磁盘。
+     *
+     * <p>原先这种情况报 500，而那份残缺目录<b>原地留着</b>被当成就绪：报了错也没用，
+     * 半截产物照样被拿去算覆盖率。先整体挪开再删，才让「删到一半」不再有机会被读到。
+     */
+    @Test
+    void 文件本身删不掉时构建照样消失残留挪到看不见的地方(@TempDir Path root) throws Exception {
         ArtifactStore store = new ArtifactStore(root, 10);
         store.save("demo", sha(1), ArtifactKind.JAVA,
                 new ByteArrayInputStream(zipOf("stuck.class", "删不掉的那份")));
@@ -326,10 +367,52 @@ class ArtifactStoreKeepTest {
         Files.setAttribute(dir.resolve("stuck.class"), "dos:readonly", true);
 
         try {
-            assertThrows(java.io.IOException.class, () -> store.remove("demo", sha(1)),
-                    "删不干净却没报错：调用方会以为这个构建已经清掉了");
+            store.remove("demo", sha(1));
+
+            assertTrue(store.find("demo", sha(1), ArtifactKind.JAVA).isEmpty(), "残缺产物仍会被当成就绪");
+            assertEquals(List.of(), store.builds("demo"), "删掉的构建还占着 keep 名额");
+            assertEquals(1, store.strangers("demo").size(), "残留要落在列表看得见的地方");
         } finally {
-            Files.setAttribute(dir.resolve("stuck.class"), "dos:readonly", false);
+            // 清掉只读位，好让 @TempDir 收尾（残留已经不在原路径了）
+            try (var s = Files.walk(root)) {
+                s.filter(p -> p.getFileName().toString().equals("stuck.class")).forEach(p -> {
+                    try {
+                        Files.setAttribute(p, "dos:readonly", false);
+                    } catch (java.io.IOException ignored) {
+                    }
+                });
+            }
         }
+    }
+
+    /**
+     * 清理（{@code prune}）撞上占用时<b>跳过</b>，不能删成半截 —— 这条比删除接口更隐蔽：
+     * 上传照样回 200，没有任何报错。
+     *
+     * <p>场景是 keep 调小 + 滚动发布：新构建一上传就清掉上一个，而旧实例还在跑上一个、
+     * 采集正读着它的 class。删成半截的话，旧构建的名字仍是合法 buildId，{@code find()} 看得见，
+     * 平台拿三个 class 里剩下的一个去解旧实例的探针数据。跳过则什么都没动，下一次上传时再清。
+     */
+    @Test
+    void 清理撞上占用时跳过而不是删成半截(@TempDir Path root) throws Exception {
+        ArtifactStore store = new ArtifactStore(root, 1);
+        store.save("demo", sha(1), ArtifactKind.JAVA,
+                new ByteArrayInputStream(zipOfTwo("A.class", "甲", "B.class", "乙")));
+        Path old = store.find("demo", sha(1), ArtifactKind.JAVA).orElseThrow();
+        Thread.sleep(1100);   // mtime 精度可能只有秒级，隔开才排得出先后
+
+        try (java.io.FileInputStream held = new java.io.FileInputStream(old.resolve("B.class").toFile())) {
+            store.save("demo", sha(2), ArtifactKind.JAVA,
+                    new ByteArrayInputStream(zipOf("a.class", "新的")));
+        }
+        assertEquals(List.of("A.class", "B.class"), files(old), "旧构建被清成了半截，仍会被当成就绪");
+
+        // 占用解除后，下一次上传时把它清掉，且不留挪开的目录
+        Thread.sleep(1100);
+        store.save("demo", sha(3), ArtifactKind.JAVA,
+                new ByteArrayInputStream(zipOf("a.class", "更新的")));
+        assertTrue(store.find("demo", sha(1), ArtifactKind.JAVA).isEmpty(), "占用解除后仍没清掉");
+        assertEquals(List.of(sha(3)), store.builds("demo"));
+        assertEquals(List.of(), store.strangers("demo"), "挪开删除用的目录没删掉");
     }
 }
