@@ -338,4 +338,44 @@ class RustCoverageAnalyzerTest {
 
         assertTrue(e.getMessage().contains("算不出来"), e.getMessage());
     }
+
+    /**
+     * FNDA 的执行次数同样是 u64，但与 DA 不同：它下溢时<b>不能跳过，要拒绝出报告并说清原因</b>。
+     *
+     * <p>为什么不照 DA 跳过：FNF/FNH 取自 llvm-cov 的汇总，而 llvm-cov 按无符号比较，
+     * 会把 u64::MAX 算成「已执行」（2026-09-23 用同构的 LH 实测过：23 个下溢轮全部如此）。
+     * 跳过这条 FNDA 只会让方法明细少一条、文件级方法数却照样把它算成已覆盖 ——
+     * 父子对不上，文件级被悄悄抬高，比拒绝出报告更糟。
+     *
+     * <p>为什么现状也不行：原先是 {@code Long.parseLong} 直接抛 NumberFormatException，
+     * 页面上 ANALYZE_ERROR 的全部内容就是一句 {@code For input string: "18446744073709551615"}，
+     * 而 CLAUDE.md 里这条线索指向的是早已修好的 DA —— 排查的人会被引到错的地方。
+     *
+     * <p>实测当前工具链下 FNDA 取自函数入口的物理计数器，不会下溢（负载下 DA 32/40 轮下溢，
+     * FNDA 520 个样本 0 次）。这条守的是<b>将来</b> rustc 改了计数器分配时，报错能一眼看懂。
+     * 2⁶³ 是有符号解析恰好开始出错的边界，一并守住。
+     */
+    @Test
+    void 方法执行次数下溢时拒绝出报告并说清原因(@TempDir Path repo) {
+        String abs = repo.toAbsolutePath().normalize().toString().replace('\\', '/');
+        for (String bad : List.of("18446744073709551615", "9223372036854775808")) {
+            IOException e = assertThrows(IOException.class,
+                    () -> new RustCoverageAnalyzer(props(repo, "x"), new CoverageProperties()).parse("""
+                            SF:%s/demo-service-rust/src/order.rs
+                            FN:10,_RNvCs2r1QDoXLnWk_17demo_service_rust6handle
+                            FNDA:%s,_RNvCs2r1QDoXLnWk_17demo_service_rust6handle
+                            FNF:1
+                            FNH:1
+                            DA:10,3
+                            DA:11,0
+                            end_of_record
+                            """.formatted(abs, bad)),
+                    "FNDA=" + bad + " 没被拒绝");
+
+            // 这句话就是页面上 ANALYZE_ERROR 的全部内容（describe 直接取 getMessage），
+            // 必须让人不翻代码就知道是哪条记录、多半是什么原因
+            assertTrue(e.getMessage().contains("FNDA:" + bad), "要带出原始记录：" + e.getMessage());
+            assertTrue(e.getMessage().contains("rustc"), "要点出多半是工具链变了：" + e.getMessage());
+        }
+    }
 }
