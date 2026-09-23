@@ -6,7 +6,7 @@ schema: spec-driven
 context: |
   验收基线（低于基线一律判失败，不许解释过去）：
     bash scripts/run_local.sh verify  →  ≥ 258 条 PASS / 0 FAIL，11 套结论全部通过
-    mvn -B test                       →  ≥ 240 全过
+    mvn -B test                       →  ≥ 242 全过
   这两个数字随功能增加只升不降；新增用例后把新基线写回本文件。
 
   Maven 命令前缀（本机 JDK/Maven 不在 PATH）：
