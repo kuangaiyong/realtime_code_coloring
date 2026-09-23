@@ -278,23 +278,23 @@ class ArtifactControllerTest {
      * CI 红了之后排查方向就会被引到错误的一侧：包明明是好的，却让人反复去查包。
      * 口径与平台既有的 {@code ProjectOperationException}（400 / 409 / 503 三分）一致。
      *
-     * <p>这里用「删不干净」来制造一次真实的平台侧故障（DOS 只读位），不用替身。
+     * <p>这里用「采集正读着产物」来制造一次真实的平台侧故障：照 JaCoCo 的方式占住一个 class，
+     * 删除挪不开这个构建。不用替身。
      */
     @Test
     void 平台侧故障报五百而不是四百(@TempDir Path root) throws Exception {
         ArtifactStore store = new ArtifactStore(root, 10);
         ArtifactController c = new ArtifactController(store);
-        c.upload("demo", OK, "java", zip("stuck.class", "删不掉的那份"));
+        c.upload("demo", OK, "java", zip("held.class", "正被读的那份"));
         Path dir = store.find("demo", OK, ArtifactKind.JAVA).orElseThrow();
-        Files.setAttribute(dir.resolve("stuck.class"), "dos:readonly", true);
 
-        try {
+        try (java.io.FileInputStream held = new java.io.FileInputStream(dir.resolve("held.class").toFile())) {
             ArtifactOperationException e = assertThrows(ArtifactOperationException.class,
                     () -> c.delete("demo", OK));
             assertTrue(e.status().is5xxServerError(),
-                    "平台删不掉自己的文件，却报成了调用方的错：" + e.status());
-        } finally {
-            Files.setAttribute(dir.resolve("stuck.class"), "dos:readonly", false);
+                    "平台自己的采集占着文件，却报成了调用方的错：" + e.status());
+            // CI 看到的就是这句：得知道产物还完整、稍后重试即可，而不是去查「删到一半」的残留
+            assertTrue(e.getMessage().contains("原封未动"), e.getMessage());
         }
     }
 

@@ -140,8 +140,10 @@ def drop_artifact(build):
     """删一个构建的产物。
 
     Windows 上删不掉正被占用的文件：平台可能正拿着解压出来的 class / rust 产物做归一化
-    （jacoco 读 .class、llvm-cov 开着产物），此时 remove 删不干净会抛错回 500。
-    这是瞬时的，重试即可 —— 与 ArtifactStore.moveAtomic 重试的是同一类占用。
+    （jacoco 读 .class、llvm-cov 开着产物），此时整个构建目录挪不开，回 500、产物原封未动。
+    这是瞬时的，重试即可。
+    （早先 remove 是原地逐个删，撞上占用会删成半截、半截目录照样被当成就绪 ——
+    这里的重试当时只是把那个中间态糊了过去。2026-09-23 改成先整体挪开再删之后才真的没有中间态）
     """
     status, body = 0, {}
     for i in range(4):

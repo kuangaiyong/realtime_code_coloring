@@ -133,9 +133,10 @@ public class ArtifactController {
         try {
             store.remove(project, buildId);
         } catch (IOException e) {
-            // 删不干净就不能说删掉了：残留会被当成一份就绪的产物用
+            // 挪不开就是没删，不能说删掉了。store 的报错里已经写清产物原封未动、稍后重试，
+            // 这里不再加「没删干净」之类的前缀 —— 那会让人以为盘上留了半截
             log.error("产物删除失败：项目 {} / 构建 {}", project, buildId, e);
-            throw ArtifactOperationException.failed("产物没有删干净：" + e.getMessage());
+            throw ArtifactOperationException.failed(e.getMessage());
         }
         return Map.of("ok", true, "project", project, "buildId", buildId);
     }
