@@ -20,7 +20,7 @@
 | **A. 完整复刻（本手册主线）** | 平台 + 8 个演示被测服务（Java / Go / C++ / Rust 各 2 台）+ 一键验收 | 第一次部署，用来证明这台机器的环境装对了 |
 | **B. 只用平台接你自己的服务** | 平台 + 所接语言对应的工具链 | A 跑通之后，接真实业务（见第 8 节） |
 
-**建议先走通 A，再做 B。** A 最后的验收结果（259 PASS / 0 FAIL，11 套全部通过）
+**建议先走通 A，再做 B。** A 最后的验收结果（306 PASS / 0 FAIL，11 套全部通过）
 是「工具链版本对、路径对、数据库通」唯一可靠的证据。跳过它直接接业务服务，
 出了问题会分不清是环境没装对，还是接入方式不对。
 
@@ -54,7 +54,7 @@
 3. 下载几个安装包              ──拷贝──▶   6. 取出仓库、建库、写 .env.local
                                            7. bash scripts/run_local.sh start
                                            8. bash scripts/run_local.sh verify
-                                              → 259 PASS / 0 FAIL，11 套全部通过
+                                              → 306 PASS / 0 FAIL，11 套全部通过
 ```
 
 ### 0.4 硬件与耗时
@@ -532,7 +532,7 @@ bash scripts/run_local.sh start
 
 它会依次做这几件事：
 
-1. `mvn clean package`：构建平台和 Java 演示服务，并跑完 246 条单测（第一次会下载 Maven 依赖）；
+1. `mvn clean package`：构建平台和 Java 演示服务，并跑完 255 条单测（第一次会下载 Maven 依赖）；
 2. 带覆盖率插桩构建 Go 演示服务（`-cover -covermode=atomic -tags=goverage`）；
 3. 带覆盖率插桩构建 C++ 演示服务（`--coverage`）；
 4. 带覆盖率插桩构建 Rust 演示服务（msvc 目标 + `-C instrument-coverage`）；
@@ -586,7 +586,7 @@ tail -3 .run/verify.log
 grep -c '验收结论：全部通过'     .run/verify.log   # 期望 9
 grep -c '推送链路验证：全部通过' .run/verify.log   # 期望 1
 grep -c '前端验收：全部通过'     .run/verify.log   # 期望 1
-grep -c '\[PASS\]' .run/verify.log                # 期望 259
+grep -c '\[PASS\]' .run/verify.log                # 期望 306
 grep -c '\[FAIL\]' .run/verify.log                # 期望 0
 ```
 
@@ -605,7 +605,7 @@ grep -c '\[FAIL\]' .run/verify.log                # 期望 0
   不要直接跑 `verify`：它会先把 8 个实例拉起来，这时 Java 实例已经占住了
   `platform/target/classes/probe/jacocoagent.jar`，接着再跑 `start` 时，`mvn clean` 会因为删不掉这个文件而失败。
 
-**得到「11 套全部通过、259 PASS / 0 FAIL」，形态 A 的部署就完成了。**
+**得到「11 套全部通过、306 PASS / 0 FAIL」，形态 A 的部署就完成了。**
 
 ---
 
