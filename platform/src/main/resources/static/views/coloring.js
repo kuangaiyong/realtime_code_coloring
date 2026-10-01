@@ -1,7 +1,8 @@
-import { store, openFile, hasData } from '../store.js';
+import { store, openFile, hasData, setFollow, pauseFollow, resumeFollow, firstNewLine,
+         clearNewLines } from '../store.js';
 import { pctClass } from '../api.js';
 
-const { computed, ref, watch, nextTick } = Vue;
+const { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /** CSV 单元格。逗号、引号、换行都必须裹起来，否则一个包名里的逗号就把列错开了 */
 function cell(v) {
@@ -153,11 +154,216 @@ export const Coloring = {
       if (el) el.scrollIntoView({ block: 'center' });
     }, { immediate: true });
 
+    /**
+     * 状态符号。给色弱的人一个不靠颜色的通道 —— 红绿两条色条明度相近，只靠颜色分不出。
+     * diff 之外的行（OUT）不参与染色，也就没有符号
+     */
+    const GLYPH = { COVERED: '✓', MISSED: '✕', PARTIAL: '◐' };
+    const lineState = (r) => r.inDiff === false ? 'OUT' : r.status;
+
+    /**
+     * 部分分支行的悬停提示。数字取接口逐行给的 coveredBranches / missedBranches，
+     * 不在前端推算；拿不到分支数（Go / Rust，或非部分分支行）就不给提示 ——
+     * 写成「分支 0/0」会被读成「一个分支都没测」
+     */
+    function branchTip(r) {
+      if (lineState(r) !== 'PARTIAL' || r.coveredBranches == null || r.missedBranches == null) return null;
+      return '分支 ' + r.coveredBranches + '/' + (r.coveredBranches + r.missedBranches) + ' 已覆盖';
+    }
+
+    /** token 类型 → class：「string interpolation」→「tk-string tk-interpolation」；普通文本不加 class */
+    const tkClass = (type) => (type ? type.split(' ').map(t => 'tk-' + t).join(' ') : null);
+
+    // ---------- 实时：动态条、跟随、列表高亮、新亮起标记 ----------
+    // 半秒走一格：「N 秒前」、列表高亮的消退、「跟随已暂停」的到期都靠它刷新
+    const now = ref(Date.now());
+    const ticker = setInterval(() => { now.value = Date.now(); }, 500);
+    onBeforeUnmount(() => clearInterval(ticker));
+
+    const followOn = computed({ get: () => store.follow, set: (v) => setFollow(v) });
+    const paused = computed(() => store.follow && now.value < store.followPausedUntil);
+
+    /**
+     * 人在染色页上点、滚、按键 → 暂停跟随 10 秒。跟随开关与「继续」本身不算（标了 data-follow-ctl）：
+     * 刚打开跟随就被这一下暂停，看起来像开关没生效
+     */
+    function onUser(e) {
+      if (e.target && e.target.closest && e.target.closest('[data-follow-ctl]')) return;
+      pauseFollow();
+    }
+
+    const nameOf = (p) => p.slice(p.lastIndexOf('/') + 1);
+    function ago(at) {
+      const s = Math.max(0, Math.floor((now.value - at) / 1000));
+      return s < 1 ? '刚刚' : s < 60 ? s + ' 秒前' : Math.floor(s / 60) + ' 分钟前';
+    }
+
+    /** 点动态条上的一条：打开那个文件，滚到它新亮起的第一行 */
+    function openChange(c) {
+      pauseFollow();
+      store.jumpToLine = firstNewLine(c.path) || Math.min(...c.lines);
+      openFile(c.path);
+    }
+
+    /** 文件列表：最近 4 秒内有新亮起的文件亮一下，并标出那一次的 +N */
+    const isChanged = (p) => !!store.changedAt[p] && now.value - store.changedAt[p] < 4000;
+    const latestDelta = (p) => store.changedDelta[p];
+
+    // 跟随把人带到别的文件时，左边列表也跟过去，不然人不知道这是哪一项
+    watch(() => store.current, async (p) => {
+      if (!p) return;
+      await nextTick();
+      const el = [...document.querySelectorAll('[data-testid="file-item"]')].find(e => e.dataset.path === p);
+      if (el) el.scrollIntoView({ block: 'nearest' });
+    });
+
+    /**
+     * 当前文件里这次打开页面以来新亮起的行。增量口径下基线之外的行（OUT）不参与染色，也不标。
+     *
+     * 按<b>正在渲染的那份文件</b>（store.file.path）取，不按 store.current：切文件时 store.current 先变、
+     * 新文件的行还在路上，那一两百毫秒里屏幕上仍是旧文件 —— 按 current 取会把新文件的行号标到旧文件的同号行上
+     */
+    const newSet = computed(() => new Set((store.file && store.newLines[store.file.path]) || []));
+    const isNew = (r) => r.inDiff !== false && newSet.value.has(r.line);
+    const newCount = computed(() => (store.file && store.file.found ? store.file.rows.filter(isNew).length : 0));
+
+    // ---------- 文件墙 ----------
+    const mode = ref('list');
+    /** 按包分组；跟着过滤框走（与列表看到的是同一批文件） */
+    const wallGroups = computed(() => {
+      const m = new Map();
+      for (const f of files.value) {
+        const k = f.packageName || '（根目录）';
+        if (!m.has(k)) m.set(k, []);
+        m.get(k).push(f);
+      }
+      return [...m.entries()].map(([pkg, fs]) => ({ pkg, files: fs }));
+    });
+    const clearNew = () => clearNewLines(store.file.path);
+
+    // ---------- 缩略条：整份文件的四态缩成右边一条，新亮起的行更亮，框出当前看到的那一段 ----------
+    const srcEl = ref(null);
+    const mmEl = ref(null);
+
+    /**
+     * 计数与作图都和行渲染用<b>同一份</b> store.file.rows、同一个状态表达式（lineState / isNew），
+     * 一次遍历算完。另算一份的话，两边迟早对不上 —— 缩略条上一片绿、源码里却是红的，比没有缩略条更糟
+     */
+    const mm = computed(() => {
+      const c = { lines: 0, covered: 0, missed: 0, partial: 0, new: 0 };
+      for (const r of (store.file && store.file.found ? store.file.rows : [])) {
+        c.lines++;
+        const s = lineState(r);
+        if (s === 'COVERED') c.covered++;
+        else if (s === 'MISSED') c.missed++;
+        else if (s === 'PARTIAL') c.partial++;
+        if (isNew(r)) c.new++;
+      }
+      return c;
+    });
+
+    const BAR = { COVERED: '--cov-covered-bar', MISSED: '--cov-missed-bar', PARTIAL: '--cov-partial-bar' };
+    function drawMinimap() {
+      const cv = mmEl.value, src = srcEl.value;
+      if (!cv || !src) return;
+      const rows = store.file && store.file.found ? store.file.rows : [];
+      const w = 12, h = src.clientHeight, dpr = window.devicePixelRatio || 1;
+      cv.style.height = h + 'px';
+      cv.width = w * dpr;
+      cv.height = Math.max(1, Math.round(h * dpr));
+      const g = cv.getContext('2d');
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, w, h);
+      if (!rows.length || !h) return;
+      const css = getComputedStyle(document.documentElement);
+      // 按行等分整条高度：文件比一屏短时每行就是一段粗条，不会只占顶上一小截、下面一片空白
+      const step = h / rows.length;
+      rows.forEach((r, i) => {
+        const v = BAR[lineState(r)];
+        if (!v) return;
+        const fresh = isNew(r);
+        g.globalAlpha = fresh ? 1 : 0.5;
+        g.fillStyle = css.getPropertyValue(v).trim();
+        g.fillRect(fresh ? 0 : 3, i * step, fresh ? w : w - 3, Math.max(1, step));
+      });
+      // 当前看到的那一段
+      const top = src.scrollTop / src.scrollHeight * h;
+      const bottom = (src.scrollTop + src.clientHeight) / src.scrollHeight * h;
+      g.globalAlpha = 1;
+      g.strokeStyle = css.getPropertyValue('--el-text-color-secondary').trim();
+      g.lineWidth = 1;
+      g.strokeRect(0.5, top + 0.5, w - 1, Math.max(2, bottom - top - 1));
+    }
+
+    /** 点或按住拖：把那个位置滚到源码区中间 */
+    function mmDown(e) {
+      const move = (ev) => {
+        const cv = mmEl.value, src = srcEl.value;
+        if (!cv || !src) return;
+        const r = cv.getBoundingClientRect();
+        const y = Math.min(Math.max(ev.clientY - r.top, 0), r.height);
+        src.scrollTop = y / r.height * src.scrollHeight - src.clientHeight / 2;
+      };
+      const up = () => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+      };
+      move(e);
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+    }
+
+    watch([() => store.file, newSet], () => nextTick(drawMinimap));
+    // 源码区高度随窗口变、主题切换换一套颜色：都要重画，否则缩略条停在旧尺寸 / 旧配色上
+    let resizeObs = null;
+    let themeObs = null;
+    onMounted(() => {
+      resizeObs = new ResizeObserver(() => drawMinimap());
+      if (srcEl.value) resizeObs.observe(srcEl.value);
+      themeObs = new MutationObserver(() => drawMinimap());
+      themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+      drawMinimap();
+    });
+    onBeforeUnmount(() => {
+      if (resizeObs) resizeObs.disconnect();
+      if (themeObs) themeObs.disconnect();
+    });
+
     return { store, all, files, sorted, keyword, emptyHint, ratioText, openFile, hit,
-             pctClass, hasData, CHANGE, metricsOf, exportCsv, incremental };
+             followOn, paused, onUser, resumeFollow, nameOf, ago, openChange, isChanged, latestDelta, isNew,
+             newCount, clearNew, srcEl, mmEl, mm, drawMinimap, mmDown, mode, wallGroups,
+             pctClass, hasData, CHANGE, metricsOf, exportCsv, incremental,
+             GLYPH, lineState, branchTip, tkClass };
   },
   template: `
-<div class="view coloring" data-testid="view-coloring">
+<div class="view coloring" data-testid="view-coloring"
+     @pointerdown.capture="onUser" @wheel.capture.passive="onUser" @keydown.capture="onUser">
+  <!-- 实时动态条：横跨两栏放在最上面 —— 「刚才那几下测到了哪些文件」是这一页最该先看见的。
+       图例也收进这一条的右端，省下源码卡片里那一行的高度 -->
+  <div class="live-bar" data-testid="live-bar">
+    <span class="live-dot" :class="{ on: store.recentChanges.length > 0 }"></span><span class="live-label">实时</span>
+    <span class="live-follow" data-follow-ctl title="有新亮起的行时，自动打开变化最多的文件并滚到新行；你在页面上点、滚、按键后暂停 10 秒">
+      <el-switch v-model="followOn" size="small" data-testid="follow-toggle" :data-on="store.follow ? '1' : '0'" />跟随
+    </span>
+    <span v-if="paused" class="live-paused" data-testid="follow-paused" data-follow-ctl>跟随已暂停 ·
+      <a data-testid="follow-resume" @click="resumeFollow">继续</a></span>
+    <div class="live-list">
+      <span v-if="!store.recentChanges.length" class="live-empty" data-testid="live-empty">等待下一次覆盖变化…（调一下被测接口，刚亮起的文件会列在这里）</span>
+      <button v-for="c in store.recentChanges" :key="c.path + '@' + c.at" class="live-change"
+              data-testid="live-change" :data-path="c.path" :data-delta="c.delta" :data-at="c.at" :data-lines="c.lines.join(',')"
+              :title="c.path + ' 新亮起 ' + c.delta + ' 行'" @click="openChange(c)">
+        <b>{{ nameOf(c.path) }}</b> +{{ c.delta }} 行 · {{ ago(c.at) }}
+      </button>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--cov-covered-bar)"></i>✓ 已覆盖</span>
+      <span><i style="background:var(--cov-partial-bar)"></i>◐ 部分分支</span>
+      <span><i style="background:var(--cov-missed-bar)"></i>✕ 未覆盖</span>
+      <span><i style="background:var(--el-border-color)"></i>非可执行</span>
+      <span class="fi" title="探针为布尔型，只记录是否执行，不记录执行次数">ⓘ</span>
+    </div>
+  </div>
+
   <div class="card">
     <div class="card-head">
       <h2>源文件</h2>
@@ -174,17 +380,37 @@ export const Coloring = {
     <div class="filter">
       <el-input v-model="keyword" size="small" clearable placeholder="按文件名 / 包名 / 路径过滤"
                 data-testid="file-filter" />
+      <div class="seg mini" title="列表看明细；文件墙一屏看完整个项目哪片测到了、哪片还空着">
+        <button :class="{ on: mode === 'list' }" data-testid="coloring-mode-list" @click="mode = 'list'">列表</button>
+        <button :class="{ on: mode === 'wall' }" data-testid="coloring-mode-wall" @click="mode = 'wall'">文件墙</button>
+      </div>
     </div>
-    <div data-testid="file-list">
+    <!-- 文件墙：每个文件一格、按包分组、按覆盖率三档上色（与列表的百分比同一套 pctClass），刚有新亮起的格子脉动几下。
+         只放在染色页 —— 同一件事只在一个视图里出现 -->
+    <div v-if="mode === 'wall'" class="file-wall" data-testid="file-wall">
+      <div v-if="!files.length" class="empty">{{ emptyHint }}</div>
+      <div v-for="g in wallGroups" :key="g.pkg" class="wall-group">
+        <div class="wall-pkg" :title="g.pkg">{{ g.pkg }}</div>
+        <div class="wall-tiles">
+          <button v-for="f in g.files" :key="f.path" class="tile" :class="[pctClass(f.ratio), { on: f.path === store.current }]"
+                  data-testid="wall-tile" :data-path="f.path" :data-level="pctClass(f.ratio)"
+                  :data-changed="isChanged(f.path) ? '1' : null"
+                  :title="f.sourceFileName + ' · ' + f.ratio + '%（行 ' + f.coveredLines + '/' + (f.coveredLines + f.missedLines) + '）'"
+                  @click="openFile(f.path)"></button>
+        </div>
+      </div>
+    </div>
+    <div v-else class="file-list" data-testid="file-list">
       <div v-if="!files.length" class="empty">{{ emptyHint }}</div>
       <!-- 两行式：左栏是固定 300px，一行放不下三组数。第一行是找文件用的
            （名字 + 那个百分比），第二行才是三组明细 -->
       <button v-for="f in sorted" :key="f.path"
               class="file" :class="{ on: f.path === store.current }"
-              data-testid="file-item" :data-path="f.path"
+              data-testid="file-item" :data-path="f.path" :data-changed="isChanged(f.path) ? '1' : null"
               @click="openFile(f.path)">
         <span class="row1">
           <span class="nm" :title="f.path">{{ f.sourceFileName }}</span>
+          <span v-if="isChanged(f.path)" class="fdelta" data-testid="file-delta">+{{ latestDelta(f.path) }}</span>
           <!-- 只有增量口径才有「新增 / 修改」可言，全量列的是产物里的全部文件；
                服务端也只在增量口径下给 changeType，这里跟着它走而不是自己判 -->
           <span v-if="f.changeType" class="ct" :class="f.changeType.toLowerCase()"
@@ -203,33 +429,42 @@ export const Coloring = {
                所以这一项整个不显示 -->
           <span v-if="!incremental" :class="{ na: !metricsOf(f).me }">法 {{ metricsOf(f).me || '不提供' }}</span>
         </span>
+        <!-- 行覆盖率细条：扫一眼列表就知道哪些文件绿了一片、哪些还空着，不用逐个读百分比 -->
+        <span class="bar"><i :class="pctClass(f.ratio)" :style="{ width: f.ratio + '%' }"></i></span>
       </button>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-head">
+    <div class="card-head src-head">
       <h2 data-testid="current-path">{{ store.current || '未选择文件' }}</h2>
       <span class="sub" data-testid="current-ratio">{{ ratioText }}</span>
+      <!-- 只在这个文件有新亮起标记时出现；清的只是标记，动态条上的记录不动 -->
+      <!-- 用与覆盖率同号的文字按钮而不是 el-button：后者 24px 高，1280 宽卡片头折行时会把第二行撑高、整页多出滚动条 -->
+      <button v-if="newCount" class="clear-new" data-testid="btn-clear-new"
+              title="清掉这个文件里行号旁的「新亮起」圆点（动态条上的记录保留）"
+              @click="clearNew">清除标记 {{ newCount }}</button>
     </div>
-    <div class="legend">
-      <span><i style="background:var(--el-color-success)"></i>已覆盖</span>
-      <span><i style="background:var(--el-color-warning)"></i>部分分支</span>
-      <span><i style="background:var(--el-color-danger)"></i>未覆盖</span>
-      <span><i style="background:var(--el-border-color)"></i>非可执行行</span>
-      <span style="margin-left:auto">探针为布尔型，只记录是否执行，不记录执行次数</span>
-    </div>
-    <div class="src" data-testid="source">
+    <div class="src-wrap">
+    <div class="src" data-testid="source" ref="srcEl" @scroll.passive="drawMinimap">
       <div v-if="!store.file" class="empty">在左侧选择一个文件</div>
       <div v-else-if="!store.file.found" class="err">{{ store.file.error || '未找到该文件' }}</div>
       <template v-else>
         <div v-for="r in store.file.rows" :key="r.line"
              class="ln"
              :class="r.inDiff === false ? 'out' : [r.status, { flash: r.justCovered, hit: r.line === hit }]"
-             :data-testid="'line-' + r.line" :data-status="r.inDiff === false ? 'OUT' : r.status">
-          <span class="no">{{ r.line }}</span><span class="tx">{{ r.text }}</span>
+             :data-testid="'line-' + r.line" :data-status="r.inDiff === false ? 'OUT' : r.status"
+             :data-new="isNew(r) ? '1' : null" :title="branchTip(r)">
+          <span class="no">{{ r.line }}</span><span class="gl" :data-testid="GLYPH[lineState(r)] ? 'cov-glyph' : null">{{ GLYPH[lineState(r)] || '' }}</span><span class="tx"><!-- 逐段文本插值，不用 v-html：源码里的 < 只会是文本
+          --><template v-if="r.tokens"><span v-for="(t, i) in r.tokens" :key="i" :class="tkClass(t.type)">{{ t.text }}</span></template><template v-else>{{ r.text }}</template></span>
         </div>
       </template>
+    </div>
+    <canvas class="minimap" data-testid="minimap" ref="mmEl"
+            :data-lines="mm.lines" :data-covered="mm.covered" :data-missed="mm.missed"
+            :data-partial="mm.partial" :data-new="mm.new"
+            title="整份文件的缩略：亮的是新亮起的行，框出来的是当前看到的那一段；点或拖动跳过去"
+            @mousedown="mmDown"></canvas>
     </div>
   </div>
 </div>`

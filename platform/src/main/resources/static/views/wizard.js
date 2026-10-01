@@ -136,6 +136,15 @@ export const Wizard = {
       if (takenIds.value.includes(draft.id)) return '标识 ' + draft.id + ' 已被占用';
       return null;
     });
+    // 拦不拦（blocker）照旧看 basicError；<b>显不显示</b>另看人动没动过：一打开就报「项目名不能为空」，
+    // 等于人还没动手先挨骂。碰过出错的那个字段、或点过「下一步」才显示
+    const touched = reactive({ name: false, id: false });
+    const tried = ref(false);
+    const basicShown = computed(() => {
+      const e = basicError.value;
+      if (!e || tried.value) return e;
+      return touched[draft.name.trim() ? 'id' : 'name'] ? e : null;
+    });
 
     const gateError = computed(() => {
       const g = draft.gate;
@@ -207,6 +216,7 @@ export const Wizard = {
       if (['repo', 'instances', 'paths'].includes(k)) {
         await checkCurrent();
       }
+      tried.value = true;
       const why = blocker();
       if (why) {
         ElementPlus.ElMessage.warning(why);
@@ -260,7 +270,7 @@ export const Wizard = {
     const checkItems = computed(() => Object.values(items.value));
 
     return { STEPS, LANG, PORTS, step, busy, draft, rows, instances, languages, pathFields,
-      items, checkItems, basicError, gateError, blocker, checkCurrent, next, prev,
+      items, checkItems, basicError, basicShown, touched, gateError, blocker, checkCurrent, next, prev,
       allOk, create, addRow, removeRow, onLangChange, emit };
   },
   template: `
@@ -283,10 +293,12 @@ export const Wizard = {
         <div class="note info">项目标识会落进 URL 路径、WebSocket 查询串和历史表的分区键，
           所以只收小写字母、数字、下划线和横杠。<b>建好之后不能改</b>。</div>
         <div class="fld"><label>项目名</label>
-          <el-input v-model="draft.name" data-testid="wz-name" placeholder="给人看的名字，例如 订单服务" /></div>
+          <el-input v-model="draft.name" data-testid="wz-name" placeholder="给人看的名字，例如 订单服务"
+                    @input="touched.name = true" @blur="touched.name = true" /></div>
         <div class="fld"><label>项目标识</label>
-          <el-input v-model="draft.id" data-testid="wz-id" placeholder="order-svc" /></div>
-        <div v-if="basicError" class="err" data-testid="wz-error">{{ basicError }}</div>
+          <el-input v-model="draft.id" data-testid="wz-id" placeholder="order-svc"
+                    @input="touched.id = true" @blur="touched.id = true" /></div>
+        <div v-if="basicShown" class="err" data-testid="wz-error">{{ basicShown }}</div>
       </template>
 
       <!-- 2 代码仓库 -->

@@ -2,12 +2,27 @@ import { store, loadPerInstance } from '../store.js';
 import { api, esc, copyText, LANG, pctClass } from '../api.js';
 // 四种语言的接入定义与「接入帮助」页共用一份，见 onboard-data.js 的说明
 import { MARK, run, OB, OB_HINT } from './onboard-data.js';
+import { Help } from './help.js';
 
-const { computed, ref, watch } = Vue;
+const { computed, ref, watch, onBeforeUnmount } = Vue;
 
 
 export const Onboard = {
+  components: { Help },
   setup() {
+    // ---- 页签：接入步骤 / 接入帮助 ----
+    // 帮助原先单占一个菜单项；接入要看的说明与要填的表单本是一件事，拆成两个菜单项要来回跑。
+    // 页签跟着地址走：#/p/<id>/help[/lang] 落在帮助页签（深链接、下面「详细说明」的链接都靠它）。
+    // onboard 与 help 两条路由渲染的是同一个组件，切换时不会重新挂载，所以要自己听地址变化
+    const tabOf = () => (/^#\/p\/[^/]+\/help(\/|$)/.test(location.hash) ? 'help' : 'guide');
+    const tab = ref(tabOf());
+    const onHash = () => { tab.value = tabOf(); };
+    window.addEventListener('hashchange', onHash);
+    onBeforeUnmount(() => window.removeEventListener('hashchange', onHash));
+    function setTab(t) {
+      location.hash = '#/p/' + encodeURIComponent(store.projectId) + (t === 'help' ? '/help' : '/onboard');
+    }
+
     const lang = ref('java');
     const copyLabel = ref('复制');
 
@@ -296,11 +311,18 @@ export const Onboard = {
       form, setField, cfgCopyLabel, copyCfg, toSettings, missingFields,
       artifact, allFilled, anyConnected, probing, probeOne, probeText,
       src, inst, checkMeta, checkEmpty, langOf, todo,
-      store, perInstMap, perInstOf, loadPerInstance, pctClass
+      store, perInstMap, perInstOf, loadPerInstance, pctClass, tab, setTab
     };
   },
   template: `
 <div class="view" data-testid="view-onboard">
+  <div class="seg ob-tabs">
+    <button :class="{ on: tab === 'guide' }" data-testid="ob-tab-guide" @click="setTab('guide')">接入步骤</button>
+    <button :class="{ on: tab === 'help' }" data-testid="ob-tab-help" @click="setTab('help')">接入帮助</button>
+  </div>
+  <!-- v-if 而不是 v-show：帮助里全是说明块，留在 DOM 里的话接入页就又成了「一屏文档裹着一个表单」 -->
+  <Help v-if="tab === 'help'" />
+  <template v-else>
   <div class="card">
     <div class="card-head">
       <h2>接入向导</h2>
@@ -463,5 +485,6 @@ export const Onboard = {
       </div>
     </template>
   </div>
+  </template>
 </div>`
 };

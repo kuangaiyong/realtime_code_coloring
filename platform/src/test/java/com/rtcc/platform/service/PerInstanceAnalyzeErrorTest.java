@@ -8,6 +8,7 @@ import com.rtcc.platform.collector.GitService;
 import com.rtcc.platform.collector.GoCoverageAnalyzer;
 import com.rtcc.platform.collector.GoProbeClient;
 import com.rtcc.platform.collector.ProbeClient;
+import com.rtcc.platform.collector.ProbeDump;
 import com.rtcc.platform.collector.RustCoverageAnalyzer;
 import com.rtcc.platform.collector.RustProbeClient;
 import com.rtcc.platform.config.CoverageProperties;
@@ -53,9 +54,14 @@ class PerInstanceAnalyzeErrorTest {
     /**
      * 被测 JVM 的主类。先让一个方法正常返回再挂起 —— JaCoCo 的探针打在出口上，
      * 停在 sleep 里的 main 永远等不到自己的探针，对照组就拿不到一行覆盖。
+     *
+     * <p>{@code touch()} 之前故意停 2 秒：agent 在 premain 里就打开了探针端口，早于 main。
+     * 这里把这个真实时序放大成必现 —— 就绪判断一旦退回「能 dump 就算好」，对照组每次都挂，
+     * 而不是偶尔挂一次（实测过：机器一忙约 7 次撞上 1 次，start 因此整体失败）。
      */
     public static class Idle {
         public static void main(String[] args) throws InterruptedException {
+            Thread.sleep(2000);
             touch();
             Thread.sleep(Long.MAX_VALUE);
         }
@@ -87,26 +93,52 @@ class PerInstanceAnalyzeErrorTest {
                 .redirectErrorStream(true)
                 .redirectOutput(tmp.resolve("target.log").toFile())
                 .start();
-        // 等到真能 dump 出数据才算探针就绪，而不是只等端口开
+        // 等到 Idle 真有探针命中才算就绪，而不是端口通了、能 dump 就算：
+        // agent 在 premain 里就打开了端口，那时 main 可能还没跑到 touch()，
+        // 对照组就会读到 0 行覆盖（实测撞上过：机器一忙，start 因此整体失败）
+        String idle = Idle.class.getName().replace('.', '/');
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
         while (true) {
+            String notYet;
             try {
-                new ProbeClient().dump("127.0.0.1", port, false, 1000);
-                return;
-            } catch (IOException e) {
-                if (!target.isAlive() || System.nanoTime() > deadline) {
-                    fail("被测 JVM 的探针没起来：" + e + "\n" + Files.readString(tmp.resolve("target.log")));
+                ProbeDump dump = new ProbeClient().dump("127.0.0.1", port, false, 1000);
+                if (dump.exec().getContents().stream().anyMatch(d -> d.getName().equals(idle) && d.hasHits())) {
+                    return;
                 }
-                Thread.sleep(100);
+                notYet = "探针已通，但 Idle 还没有任何命中";
+            } catch (IOException e) {
+                notYet = e.toString();
             }
+            if (!target.isAlive() || System.nanoTime() > deadline) {
+                fail("被测 JVM 没有就绪：" + notYet + "\n" + Files.readString(tmp.resolve("target.log")));
+            }
+            Thread.sleep(100);
         }
     }
 
     @AfterAll
-    static void stopProbe() throws InterruptedException {
-        // 要等它真退出：它握着 tmp 里的 agent，没退干净就轮到 @TempDir 清理，Windows 上会删不掉
-        if (target != null) {
-            target.destroyForcibly().waitFor(10, TimeUnit.SECONDS);
+    static void stopProbe() throws IOException, InterruptedException {
+        if (target == null) {
+            return;
+        }
+        if (!target.destroyForcibly().waitFor(10, TimeUnit.SECONDS)) {
+            fail("被测 JVM 10 秒内没有退出");
+        }
+        // 进程退出之后，Windows 还要几十毫秒才放开它握过的 agent 和日志（实测 8 次里 6 次要多等约 30ms）。
+        // 不等这一下，紧接着的 @TempDir 清理会撞上「另一个程序正在使用此文件」，把整个测试类判失败 ——
+        // 与被测行为无关，却会让 start 随机失败（连跑时约 4 次撞上 1 次）
+        for (Path p : List.of(tmp.resolve("jacocoagent.jar"), tmp.resolve("target.log"))) {
+            for (int i = 0; ; i++) {
+                try {
+                    Files.deleteIfExists(p);
+                    break;
+                } catch (IOException e) {
+                    if (i >= 40) {
+                        throw e;
+                    }
+                    Thread.sleep(50);
+                }
+            }
         }
     }
 

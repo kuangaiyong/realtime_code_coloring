@@ -22,6 +22,17 @@
 <script src="/vendor/vue.global.prod.js"></script>
 <script src="/vendor/element-plus.full.min.js"></script>
 <script src="/vendor/element-plus-icons.iife.min.js"></script>
+<!-- 语法高亮只用 Prism 的分词（syntax.js 调 Prism.tokenize），不让它自己扫描页面：
+     manual 必须在 prism-core 之前设好，否则它会在 DOMContentLoaded 时去改写页面上的 code 元素。
+     组件按依赖顺序加载：c 依赖 clike，cpp 依赖 c -->
+<script>window.Prism = { manual: true };</script>
+<script src="/vendor/prism/prism-core.min.js"></script>
+<script src="/vendor/prism/prism-clike.min.js"></script>
+<script src="/vendor/prism/prism-c.min.js"></script>
+<script src="/vendor/prism/prism-cpp.min.js"></script>
+<script src="/vendor/prism/prism-java.min.js"></script>
+<script src="/vendor/prism/prism-go.min.js"></script>
+<script src="/vendor/prism/prism-rust.min.js"></script>
 <script>
   // 三个 vendor 少一个，下面的 ES module 就会以「Vue is not defined」静默失败，
   // 页面停在「加载中…」上不动。宁可把原因写在脸上

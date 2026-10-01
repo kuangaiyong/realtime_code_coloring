@@ -1,6 +1,6 @@
 ---
 name: rtcc-probe-setup
-description: 四种语言被测服务的启动约定与探针编译方式：Java 的 javaagent 参数、Go 的 build tag 探针与 -covermode=atomic、C++ 的 gcov 运行期两条硬事实（__gcov_dump 只生效一次、.gcda 会合并）、Rust 的 msvc 目标与 LLVM 两条硬事实。接被测服务、排查「采不到数据」、加新语言时读这份。
+description: 四种语言被测服务的启动约定与探针编译方式：Java 的 javaagent 参数、Go 的 build tag 探针与 -covermode=atomic、C++ 的 gcov 运行期两条硬事实（__gcov_dump 只生效一次、.gcda 会合并）、Rust 的 msvc 目标与 LLVM 两条硬事实。接被测服务、排查「采不到数据」、加新语言、在单测里拉起真实探针时读这份。
 ---
 
 ## 四、被测服务的启动约定
@@ -17,6 +17,12 @@ description: 四种语言被测服务的启动约定与探针编译方式：Java
 多实例时每台用不同的探针端口，逐个填进平台的 `coverage.instances`。
 **各实例的 sessionid 必须完全一致（含 `-dirty` 后缀）**：commit 相同但一台脏一台净，
 加载的是两份不同的字节码，平台会判为版本冲突并拒绝出增量报告。
+
+**JaCoCo agent 的一条时序硬事实**（单测里踩过，让 `start` 随机失败）：tcpserver 在 `premain` 里
+就打开了，**早于 `main`** —— 端口通了、能 dump，不等于业务代码已经跑过。要以「探针真有命中」
+（`ExecutionData.hasHits()`）作为就绪判据，写法见 `PerInstanceAnalyzeErrorTest`。
+在 Windows 上把它拉起来当测试探针时还有一条：进程被杀、`waitFor` 返回之后，它握过的 agent jar
+和日志还要几十毫秒才放开，紧接着删目录会撞上「另一个程序正在使用此文件」，要带重试。
 
 ### Go
 

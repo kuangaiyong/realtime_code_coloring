@@ -649,13 +649,14 @@ async function baselineOptions(page, testid) {
     for (const v of ['coloring', 'overview', 'gate', 'report']) {
       if (await scopedBar(v)) barOn.push(v); else barOff.push(v + '(缺)');
     }
-    for (const v of ['onboard', 'help', 'events', 'settings']) {
+    // 「接入帮助」已并进服务接入页成为页签（不再有 nav-help），它的口径栏由 5g 那条单独验
+    for (const v of ['onboard', 'events', 'settings']) {
       if (await scopedBar(v)) barOff.push(v + '(多)');
     }
     if (barOff.length) {
       fail(`口径栏出现的位置不对：${barOff.join('、')}`);
     } else {
-      pass(`口径栏只出现在会显示数字的 ${barOn.length} 个视图上，设置/事件/接入/帮助页没有`);
+      pass(`口径栏只出现在会显示数字的 ${barOn.length} 个视图上，设置/事件/接入页没有`);
     }
 
     // ---------- 4f · 场景进行中：页面上唯一的解释 ----------
@@ -831,6 +832,19 @@ async function baselineOptions(page, testid) {
         }
       }
     }
+
+    // 门禁是决策点：结论要在首屏，原理说明默认收起 —— 原来结论淹没在四段说明里
+    const gateLayout = await page.evaluate(() => {
+      const verdicts = [...document.querySelectorAll('[data-testid^="gate-verdict-"]')].map(v => v.getBoundingClientRect());
+      const whys = [...document.querySelectorAll('[data-testid="gate-why"]')];
+      return { n: verdicts.length, above: verdicts.every(r => r.bottom <= innerHeight),
+               size: verdicts.length ? parseFloat(getComputedStyle(document.querySelector('[data-testid^="gate-verdict-"]')).fontSize) : 0,
+               whys: whys.length, open: whys.filter(d => d.open).length };
+    });
+    if (gateLayout.n !== 2 || !gateLayout.above) fail(`门禁结论不全在首屏：${JSON.stringify(gateLayout)}`);
+    else if (gateLayout.whys < 2 || gateLayout.open) fail(`门禁原理说明没有默认收起：${JSON.stringify(gateLayout)}`);
+    else if (gateLayout.size < 20) fail(`门禁结论字号 ${gateLayout.size}px，不够醒目`);
+    else pass(`门禁两张结论都在首屏（字号 ${gateLayout.size}px），原理说明默认收起`);
 
     // ---------- 4h · 增量列表的「新增 / 修改」 ----------
     // 值得标出来，是因为两者该看的东西不同：新增文件整份都是这次的责任，一片红说明
@@ -1183,7 +1197,14 @@ async function baselineOptions(page, testid) {
     }
 
     // ---------- 5g · 接入帮助：说明的新家，且支持按语言深链接 ----------
-    await page.click('[data-testid="nav-help"]');
+    // 帮助不再是独立菜单项：从服务接入页的页签进（菜单里少一项，「接入」相关的东西都在一处）
+    if (await page.evaluate(() => !!document.querySelector('[data-testid="nav-help"]'))) fail('菜单里仍有独立的「接入帮助」');
+    else pass('「接入帮助」不再占一个菜单项');
+    await page.click('[data-testid="nav-onboard"]');
+    await waitFor(page, () => !!document.querySelector('[data-testid="view-onboard"]'), null, 5000);
+    const helpTab = await page.$('[data-testid="ob-tab-help"]');
+    if (!helpTab) fail('服务接入页没有「接入帮助」页签');
+    else await helpTab.click();
     if (await waitFor(page, () => !!document.querySelector('[data-testid="view-help"]'), null, 8000) < 0) {
       fail('打不开「接入帮助」视图');
     } else {
@@ -1198,10 +1219,14 @@ async function baselineOptions(page, testid) {
       }
       // 从接入页点某语言的「详细说明」跳过来，必须落在那门语言上 ——
       // 人是带着「我要看 Rust 的」这个意图点过来的，落回 Java 等于没跳
+      // 先切回「接入步骤」再整页打开（书签就是这么进来的）：页签已经停在帮助上的话，
+      // 这条验不出「地址 → 页签」坏没坏（点页签走的是 hashchange，5g 开头已经验过）
+      await page.click('[data-testid="ob-tab-guide"]');
       await page.goto(`${PLATFORM}/#/p/default/help/rust`, { waitUntil: 'networkidle2' });
+      await page.reload({ waitUntil: 'networkidle2' });
       await waitFor(page, () => !!document.querySelector('[data-testid="view-help"]'), null, 8000);
       const onRust = await page.evaluate(() =>
-        !!document.querySelector('[data-testid="hp-lang-rust"].on'));
+        !!document.querySelector('[data-testid="ob-tab-help"].on') && !!document.querySelector('[data-testid="hp-lang-rust"].on'));
       if (!onRust) fail('深链接 /help/rust 没落在 Rust 那一节');
       else pass('帮助页支持按语言深链接（/help/rust 直接落在 Rust）');
       // 帮助页一个覆盖数字都不显示，口径栏不该出现在这里
@@ -1235,8 +1260,17 @@ async function baselineOptions(page, testid) {
     if (primed < 0) die(`调了接口但 ${target.sourceFileName} 没有出现已覆盖行，链路本身就是断的`);
     const before = await page.evaluate(coveredCount);
 
-    // 清零之后这个文件必须一行绿的都不剩 —— 否则下面测的就不是「新覆盖」
+    // 清零会清掉所有实例的计数器、影响所有正在看的人 —— 只点按钮不确认，绝不能生效
     await page.click('[data-testid="btn-reset"]');
+    await sleep(4000);
+    const unconfirmed = await page.evaluate(coveredCount);
+    if (unconfirmed === 0) fail('只点了清零按钮、没点确认，计数器就被清了 —— 二次确认没拦住');
+    else pass(`只点清零不确认时数据原样（${unconfirmed} 行已覆盖仍在）`);
+    const confirmBtn = await page.$('[data-testid="btn-reset-confirm"]');
+    if (!confirmBtn) fail('点清零后没有弹出确认（找不到 btn-reset-confirm）');
+    else await confirmBtn.click();
+
+    // 清零之后这个文件必须一行绿的都不剩 —— 否则下面测的就不是「新覆盖」
     const cleared = await waitFor(page, () =>
       document.querySelectorAll('[data-testid^="line-"][data-status="COVERED"]').length === 0,
       null, 20000);
@@ -1262,6 +1296,507 @@ async function baselineOptions(page, testid) {
     } else {
       pass(`调接口 → 浏览器里 ${greens} 行变绿，端到端 ${latency}ms ≤ ${COLOR_BUDGET_MS}ms`);
     }
+
+    // ---------- 6-1 · 顶栏「上次采集 N 秒前」是采集心跳 ----------
+    // 挡的真实故障：推送只在覆盖率变化时才来，拿「上次收到推送」当「上次采集」的话，
+    // 没人调接口时数字一直涨，把「平台在采、只是没变化」说成「平台卡住了」。
+    // 所以要在一段不调任何接口的安静期里看：15s 内每 1.5s 取一个样，必须在跳、且始终 ≤ 12s
+    // （采集周期约 5s + 心跳轮询 3s，留余量）。只取两三个样不够 —— 刚推送完的几秒里两种做法读数一样
+    const collectAge = () => page.evaluate(() => {
+      const t = document.querySelector('[data-testid="last-collect"]');
+      const m = t && t.innerText.match(/上次采集\s*(?:(\d+)\s*秒前|刚刚)/);
+      return m ? (m[1] ? Number(m[1]) : 0) : null;
+    });
+    const ages = [];
+    for (let i = 0; i <= 10; i++) {
+      if (i) await sleep(1500);
+      ages.push(await collectAge());
+    }
+    if (ages.some(a => a == null)) fail(`顶栏没有「上次采集 N 秒前」：${JSON.stringify(ages)}`);
+    else if (new Set(ages).size < 2) fail(`「上次采集」15 秒里一直停在 ${ages[0]} 秒不动`);
+    else if (Math.max(...ages) > 12) fail(`安静期里「上次采集」涨到了 ${Math.max(...ages)} 秒 —— 像是在数「上次推送」而不是采集心跳：${ages.join(',')}`);
+    else pass(`顶栏采集心跳在走，安静期 15s 内始终 ≤ 12s（${ages.join(',')}）`);
+
+    // 页面打开时平台可能已经采集失败了好一阵（lastCollectedAt 停在十分钟前）—— 这时顶栏若写
+    // 「上次采集 刚刚」，就和报红的探针状态自相矛盾，而这恰恰是这个指示最该说真话的时候。
+    // 另开一页（不扰动主页面的状态），把两个接口里的 lastCollectedAt 改成 10 分钟前，看顶栏第一眼怎么说
+    const staleAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const stalePage = await browser.newPage();
+    try {
+      await stalePage.setRequestInterception(true);
+      stalePage.on('request', async (req) => {
+        const u = req.url();
+        if (!/\/api\/projects(\/default\/coverage\/summary\?.*)?$/.test(u)) return req.continue();
+        try {
+          const r = await fetch(u);
+          const d = await r.json();
+          if ('lastCollectedAt' in d) d.lastCollectedAt = staleAt;
+          for (const p of d.projects || []) p.lastCollectedAt = staleAt;
+          await req.respond({ status: r.status, contentType: 'application/json', body: JSON.stringify(d) });
+        } catch (e) {
+          await req.continue();
+        }
+      });
+      await stalePage.goto(PLATFORM + '/#/p/default/coloring', { waitUntil: 'networkidle2', timeout: 30000 });
+      await waitFor(stalePage, () => {
+        const t = document.querySelector('[data-testid="last-collect"]');
+        return t && /上次采集/.test(t.innerText);
+      }, null, 8000);
+      const seen = await stalePage.evaluate(() => {
+        const t = document.querySelector('[data-testid="last-collect"]');
+        return t ? { text: t.innerText.trim(), stale: t.classList.contains('stale') } : null;
+      });
+      if (!seen) fail('停采 10 分钟的页面上没有「上次采集」');
+      else if (!/上次采集\s*(9|10|11)\s*分钟前/.test(seen.text) || !seen.stale) {
+        fail(`平台已停采 10 分钟，顶栏第一眼却说「${seen.text}」${seen.stale ? '' : '（也没变警示色）'}`);
+      } else {
+        pass(`平台已停采 10 分钟时，顶栏第一眼就说「${seen.text}」并转为警示色`);
+      }
+    } finally {
+      await stalePage.close();
+    }
+
+    // ---------- 6-2 · 四态一眼可辨，且不只靠颜色 ----------
+    // 挡的真实故障：三态底色都是 light-9（近乎白），部分分支与未覆盖光看底色分不开；
+    // 红绿明度相近，色弱用户只能靠 3px 左边框猜。
+    const encoding = () => page.evaluate(() => {
+      const nums = (s) => (s.match(/[\d.]+/g) || []).map(Number);
+      const over = (fg, bg) => { const a = fg.length > 3 ? fg[3] : 1; return [0, 1, 2].map(i => fg[i] * a + bg[i] * (1 - a)); };
+      const lum = (c) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+        return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); };
+      const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+      const card = nums(getComputedStyle(document.querySelector('[data-testid="source"]').closest('.card')).backgroundColor);
+      const out = {};
+      for (const s of ['COVERED', 'MISSED', 'PARTIAL']) {
+        const el = document.querySelector(`[data-testid^="line-"][data-status="${s}"]`);
+        if (!el) { out[s] = null; continue; }
+        // 刚变绿的行带着 flash 动画（2s 内底色从实心绿褪回常态），要量的是常态配色，先把动画撤掉。
+        // 本机的 headless Chrome 报 prefers-reduced-motion: reduce，动画本来就被 CSS 关着；
+        // 换到开着动画的机器，不撤就会量到半途的颜色，已覆盖那几项判据等于在量闪烁色
+        el.getAnimations().forEach(a => a.cancel());
+        const bg = over(nums(getComputedStyle(el).backgroundColor), card);
+        out[s] = { bg: bg.map(Math.round), glyph: !!el.querySelector('[data-testid="cov-glyph"]'),
+                   contrast: contrast(nums(getComputedStyle(el.querySelector('.tx')).color), bg),
+                   fromCard: Math.hypot(...bg.map((v, i) => v - card[i])) };
+      }
+      return out;
+    });
+    // 「不同」要量化成「差得够远」：旧配色三个底色确实是三个值，但未覆盖与部分分支只差约 7，
+    // 与卡片底色也只差 21 左右（深色下 19）—— 只判「不相等」会让这个真问题照样通过
+    const judgeEncoding = (enc, theme) => {
+      const missing = ['COVERED', 'MISSED', 'PARTIAL'].filter(s => !enc[s]);
+      if (missing.length) { fail(`判不了：${target.sourceFileName} 里缺 ${missing.join('/')} 行，三态没法对比（${theme}）`); return; }
+      const dist = (a, b) => Math.hypot(...enc[a].bg.map((v, i) => v - enc[b].bg[i]));
+      const pairs = [['COVERED', 'MISSED'], ['COVERED', 'PARTIAL'], ['MISSED', 'PARTIAL']].map(([a, b]) => ({ a, b, d: dist(a, b) }));
+      const close = pairs.filter(p => p.d < 20);
+      const pale = ['COVERED', 'MISSED', 'PARTIAL'].filter(s => enc[s].fromCard < 28);
+      if (close.length || pale.length) {
+        fail(`${theme}：染色不够分明 —— ${close.map(p => `${p.a}/${p.b} 只差 ${p.d.toFixed(1)}`).join('、')}`
+          + `${pale.length ? ' ' + pale.map(s => `${s} 离卡片底色只差 ${enc[s].fromCard.toFixed(1)}`).join('、') : ''}`);
+      } else {
+        pass(`${theme}：三态两两差距 ≥ 20（最小 ${Math.min(...pairs.map(p => p.d)).toFixed(1)}），离卡片底色都 ≥ 28`);
+      }
+      const low = ['COVERED', 'MISSED', 'PARTIAL'].filter(s => enc[s].contrast < 4.5);
+      if (low.length) fail(`${theme}：${low.join('/')} 行文字对比度不足 4.5 —— ${low.map(s => enc[s].contrast.toFixed(2)).join(', ')}`);
+      else pass(`${theme}：三态行文字对比度都 ≥ 4.5`);
+    };
+    const light = await encoding();
+    judgeEncoding(light, '浅色');
+    const noGlyph = ['COVERED', 'MISSED', 'PARTIAL'].filter(s => light[s] && !light[s].glyph);
+    if (noGlyph.length) fail(`${noGlyph.join('/')} 行没有状态符号，色弱用户只能靠颜色`);
+    else pass('三态行都带状态符号（不只靠颜色区分）');
+    await page.click('[data-testid="btn-theme"]');
+    await waitFor(page, () => document.documentElement.classList.contains('dark'), null, 3000);
+    judgeEncoding(await encoding(), '深色');
+    await page.click('[data-testid="btn-theme"]');
+    await waitFor(page, () => !document.documentElement.classList.contains('dark'), null, 3000);
+
+    // 部分分支的悬停提示必须是接口给的那两个数，不是前端自己猜的
+    const detail = await (await fetch(`${PLATFORM}/api/coverage/file?path=${encodeURIComponent(target.path)}`)).json();
+    const pRow = detail.rows.find(r => r.status === 'PARTIAL' && r.coveredBranches != null);
+    if (!pRow) {
+      fail(`判不了：${target.sourceFileName} 没有带分支数的部分分支行`);
+    } else {
+      const tip = await page.evaluate((n) => document.querySelector(`[data-testid="line-${n}"]`).title, pRow.line);
+      const want = `分支 ${pRow.coveredBranches}/${pRow.coveredBranches + pRow.missedBranches} 已覆盖`;
+      if (tip !== want) fail(`第 ${pRow.line} 行悬停提示是「${tip}」，应为「${want}」`);
+      else pass(`部分分支行悬停显示「${want}」，与接口一致`);
+    }
+
+    // ---------- 6-3 · 语法高亮不改源码、不改染色 ----------
+    // 挡的真实故障：高亮若用 v-html 或改写了文本，行内容会与接口不一致（复制出来的代码不对、
+    // 断言里按文本找行会找错）；跨行注释切分错了，第二行会被当成代码上色。
+    const hl = await page.evaluate((rows) => {
+      let mismatch = null;
+      for (const r of rows) {
+        const el = document.querySelector(`[data-testid="line-${r.line}"] .tx`);
+        if (!el || el.textContent !== r.text) { mismatch = { line: r.line, want: r.text, got: el ? el.textContent : null }; break; }
+      }
+      return { tokens: document.querySelectorAll('[data-testid="source"] .tx [class*="tk-"]').length, mismatch };
+    }, detail.rows);
+    if (!hl.tokens) fail(`${target.sourceFileName} 没有任何语法 token —— 高亮没生效`);
+    else if (hl.mismatch) fail(`高亮改变了第 ${hl.mismatch.line} 行的文本：${JSON.stringify(hl.mismatch)}`);
+    else pass(`语法高亮生效（${hl.tokens} 个 token），${detail.rows.length} 行文本与接口逐字相同`);
+
+    const split = await page.evaluate(async () => {
+      const m = await import('/syntax.js');
+      return m.tokenizeLines('/* a\nb */ int x;', 'java');
+    }).catch(e => ({ error: String(e) }));
+    const isComment = (t) => /comment/.test(t.type);
+    if (!Array.isArray(split) || split.length !== 2 || !split[0].some(t => isComment(t) && t.text.includes('a'))
+        || !split[1].some(t => isComment(t) && t.text.includes('b'))) {
+      fail(`跨行注释切分不对：${JSON.stringify(split)}`);
+    } else {
+      pass('跨行注释按行切开后两行都还是注释');
+    }
+
+    // prism-core 没加载上时（漏拷了文件、被网关拦了），index.html 预设的 window.Prism = { manual: true } 还在 ——
+    // 只判 window.Prism 存在就会去读 undefined 的 languages，openFile 跟着抛错，整个染色页打不开。
+    // 高亮只是可读性，缺了它必须退回纯文本，不能把染色一起拖垮（评审发现，补的回归用例）。
+    // 换掉再换回都在同一段同步代码里，推送进不来，不会把纯文本结果写进分词缓存
+    const noPrism = await page.evaluate(async () => {
+      const m = await import('/syntax.js');
+      const saved = window.Prism;
+      window.Prism = { manual: true };
+      try {
+        return { lang: m.langOf('A.java'), lines: m.tokenizeLines('int x;\n', 'java') };
+      } catch (e) {
+        return { error: String(e) };
+      } finally {
+        window.Prism = saved;
+      }
+    });
+    const plainOk = Array.isArray(noPrism.lines) && noPrism.lang === null && noPrism.lines.length === 2
+      && JSON.stringify(noPrism.lines[0]) === JSON.stringify([{ type: '', text: 'int x;' }]) && noPrism.lines[1].length === 0;
+    if (!plainOk) fail(`Prism 没加载上时没有退回纯文本：${JSON.stringify(noPrism)}`);
+    else pass('Prism 没加载上时分词退回纯文本，不拖垮染色');
+
+    // 分词开销：挑行数最多的真实文件
+    let biggest = null;
+    for (const f of sum.files) {
+      const d = await (await fetch(`${PLATFORM}/api/coverage/file?path=${encodeURIComponent(f.path)}`)).json();
+      if (d.found && (!biggest || d.rows.length > biggest.rows.length)) biggest = { path: f.path, rows: d.rows };
+    }
+    if (!biggest) {
+      fail('判不了：summary 里的文件一个都取不到源码，没法量分词耗时');
+    } else {
+      const cost = await page.evaluate(async (b) => {
+        const m = await import('/syntax.js');
+        const text = b.rows.map(r => r.text).join('\n');
+        const t0 = performance.now();
+        m.tokenizeLines(text, m.langOf(b.path));
+        return performance.now() - t0;
+      }, biggest).catch(e => NaN);
+      if (!(cost <= 100)) fail(`分词 ${biggest.path}（${biggest.rows.length} 行）用了 ${cost}ms，超过 100ms 或没跑成`);
+      else pass(`最大的文件 ${biggest.path}（${biggest.rows.length} 行）分词 ${cost.toFixed(1)}ms ≤ 100ms`);
+    }
+
+    // ---------- 6-4 · 菜单分组、列表独立滚动、源码可用高度、记住上次的文件 ----------
+    const groups = await page.evaluate(() => {
+      const ids = (g) => [...document.querySelectorAll(`[data-testid="${g}"] [data-testid^="nav-"]`)].map(e => e.dataset.testid);
+      return { view: ids('nav-group-view'), manage: ids('nav-group-manage') };
+    });
+    const wantView = ['nav-coloring', 'nav-overview', 'nav-report', 'nav-gate'];
+    const wantManage = ['nav-onboard', 'nav-events', 'nav-settings'];
+    if (!wantView.every(t => groups.view.includes(t)) || !wantManage.every(t => groups.manage.includes(t))) {
+      fail(`菜单分组不对：${JSON.stringify(groups)}`);
+    } else {
+      pass('菜单分成「看覆盖」「接入与管理」两组');
+    }
+
+    // 挡的真实故障：文件列表没有自己的滚动，几百个文件时整页被拉长，源码区跟着滚走
+    const layout = await page.evaluate(() => {
+      const fl = document.querySelector('[data-testid="file-list"]');
+      const src = document.querySelector('[data-testid="source"]');
+      return { oy: getComputedStyle(fl).overflowY, flH: fl.getBoundingClientRect().height,
+               srcMax: parseFloat(getComputedStyle(src).maxHeight), vh: innerHeight };
+    });
+    if (!['auto', 'scroll'].includes(layout.oy) || layout.flH > layout.vh) fail(`文件列表不能独立滚动：${JSON.stringify(layout)}`);
+    else pass(`文件列表独立滚动（overflow-y: ${layout.oy}，高 ${Math.round(layout.flH)}px ≤ 视口 ${layout.vh}px）`);
+    if (!(layout.srcMax >= layout.vh - 220)) fail(`源码区最大高度 ${layout.srcMax}px，视口 ${layout.vh}px，留给代码的空间太少`);
+    else pass(`源码区最大高度 ${layout.srcMax}px（视口 ${layout.vh}px）`);
+
+    // 刷新后回到刚才看的文件；没有记录时不能一上来打开一个 0% 的文件
+    await page.reload({ waitUntil: 'networkidle2' });
+    await waitFor(page, () => !!document.querySelector('[data-testid="current-path"]'), null, 8000);
+    const back = await waitFor(page, (p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, target.path, 8000);
+    if (back < 0) fail('刷新后没有回到刚才看的文件');
+    else pass(`刷新后回到刚才看的 ${target.sourceFileName}`);
+    await page.evaluate(() => localStorage.removeItem('rtcc-last-file:default'));
+    await page.reload({ waitUntil: 'networkidle2' });
+    const nowSum = await (await fetch(`${PLATFORM}/api/coverage/summary`)).json();
+    const anyCovered = nowSum.files.some(f => f.coveredLines > 0);
+    await waitFor(page, () => document.querySelector('[data-testid="current-path"]').innerText.trim().length > 0, null, 8000);
+    const opened = await page.evaluate(() => document.querySelector('[data-testid="current-path"]').innerText.trim());
+    const openedFile = nowSum.files.find(f => f.path === opened);
+    if (!anyCovered) fail('判不了：此刻没有任何文件有覆盖，没法验证「默认不开 0% 文件」');
+    else if (!openedFile || openedFile.coveredLines === 0) fail(`没有记录时默认打开了 ${opened}（0 行已覆盖）`);
+    else pass(`没有记录时默认打开有覆盖的 ${openedFile.sourceFileName}，不是一屏红`);
+    await page.click(`[data-testid="file-item"][data-path="${target.path}"]`);
+    await waitFor(page, (p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, target.path, 5000);
+
+    // 窄屏：源码卡片头里的覆盖率信息不能被截成「未覆…」
+    await page.setViewport({ width: 1280, height: 720 });
+    await sleep(500);
+    const clipped = await page.evaluate(() => {
+      const e = document.querySelector('[data-testid="current-ratio"]');
+      return e ? { sw: e.scrollWidth, cw: e.clientWidth, text: e.innerText } : null;
+    });
+    if (!clipped) fail('找不到 current-ratio');
+    else if (clipped.sw > clipped.cw + 1) fail(`1280×720 下覆盖率信息被截断：${JSON.stringify(clipped)}`);
+    else pass(`1280×720 下覆盖率信息完整显示：${clipped.text}`);
+    await page.setViewport({ width: 1600, height: 1000 });
+
+    // ---------- 6-5 · 实时体验 ----------
+    // 新元素在实现之前不存在：直接 page.click 会抛错、把后面所有段落一起带走。
+    // 找不到就记一条 FAIL 接着跑 —— 红的时候每条断言各自报出来
+    const clickOr = async (testid) => {
+      const el = await page.$(`[data-testid="${testid}"]`);
+      if (!el) { fail(`找不到 ${testid}`); return false; }
+      await el.click();
+      return true;
+    };
+    // 刚刷新过页面（6f），还没收到任何带 changes 的推送：动态条要说「在等」，不能是一块空白
+    const idle = await page.evaluate(() => {
+      const e = document.querySelector('[data-testid="live-empty"]');
+      return e ? e.innerText.trim() : '';
+    });
+    if (!/等待/.test(idle)) fail(`动态条空状态没有提示：「${idle}」`);
+    else pass(`动态条空状态：「${idle}」`);
+    const liveEntries = () => page.evaluate(() => [...document.querySelectorAll('[data-testid="live-change"]')]
+      .map(e => ({ path: e.dataset.path, delta: Number(e.dataset.delta), text: e.innerText,
+                   lines: (e.dataset.lines || '').split(',').filter(Boolean).map(Number) })));
+    const newLineCount = () => page.evaluate(() => document.querySelectorAll('[data-testid^="line-"][data-new="1"]').length);
+    // 跟随默认开
+    if (await page.evaluate(() => document.querySelector('[data-testid="follow-toggle"]')?.dataset.on) !== '1') {
+      fail('跟随模式默认不是开着的');
+    }
+    // 1) 刚点过文件 → 暂停；点「继续」解除
+    const cpp = sum.files.find(f => f.sourceFileName === 'main.cpp');
+    await page.click(`[data-testid="file-item"][data-path="${cpp.path}"]`);
+    await waitFor(page, (p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, cpp.path, 5000);
+    const pausedShown = await waitFor(page, () => !!document.querySelector('[data-testid="follow-paused"]'), null, 2000);
+    if (pausedShown < 0) fail('刚点过文件后没有显示「跟随已暂停」');
+    await clickOr('follow-resume');
+    const resumed = await waitFor(page, () => !document.querySelector('[data-testid="follow-paused"]'), null, 2000);
+    if (pausedShown >= 0 && resumed >= 0) pass('用户刚操作过时跟随暂停，点「继续」恢复');
+    else if (resumed < 0) fail('点了「继续」，「跟随已暂停」还在');
+
+    // 2) 当前文件与退款无关 → 自动切到刚被覆盖的文件，并把新亮起的行滚进视野
+    await fetch(`${DEMO}/api/order/callback?bizNo=A1002&status=SUCCESS`, { method: 'POST' });
+    await fetch(`${DEMO}/api/order/refund?bizNo=A1002&amount=1`, { method: 'POST' });
+    const switched2 = await waitFor(page, () => {
+      const p = document.querySelector('[data-testid="current-path"]').innerText.trim();
+      if (!/Order(Controller|Service)\.java$/.test(p)) return false;
+      const src = document.querySelector('[data-testid="source"]').getBoundingClientRect();
+      return [...document.querySelectorAll('[data-testid^="line-"][data-new="1"]')].some(l => {
+        const r = l.getBoundingClientRect();
+        return r.top >= src.top && r.bottom <= src.bottom;
+      });
+    }, null, 15000);
+    if (switched2 < 0) fail('开着跟随，调了退款接口，页面没有自动切到被覆盖的文件或新行不在视野里');
+    else pass(`跟随模式：${(switched2 / 1000).toFixed(1)}s 内自动切到刚被覆盖的文件，新亮起的行在视野里`);
+    // 跳转目标行（hit）要保留它的覆盖底色：高亮若换掉背景，最该看的那行新亮起的代码反而不绿了
+    // （反向验证时发现：.ln.hit 原先把背景换成了浅靛蓝，四态检查量到它就报「COVERED 离卡片底色只差 22」）
+    await waitFor(page, () => !!document.querySelector('.ln.hit'), null, 2000);
+    const hitBg = await page.evaluate(() => {
+      const h = document.querySelector('.ln.hit');
+      if (!h) return null;
+      const same = document.querySelector(`.ln[data-status="${h.dataset.status}"]:not(.hit):not(.flash)`);
+      if (!same) return { status: h.dataset.status, hit: null, other: null };
+      h.getAnimations().forEach(a => a.cancel());
+      return { status: h.dataset.status, hit: getComputedStyle(h).backgroundColor, other: getComputedStyle(same).backgroundColor };
+    });
+    if (!hitBg || !hitBg.other) fail(`判不了：跟随跳过去后找不到可对比的目标行 ${JSON.stringify(hitBg)}`);
+    else if (hitBg.hit !== hitBg.other) fail(`跳转目标行的底色被换掉了：${JSON.stringify(hitBg)}`);
+    else pass(`跳转目标行保留 ${hitBg.status} 的底色（只加描边）`);
+    // 刚亮起的行要闪 —— 这是「一操作就看见」最直接的那一下
+    const flashed = await waitFor(page, () => !!document.querySelector('.ln.flash[data-new="1"]'), null, 3000);
+    if (flashed < 0) fail('自动切过去的文件里，新亮起的行没有闪');
+    else pass('新亮起的行在切过去时闪了一下');
+    // 动态条上该文件各条报的行（并集），必须与源码里带新亮起标记的行完全一致 —— 两处说法不一致就是有一处在撒谎。
+    // 比的是行号集合而不是「+N 之和 = 标记数」：同一行跨两轮先变部分、再变已覆盖时，前者会把它算两次（评审发现）
+    const followed = await page.evaluate(() => document.querySelector('[data-testid="current-path"]').innerText.trim());
+    const entries = await liveEntries();
+    const mine = entries.filter(e => e.path === followed);
+    const reported = [...new Set(mine.flatMap(e => e.lines))].sort((a, b) => a - b);
+    const markedLines = await page.evaluate(() => [...document.querySelectorAll('[data-testid^="line-"][data-new="1"]')]
+      .map(e => Number(e.dataset.testid.slice(5))).sort((a, b) => a - b));
+    if (!mine.length) fail(`动态条里没有 ${followed} 的条目：${JSON.stringify(entries)}`);
+    else if (!mine.every(e => e.text.includes(followed.split('/').pop()) && e.text.includes(`+${e.delta} 行`))) fail(`动态条条目缺文件名或 +N 行：${JSON.stringify(mine)}`);
+    else if (JSON.stringify(reported) !== JSON.stringify(markedLines)) fail(`动态条报的 ${followed} 新亮起行 ${reported} 与源码里标的 ${markedLines} 不一致`);
+    else pass(`动态条：${followed.split('/').pop()} 报的 ${reported.length} 行与源码里的新亮起标记逐行一致`);
+
+    // 列表高亮：变化的文件要亮起来并带 +N，约 4 秒后自己消退
+    const lit = await page.evaluate((p) => {
+      const e = document.querySelector(`[data-testid="file-item"][data-path="${p}"]`);
+      const d = e && e.querySelector('[data-testid="file-delta"]');
+      return e ? { changed: e.dataset.changed, delta: d ? d.innerText.trim() : '' } : null;
+    }, followed);
+    if (!lit || lit.changed !== '1' || !/^\+\d+$/.test(lit.delta)) fail(`文件列表里 ${followed} 没有变化高亮：${JSON.stringify(lit)}`);
+    else pass(`文件列表里 ${followed.split('/').pop()} 亮起并标 ${lit.delta}`);
+    const faded = await waitFor(page, (p) => {
+      const e = document.querySelector(`[data-testid="file-item"][data-path="${p}"]`);
+      return e && e.dataset.changed !== '1';
+    }, followed, 8000);
+    if (faded < 0) fail('文件列表的变化高亮 8 秒都没消退');
+    else pass(`文件列表的变化高亮在 ${(faded / 1000).toFixed(1)}s 后消退`);
+
+    // 点动态条上另一个文件的条目：打开它，并把它的首条新行滚进视野
+    const other2 = (await liveEntries()).find(e => e.path !== followed);
+    if (!other2) {
+      fail('判不了：这次退款只改了一个文件，动态条上没有第二个条目可点');
+    } else {
+      await page.click(`[data-testid="live-change"][data-path="${other2.path}"]`);
+      const jumped = await waitFor(page, (p) => {
+        if (document.querySelector('[data-testid="current-path"]').innerText.trim() !== p) return false;
+        const src = document.querySelector('[data-testid="source"]').getBoundingClientRect();
+        const first = document.querySelector('[data-testid^="line-"][data-new="1"]');
+        if (!first) return false;
+        const r = first.getBoundingClientRect();
+        return r.top >= src.top && r.bottom <= src.bottom;
+      }, other2.path, 5000);
+      if (jumped < 0) fail(`点动态条条目没有打开 ${other2.path} 并定位到新行`);
+      else pass(`点动态条条目打开 ${other2.path.split('/').pop()} 并定位到首条新行`);
+    }
+    // 3) 刚操作过 → 即使有别的文件变了也不切走
+    await page.click(`[data-testid="file-item"][data-path="${cpp.path}"]`);
+    await waitFor(page, (p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, cpp.path, 5000);
+    // 等的必须是「这次请求之后」才来的条目：用「8 秒内的条目」判的话，上一步退款留下的条目才 5 秒，
+    // 立刻就满足了 —— 新推送还没到就去判「没切走」，这条恒过（反向验证时发现：忽略暂停照样 PASS）
+    // 只等 9 秒：暂停是 10 秒，推送若在那之后才到，跟随按设计就该切走 —— 等得比暂停还久会把正确行为判成 FAIL（评审发现）
+    const tNope = Date.now();
+    await fetch(`${DEMO}/api/order/query?bizNo=NOPE`);
+    const nudged = await waitFor(page, (t0) => [...document.querySelectorAll('[data-testid="live-change"]')]
+      .some(e => Number(e.dataset.at || 0) >= t0), tNope, 9000);
+    const stillCpp = await page.evaluate((p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, cpp.path);
+    if (nudged < 0) fail('判不了：query?bizNo=NOPE 之后 9 秒内没收到带 changes 的推送（暂停只有 10 秒）');
+    else if (!stillCpp) fail('用户刚点过文件，跟随模式还是把页面切走了');
+    else pass('用户刚操作过时，别的文件变化不会把页面切走');
+    // 暂停可能已经自然到期（「继续」随之消失）：在就点，不在就算了
+    const resumeLink = await page.$('[data-testid="follow-resume"]');
+    if (resumeLink) await resumeLink.click();
+
+    // 4) 当前文件本身在变化里 → 留在原地
+    await page.click(`[data-testid="file-item"][data-path="${target.path}"]`);
+    await waitFor(page, (p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, target.path, 5000);
+    await clickOr('follow-resume');
+    const beforeNew = await newLineCount();
+    await fetch(`${DEMO}/api/order/cancel?bizNo=NOPE&reason=ui`, { method: 'POST' });
+    let leftTarget = false;
+    const grewNew = await waitFor(page, (args) => {
+      const cur = document.querySelector('[data-testid="current-path"]').innerText.trim();
+      if (cur !== args.p) { window.__leftTarget = true; }
+      return document.querySelectorAll('[data-testid^="line-"][data-new="1"]').length > args.n;
+    }, { p: target.path, n: beforeNew }, 15000);
+    leftTarget = await page.evaluate(() => !!window.__leftTarget);
+    if (grewNew < 0) fail('判不了：cancel?bizNo=NOPE 之后 OrderController 没有新亮起的行');
+    else if (leftTarget) fail('当前文件自己就在变化里，跟随模式却切到了别的文件');
+    else pass('当前文件本身有新行时，跟随模式留在原地');
+
+    // 5) 关掉跟随：刷新后仍是关，之后的变化不切文件
+    await clickOr('follow-toggle');
+    await page.reload({ waitUntil: 'networkidle2' });
+    await waitFor(page, (p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, target.path, 8000);
+    const offAfterReload = await page.evaluate(() => document.querySelector('[data-testid="follow-toggle"]')?.dataset.on);
+    await fetch('http://localhost:18070/api/order/query?bizNo=G1002');
+    const goSeen = await waitFor(page, () => [...document.querySelectorAll('[data-testid="live-change"]')]
+      .some(e => /\.go$/.test(e.dataset.path)), null, 12000);
+    const stayed = await page.evaluate((p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, target.path);
+    if (offAfterReload !== '0') fail('关掉跟随后刷新，开关又变回了开');
+    else if (goSeen < 0) fail('判不了：调了 Go 服务后动态条上没出现 .go 文件');
+    else if (!stayed) fail('跟随已关，页面仍被切到了别的文件');
+    else pass('跟随关掉后会被记住，之后的变化不再切文件');
+    await clickOr('follow-toggle');   // 还原成默认的开，免得影响后面的段落
+
+    // 6) 跟随要去的文件不在当前口径的范围里（增量下没改过的文件）时：留在原文件，也不把那个文件的行号用在当前文件上。
+    //    评审发现原先先写了 jumpToLine 再判能不能切，留在原地时就滚到了一行无关的代码并描了边。
+    //    直接调页面里同一个 store 的 refresh，给一个范围外的目标，看当前文件第 7 行有没有被标成跳转目标
+    const stray = await page.evaluate(async () => {
+      const m = await import('/store.js');
+      const line7 = () => !!document.querySelector('[data-testid="line-7"].hit');
+      const before = line7();
+      const cur = m.store.current;
+      await m.refresh({ path: '__not_in_scope__/X.java', line: 7 });
+      await new Promise(r => setTimeout(r, 300));
+      return { before, after: line7(), stayed: m.store.current === cur };
+    });
+    if (stray.before) fail('判不了：调用前第 7 行就已经是跳转目标');
+    else if (!stray.stayed) fail('跟随目标不在当前口径范围里，页面却换了文件');
+    else if (stray.after) fail('跟随目标不在当前口径范围里，别的文件的行号被用在了当前文件上（第 7 行被标成跳转目标）');
+    else pass('跟随目标不在当前口径范围里时，留在原文件且不乱滚');
+    // 缩略条的计数必须与源码实际渲染的行状态一致 —— 两者来自同一份 rows，对不上就是画错了
+    const mm = await page.evaluate(() => {
+      const c = document.querySelector('[data-testid="minimap"]');
+      if (!c) return null;
+      const n = (s) => document.querySelectorAll(`[data-testid^="line-"][data-status="${s}"]`).length;
+      return { got: { lines: +c.dataset.lines, covered: +c.dataset.covered, missed: +c.dataset.missed, partial: +c.dataset.partial },
+               want: { lines: document.querySelectorAll('[data-testid^="line-"]').length, covered: n('COVERED'), missed: n('MISSED'), partial: n('PARTIAL') } };
+    });
+    if (!mm) fail('源码区没有缩略条');
+    else if (JSON.stringify(mm.got) !== JSON.stringify(mm.want)) fail(`缩略条计数与源码不一致：${JSON.stringify(mm)}`);
+    else pass(`缩略条计数与源码一致（${JSON.stringify(mm.got)}）`);
+    // 点缩略条底部 → 源码滚到接近末尾（没有缩略条时上面已经记了 FAIL，这里不再点）
+    if (mm) {
+      const box = await page.evaluate(() => { const r = document.querySelector('[data-testid="minimap"]').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.bottom - 2 }; });
+      await page.mouse.click(box.x, box.y);
+      const nearEnd = await waitFor(page, () => {
+        const s = document.querySelector('[data-testid="source"]');
+        return s.scrollHeight <= s.clientHeight || s.scrollTop + s.clientHeight >= s.scrollHeight - 60;
+      }, null, 2000);
+      if (nearEnd < 0) fail('点缩略条底部，源码没有滚到末尾附近');
+      else pass('点缩略条底部，源码滚到文件末尾附近');
+    }
+    await page.click('[data-testid="follow-resume"]').catch(() => {});   // 点缩略条也算操作，解除暂停
+    // 「清除标记」清掉当前文件的新亮起标记。上一段刚整页刷新过（标记只存在内存里，已经没了），
+    // 先让它亮出几行再清 —— 跟随开着，亮在哪个文件就会被带到哪个文件
+    await fetch(`${DEMO}/api/order/cancel?bizNo=A1001&reason=ui2`, { method: 'POST' });
+    await waitFor(page, () => document.querySelectorAll('[data-testid^="line-"][data-new="1"]').length > 0, null, 12000);
+    if (await newLineCount() === 0) fail('判不了：清除前当前文件没有新亮起标记');
+    await clickOr('btn-clear-new');
+    const clearedNew = await waitFor(page, () => document.querySelectorAll('[data-testid^="line-"][data-new="1"]').length === 0, null, 2000);
+    if (clearedNew < 0) fail('点了「清除标记」，新亮起标记还在');
+    else pass('「清除标记」清掉新亮起标记');
+    // 确认清零也清掉标记与动态条（此刻动态条上有前面几段留下的条目；清零后再染一次，免得后面的段落面对一个全红的项目）
+    if (!(await liveEntries()).length) fail('判不了：清零前动态条上没有条目，验不出「清零会清空动态条」');
+    await page.click('[data-testid="btn-reset"]');
+    // 确认框弹出要一点时间：紧跟着点会撞上「还没渲染出来」，随机失败
+    await page.waitForSelector('[data-testid="btn-reset-confirm"]', { visible: true, timeout: 5000 });
+    await page.click('[data-testid="btn-reset-confirm"]');
+    const resetNew = await waitFor(page, () => document.querySelectorAll('[data-testid^="line-"][data-new="1"]').length === 0
+      && document.querySelectorAll('[data-testid="live-change"]').length === 0, null, 20000);
+    if (resetNew < 0) fail('确认清零后新亮起标记或动态条没清空');
+    else pass('确认清零后新亮起标记与动态条一并清空');
+    await fetch(`${DEMO}/api/order/query?bizNo=A1001`);
+    await waitFor(page, () => document.querySelectorAll('[data-testid^="line-"][data-status="COVERED"]').length > 0, null, 15000);
+
+    // ---------- 6-6 · 文件墙：一眼看完整个项目哪里测到了 ----------
+    // 列表要一行行读百分比；墙是每个文件一格、按覆盖率三档上色，几百个文件也一屏看完「哪片还空着」
+    await clickOr('coloring-mode-wall');
+    const wall = await waitFor(page, () => document.querySelectorAll('[data-testid="wall-tile"]').length > 0, null, 3000);
+    const fresh = await (await fetch(`${PLATFORM}/api/coverage/summary`)).json();
+    const tiles = await page.evaluate(() => [...document.querySelectorAll('[data-testid="wall-tile"]')]
+      .map(t => ({ path: t.dataset.path, level: t.dataset.level })));
+    const levelOf = await page.evaluate(async (fs) => {
+      const { pctClass } = await import('/api.js');
+      return fs.map(f => [f.path, pctClass(f.ratio)]);
+    }, fresh.files);
+    const want = new Map(levelOf);
+    const wrong = tiles.filter(t => want.get(t.path) !== t.level);
+    if (wall < 0 || tiles.length !== fresh.files.length) fail(`文件墙格子数 ${tiles.length} ≠ 文件数 ${fresh.files.length}`);
+    else if (wrong.length) fail(`文件墙颜色档位与覆盖率不符：${JSON.stringify(wrong.slice(0, 3))}`);
+    else pass(`文件墙 ${tiles.length} 格，颜色档位与各文件覆盖率一致`);
+    const pick = tiles.find(t => t.path !== target.path) || tiles[0];
+    if (!pick) {
+      fail('判不了：文件墙上一个格子都没有，没法验证点格子打开文件');
+    } else {
+      await page.click(`[data-testid="wall-tile"][data-path="${pick.path}"]`);
+      const openedWall = await waitFor(page, (p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, pick.path, 5000);
+      if (openedWall < 0) fail(`点文件墙的格子没有打开 ${pick.path}`);
+      else pass(`点文件墙的格子打开 ${pick.path.split('/').pop()}`);
+    }
+    await clickOr('coloring-mode-list');
+    await page.click(`[data-testid="file-item"][data-path="${target.path}"]`);
 
     // ---------- 6b · 走完向导建出一个能采数的项目 ----------
     // 这是方案 A 的核心承诺：向导最后一步强制自检，不通过就建不出来。
@@ -1296,6 +1831,29 @@ async function baselineOptions(page, testid) {
     if (await waitFor(page, () => !!document.querySelector('[data-testid="view-wizard"]'), null, 10000) < 0) {
       die('打不开新建项目向导');
     }
+    // 一打开就报「项目名不能为空」等于人还没动手先挨骂 —— 碰过字段或点了下一步才该提示
+    const earlyErr = await page.evaluate(() => {
+      const e = document.querySelector('[data-testid="wz-error"]');
+      return e && e.offsetParent !== null ? e.innerText.trim() : '';
+    });
+    if (earlyErr) fail(`向导刚打开就报错：「${earlyErr}」`);
+    else pass('向导刚打开时没有预先报错');
+    await page.click('[data-testid="wz-next"]');
+    const lateErr = await waitFor(page, () => {
+      const e = document.querySelector('[data-testid="wz-error"]');
+      return e && e.innerText.includes('项目名不能为空');
+    }, null, 3000);
+    if (lateErr < 0) fail('空着点「下一步」没有提示项目名不能为空');
+    else pass('空着点「下一步」才提示「项目名不能为空」');
+    // 向导里侧栏「项目管理」要能点回列表（原先没绑 @select，点了没反应）
+    await page.click('[data-testid="nav-projects"]');
+    if (await waitFor(page, () => !!document.querySelector('[data-testid="view-projects"]'), null, 5000) < 0) {
+      fail('在向导里点侧栏「项目管理」没有回到项目列表');
+    } else {
+      pass('在向导里点侧栏「项目管理」回到项目列表');
+    }
+    await page.goto(PLATFORM + '/#/new', { waitUntil: 'networkidle2', timeout: 30000 });
+    await waitFor(page, () => !!document.querySelector('[data-testid="view-wizard"]'), null, 10000);
     await fill('wz-name', '前端验收建的项目');
     await fill('wz-id', WZ_ID);
     await page.click('[data-testid="wz-next"]');            // 1 → 2
@@ -1570,6 +2128,16 @@ async function baselineOptions(page, testid) {
       } else {
         pass(`事件页列出 ${evAfter.events.length} 条，与接口一致`);
       }
+
+      // 「部分实例掉线」在窄列里折成两行，看上去像一个方块
+      const tags = await page.evaluate(() => [...document.querySelectorAll('[data-testid="event-row"] .tag')].map(t => {
+        const lh = parseFloat(getComputedStyle(t).lineHeight) || 18;
+        return { text: t.innerText, h: t.getBoundingClientRect().height, max: lh + 6 };
+      }));
+      const tall = tags.filter(t => t.h > t.max);
+      if (!tags.length) fail('判不了：采集事件页没有状态标签');
+      else if (tall.length) fail(`有 ${tall.length} 个状态标签折行：${JSON.stringify(tall.slice(0, 3))}`);
+      else pass(`采集事件的 ${tags.length} 个状态标签都只占一行`);
 
       // 持续时长不能是负数。曾经是：时间列用 NOW(3) 写入（服务端本地墙钟），
       // 而连接串写着 serverTimezone=UTC，驱动把那个墙钟当 UTC 读回 ——

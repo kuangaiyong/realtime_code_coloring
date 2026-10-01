@@ -108,12 +108,10 @@ export const Gate = {
       <h2>判定</h2>
       <!-- 不轮询，所以「判定于几点」必须写出来：不标的话，人会拿一个半小时前的
            结论去决定合不合并 -->
+      <!-- 原先这里是一整段说明，把下面的两张结论卡挤到了半屏以下；门禁是决策点，结论要先被看见 -->
+      <span class="gate-hint" title="门禁结论是个决策点，不是需要盯着跳的数字，而增量判定每次要起三个 git 子进程">不自动刷新 · 代码或覆盖变了之后点「重新判定」</span>
       <span class="sub" data-testid="judged-at">{{ judgedAt ? '判定于 ' + judgedAt : '判定中…' }}</span>
       <el-button size="small" :loading="loading" data-testid="btn-rejudge" @click="load">重新判定</el-button>
-    </div>
-    <div class="ob" style="padding-bottom:12px">
-      <div class="note info">这一页<b>不自动刷新</b>：门禁结论是个决策点，不是需要盯着跳的数字，
-        而增量判定每次要起三个 git 子进程。代码或覆盖变了之后，点「重新判定」。</div>
     </div>
   </div>
 
@@ -127,9 +125,11 @@ export const Gate = {
     <div class="gate" :class="VERDICT[r.verdict].cls">
       <span class="verdict" :data-testid="'gate-verdict-' + r.mode">{{ VERDICT[r.verdict].text }}</span>
       <span class="why">{{ r.data ? r.data.reason : r.reason }}</span>
+      <!-- 实际与阈值摆在一起：只给一个数，人还得去卡片头里找阈值才知道差多少 -->
       <span class="num" v-if="r.data">
         <template v-if="r.data.actual === null">—</template>
         <template v-else>{{ r.data.actual }}<small>%</small></template>
+        <small class="thr"> / 阈值 {{ r.data.threshold }}%</small>
       </span>
     </div>
 
@@ -140,7 +140,11 @@ export const Gate = {
         顶栏的基线已经改成 <b>{{ store.baseline.trim() }}</b>，而这个结论还是按
         <b>{{ r.baseline }}</b> 判的。点上面的「重新判定」。
       </div>
-      <div class="note info">{{ WHY[r.mode] }}</div>
+      <!-- 原理说明默认收起：每次来看结论的人不需要每次读一遍「为什么这么判」 -->
+      <details class="why-more" data-testid="gate-why">
+        <summary>为什么这么判</summary>
+        <div class="note info">{{ WHY[r.mode] }}</div>
+      </details>
       <div v-if="r.verdict === 'undecided'" class="note risk">
         <b>「判不了」不是「不通过」。</b>
         <!-- 连不上平台时压根没有响应，status 是 undefined —— 这里回退成「4xx」的话，
@@ -163,18 +167,22 @@ export const Gate = {
   <div class="card">
     <div class="card-head"><h2>接进 CI</h2></div>
     <div class="ob">
-      <div class="note info">按 <code>passed</code> 放行或阻断。
-        <b>判不了时返回 409，别把它当成不通过</b> —— 那说明平台侧有问题，
-        而不是这次改动的覆盖不够。</div>
+      <!-- 命令本身常驻（它是要抄走的东西），只把说明收起来 -->
       <div class="snip-wrap">
         <button class="copy" data-testid="btn-copy-ci" @click="doCopy">{{ copyLabel }}</button>
         <pre class="snippet" data-testid="gate-ci">{{ ciCmd }}</pre>
       </div>
-      <div style="font-size:12px;color:var(--el-text-color-secondary);margin-top:6px">
-        命令里的口径与基线都跟着顶栏走（改了立刻反映在这里，不必先重新判定），
-        项目 id 已经带在路径里 —— 不带的话它恒落在默认项目上，
-        在别的项目页面照抄进 CI，判的是另一份代码。
-      </div>
+      <details class="why-more">
+        <summary>CI 里怎么用这条命令</summary>
+        <div class="note info">按 <code>passed</code> 放行或阻断。
+          <b>判不了时返回 409，别把它当成不通过</b> —— 那说明平台侧有问题，
+          而不是这次改动的覆盖不够。</div>
+        <div style="font-size:12px;color:var(--el-text-color-secondary);margin-top:6px">
+          命令里的口径与基线都跟着顶栏走（改了立刻反映在这里，不必先重新判定），
+          项目 id 已经带在路径里 —— 不带的话它恒落在默认项目上，
+          在别的项目页面照抄进 CI，判的是另一份代码。
+        </div>
+      </details>
     </div>
   </div>
 </div>`

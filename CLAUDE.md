@@ -77,7 +77,7 @@
 | 2 | 归一化为行级 IR | `scripts/e2e_verify.py` | 逐行 COVERED/MISSED/PARTIAL/EMPTY 状态正确 |
 | 3 | 全量覆盖率计算 | `scripts/e2e_verify.py` | 未调用的接口 B/C 保持未覆盖 |
 | 4 | 增量覆盖率计算 | `scripts/e2e_incremental.py` | 平台增量行集合与 `git diff` **集合相等** |
-| 5 | 实时推送与染色渲染 | `scripts/e2e_verify.py`、`scripts/ws_verify.js`、`scripts/ui_verify.js` | 端到端延迟 **≤ 5s**（`ui_verify` 在真实 Chrome 里量：清零 → 调接口 → DOM 里真的出现绿行） |
+| 5 | 实时推送与染色渲染 | `scripts/e2e_verify.py`、`scripts/ws_verify.js`、`scripts/ui_verify.js` | 端到端延迟 **≤ 5s**（`ui_verify` 在真实 Chrome 里量：清零 → 调接口 → DOM 里真的出现绿行）；推送带出本轮**新亮起**的行（逐行核对此刻为已覆盖/部分、且调用前不是已覆盖；瞬时掉线的实例回来那一轮**不报**）；跟随模式自动切到变化最多的文件并把新行滚进视野，用户刚操作过时不切走 |
 | 6 | 场景边界归因 + 并发场景拒绝 | `scripts/e2e_scenario.py` | 两场景覆盖行集合互不越界；并发 start、进行中清零均返回 409 |
 | 7 | 产物与源码版本一致性校验 | `scripts/e2e_incremental.py`、`scripts/e2e_artifact.py` | 源码漂移时返回 409 而非 200；**产物按 buildId 取时**（`artifact-source: uploaded`）解出的行号与本地路径逐行一致（行号 + 状态 + 分支数集合相等），取不到产物一律 ANALYZE_ERROR 并点名缺哪个 buildId，绝不退化成「这些代码没被调用过」 |
 | 8 | 多实例聚合 + 实例间版本校验 | `e2e_multi_instance.py`（Java）、`e2e_go.py`（Go）、`e2e_cpp.py`（C++）、`e2e_rust.py`（Rust） | 各实例覆盖取并集（`/api/coverage/instances` 按实例分别归一化，断言 单实例最大 ≤ 聚合 ≤ 相加 且 ≠ 相加）；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
@@ -102,7 +102,7 @@
 > 其中几条最容易写错的边界（门禁 PARTIAL 时必须拒判、分母为 0 时必须放行、
 > 多实例聚合必须在语言原生数据层合并而不能先退化成行状态）都在那里。
 
-**分层验收的执行情况、Go 与 Java 的行级粒度差异、前端七个坑、采集耗时构成**
+**分层验收的执行情况、Go 与 Java 的行级粒度差异、前端九个坑（含实时体验的跟随 / 新亮起规则）、采集耗时构成**
 见 `Skill(rtcc-internals)`。
 
 ## 三、验证方式（全局规则 2：禁止 mock）
