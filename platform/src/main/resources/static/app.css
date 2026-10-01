@@ -45,6 +45,19 @@
     radial-gradient(820px 440px at 6% -6%, rgba(79, 70, 229, .16), transparent 62%),
     radial-gradient(720px 400px at 96% 2%, rgba(14, 165, 233, .13), transparent 64%),
     radial-gradient(600px 300px at 50% 108%, rgba(79, 70, 229, .06), transparent 60%);
+
+  /* ---- 四态染色 ----
+     原先借 Element Plus 的 light-9（90% 混白）：三态底色几乎是白，未覆盖与部分分支只差约 7，
+     辨识全靠 3px 左边框。这里改用专门的半透明色，叠在卡片底色上后两两差距 ≥ 20、
+     离底色 ≥ 28（ui_verify 6c 按这两个数判）。文字仍是主文字色，对比度远高于 4.5 */
+  --cov-covered-bg: rgba(46, 160, 67, .18);
+  --cov-missed-bg: rgba(229, 72, 77, .16);
+  --cov-partial-bg: rgba(234, 160, 0, .22);
+  --cov-covered-bar: #2ea043;
+  --cov-missed-bar: #e5484d;
+  --cov-partial-bar: #d99a00;
+  /* 部分分支再叠一层细斜纹：给分不清红黄的人一个不靠色相的通道 */
+  --cov-partial-stripe: rgba(217, 154, 0, .16);
 }
 
 /* 深色下玻璃要反过来：浅色玻璃在深底上会糊成一片灰白 */
@@ -59,6 +72,15 @@ html.dark {
     radial-gradient(600px 300px at 50% 108%, rgba(99, 91, 255, .10), transparent 60%);
   --el-color-primary: #7A73EC;
   --el-color-primary-light-9: #232544;
+  /* 深色下原先的底色只比卡片亮一点点（已覆盖离底色约 19），这里各自加浓；
+     部分分支单独提到 .28，否则与未覆盖只差约 21，余量太小 */
+  --cov-covered-bg: rgba(63, 185, 80, .22);
+  --cov-missed-bg: rgba(248, 81, 73, .22);
+  --cov-partial-bg: rgba(210, 153, 34, .28);
+  --cov-covered-bar: #3fb950;
+  --cov-missed-bar: #f85149;
+  --cov-partial-bar: #d29922;
+  --cov-partial-stripe: rgba(210, 153, 34, .18);
 }
 
 * { box-sizing: border-box; }
@@ -140,6 +162,9 @@ body {
 .pill.ok i { animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .25 } }
 @media (prefers-reduced-motion: reduce) { .pill.ok i, .rec i { animation: none } }
+/* 采集心跳：等宽数字，秒数跳动时宽度不抖；超过三个周期没更新就转警示色 */
+.beat { font-size: 12px; color: var(--el-text-color-secondary); font-variant-numeric: tabular-nums; flex: none; white-space: nowrap; }
+.beat.stale { color: var(--el-color-warning); }
 
 /* 分段按钮：Element Plus 的 el-radio-group + button 形态即是此物，
    但这里的两组（口径、排序）尺寸更小，自绘更省事 */
@@ -159,6 +184,9 @@ body {
 .view { padding: 14px; display: grid; gap: 14px; align-content: start; }
 /* 染色视图是两栏：左边文件列表、右边源码。源码是核心，不能被挤到折叠线以下 */
 .view.coloring { grid-template-columns: 300px minmax(0, 1fr); align-items: start; }
+/* 左栏贴住顶栏、文件列表自己滚：几百个文件的工程里，列表不能把整页拉长、把源码区一起带走 */
+.view.coloring > .card:first-child { position: sticky; top: calc(var(--topbar-h) + 14px); }
+.file-list { overflow-y: auto; max-height: calc(100vh - var(--topbar-h) - 120px); }
 @media (max-width: 900px) {
   .view.coloring { grid-template-columns: minmax(0, 1fr); }
   .aside { position: static; height: auto; }
@@ -174,6 +202,11 @@ body {
 /* 说明文字长短由数据决定（口径 + 采样数 + 变化量），卡片头是 flex 且不换行，
    不设上限的话一条长说明就能把整张卡撑到容器之外 */
 .card-head .sub { font-size: 12px; color: var(--el-text-color-secondary); margin-left: auto; font-family: var(--mono); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 源码卡片头例外：覆盖率那串是这张卡的结论，不能被省略成「已覆盖 11 行 / 未覆…」。
+   放不下就整串换到第二行；路径本身仍比卡片宽时，才轮到路径省略 */
+.card-head.src-head { flex-wrap: wrap; row-gap: 2px; }
+.card-head.src-head h2 { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-head.src-head .sub { flex: none; overflow: visible; }
 
 .empty { padding: 40px 20px; text-align: center; color: var(--el-text-color-secondary); }
 .err { margin: 14px; padding: 10px 14px; background: var(--el-color-danger-light-9); color: var(--el-color-danger); border-radius: var(--radius); font-size: 13px; line-height: 1.7; }
@@ -206,18 +239,55 @@ body {
 .pc.s { color: var(--el-color-success); }
 .pc.w { color: var(--el-color-warning); }
 .pc.d { color: var(--el-color-danger); }
+.file .bar { display: block; width: 100%; height: 2px; margin-top: 2px; border-radius: 1px; background: var(--el-fill-color-dark); overflow: hidden; }
+.file .bar i { display: block; height: 100%; }
+.file .bar i.s { background: var(--el-color-success); }
+.file .bar i.w { background: var(--el-color-warning); }
+.file .bar i.d { background: var(--el-color-danger); }
 
-.legend { display: flex; gap: 12px; padding: 9px 14px; background: var(--el-fill-color-light); border-bottom: 1px solid var(--el-border-color-lighter); font-size: 12px; color: var(--el-text-color-secondary); flex-wrap: wrap; }
+/* 图例压成一条窄行：每行已经带了 ✓ ◐ ✕ 符号，图例只是第一次看时的对照，省下的高度留给源码 */
+.legend { display: flex; gap: 12px; padding: 5px 14px; background: var(--el-fill-color-light); border-bottom: 1px solid var(--el-border-color-lighter); font-size: 12px; color: var(--el-text-color-secondary); flex-wrap: wrap; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 10px; height: 10px; border-radius: 2px; }
 
 /* 源码区<b>永远实心、永不加毛玻璃</b>：四态色（绿/黄/红/灰）是这个平台的核心
    信息载体，半透明叠底会让绿与黄在小面积上难分。观感让位于辨识度 */
-.src { font-family: var(--mono); font-size: 13px; line-height: 21px; overflow-x: auto; max-height: calc(100vh - 260px); overflow-y: auto; }
-.ln { display: flex; white-space: pre; border-left: 3px solid transparent; }
-.ln.COVERED { background: var(--el-color-success-light-9); border-left-color: var(--el-color-success); }
-.ln.MISSED { background: var(--el-color-danger-light-9); border-left-color: var(--el-color-danger); }
-.ln.PARTIAL { background: var(--el-color-warning-light-9); border-left-color: var(--el-color-warning); }
+/* 180 = 顶栏 60 + 上下边距 28 + 卡片头（一行约 44，1280 宽时折成两行约 59）+ 图例约 29 + 边框，
+   整张源码卡落在一屏里，窄屏也不出整页滚动条 */
+.src { font-family: var(--mono); font-size: 13px; line-height: 21px; overflow-x: auto; max-height: calc(100vh - 180px); overflow-y: auto; }
+.ln { display: flex; white-space: pre; border-left: 4px solid transparent; }
+.ln.COVERED { background-color: var(--cov-covered-bg); border-left-color: var(--cov-covered-bar); }
+.ln.MISSED { background-color: var(--cov-missed-bg); border-left-color: var(--cov-missed-bar); }
+.ln.PARTIAL { background-color: var(--cov-partial-bg); border-left-color: var(--cov-partial-bar);
+  background-image: repeating-linear-gradient(135deg, var(--cov-partial-stripe) 0 5px, transparent 5px 10px); }
+/* 状态符号：不靠颜色也能分出三态。复制源码时不能带进去 */
+.ln .gl { width: 14px; flex: none; text-align: center; font-size: 11px; user-select: none; }
+.ln.COVERED .gl { color: var(--cov-covered-bar); }
+.ln.MISSED .gl { color: var(--cov-missed-bar); }
+.ln.PARTIAL .gl { color: var(--cov-partial-bar); }
+.ln.PARTIAL[title] { cursor: help; }
+
+/* 语法高亮：低饱和、只分五类。它是可读性的辅助，不能抢四态底色的注意力 ——
+   所以不用绿（与已覆盖撞色），字符串用深蓝，注释用灰并斜体 */
+.tk-keyword { color: var(--tk-keyword); }
+.tk-string, .tk-char { color: var(--tk-string); }
+.tk-comment { color: var(--tk-comment); font-style: italic; }
+.tk-number, .tk-boolean, .tk-annotation, .tk-macro, .tk-directive { color: var(--tk-number); }
+.tk-function, .tk-class-name { color: var(--tk-function); }
+:root {
+  --tk-keyword: #7e57c2;
+  --tk-string: #0a3069;
+  --tk-comment: #6e7781;
+  --tk-number: #953800;
+  --tk-function: #0550ae;
+}
+html.dark {
+  --tk-keyword: #d2a8ff;
+  --tk-string: #a5d6ff;
+  --tk-comment: #8b949e;
+  --tk-number: #ffa657;
+  --tk-function: #79c0ff;
+}
 .ln.flash { animation: flash 1s ease-out; }
 @keyframes flash { from { background: var(--el-color-success); } to { } }
 @media (prefers-reduced-motion: reduce) { .ln.flash { animation: none } }
@@ -364,7 +434,8 @@ table.tbl td.na { color: var(--el-text-color-secondary); opacity: .6; }
    背景色会与四态染色打架，而那四种颜色是这一屏的主信息 */
 .ln.hit { border-left-color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
 
-.tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px; border: 1px solid; }
+/* nowrap：表格列窄时「部分实例掉线」会被折成两行，看上去像个方块而不是一枚标签 */
+.tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px; border: 1px solid; white-space: nowrap; }
 .tag.ok { color: var(--el-color-success); border-color: var(--el-color-success); background: var(--el-color-success-light-9); }
 .tag.err { color: var(--el-color-danger); border-color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
 .tag.warn { color: var(--el-color-warning); border-color: var(--el-color-warning); background: var(--el-color-warning-light-9); }

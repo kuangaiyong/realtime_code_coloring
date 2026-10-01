@@ -1,6 +1,7 @@
 import { api } from './api.js';
+import { langOf, tokenizeLines } from './syntax.js';
 
-const { reactive } = Vue;
+const { reactive, markRaw } = Vue;
 
 /**
  * 三个视图共用的状态与动作。
@@ -89,7 +90,14 @@ export const store = reactive({
 
   // ---- 场景 ----
   /** 正在录制的场景 id。页面上没有录制入口，但经 API 开着的场景要显示出来 */
-  activeScenario: null
+  activeScenario: null,
+
+  // ---- 采集心跳 ----
+  /**
+   * 看到平台的 lastCollectedAt 换成新值的那一刻（本地时间，ms），顶栏据此显示「上次采集 N 秒前」。
+   * 记本地时间、不直接拿服务端时间相减：浏览器与平台的时钟未必对得上，差几秒就会显示成「-3 秒前」
+   */
+  lastCollectSeen: 0
 });
 
 /** 把项目 id 拼进地址。id 由用户自取，必须转义 —— 它会落进 URL 路径 */
@@ -131,9 +139,24 @@ function unavailable(msg) {
   store.gateError = null;
 }
 
+/** 上一次看到的 lastCollectedAt 原值：值变了才算「平台又采了一轮」 */
+let beatValue = null;
+
+function noteCollect(at) {
+  if (!at || at === beatValue) return;
+  // 第一次看到时不能当成「刚刚」：页面打开时平台可能已经采集失败了好一阵，lastCollectedAt 停在十分钟前，
+  // 记成此刻就会在探针报红的同时写着「上次采集 刚刚」。这一次按服务端时间算（时钟有偏差也只错到下一轮采集），
+  // 之后每次换新值都按本地时间记
+  const first = beatValue === null;
+  beatValue = at;
+  const t = Date.parse(at);
+  store.lastCollectSeen = first && t ? Math.min(Date.now(), t) : Date.now();
+}
+
 /** 把一份新的 summary 装进 store，并做那些"不是渲染"的副作用 */
 function applySummary(d) {
   store.summary = d;
+  noteCollect(d.lastCollectedAt);
   if ((d.instances || []).length) {
     store.lastGood = d;
   }
@@ -211,6 +234,36 @@ export async function loadGate() {
  * 这种错法在界面上完全看不出来，只会觉得「这文件怎么是这些代码」。
  */
 let fileSeq = 0;
+
+/**
+ * 分词结果缓存。每次推送都会重取当前文件的 rows，但同一个构建里源码不变 ——
+ * 不缓存就是每 3 秒把整份文件重新分词一遍。键里带上源码长度和哈希：
+ * 换了构建、文件变了，键自然就变了。只缓存高亮；染色（status）每次都用接口给的新值。
+ */
+const tokenCache = new Map();
+const TOKEN_CACHE_MAX = 20;
+
+function hashOf(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+function tokensFor(path, rows) {
+  const text = rows.map(r => r.text).join('\n');
+  const key = path + '\u0000' + text.length + '\u0000' + hashOf(text);
+  let lines = tokenCache.get(key);
+  if (lines) {
+    // 最近用过的挪到最后：淘汰时从最前面删
+    tokenCache.delete(key);
+  } else {
+    lines = tokenizeLines(text, langOf(path));
+  }
+  tokenCache.set(key, lines);
+  if (tokenCache.size > TOKEN_CACHE_MAX) tokenCache.delete(tokenCache.keys().next().value);
+  return lines;
+}
+
 export async function openFile(path) {
   const seq = ++fileSeq;
   // 换文件就丢弃上一份行状态，否则会拿 A 文件第 N 行的状态去比 B 文件第 N 行，
@@ -229,6 +282,11 @@ export async function openFile(path) {
   if (seq !== fileSeq) return;
   const next = {};
   if (d.found) {
+    const tokens = tokensFor(path, d.rows);
+    d.rows.forEach((r, i) => {
+      // markRaw：token 只读，不需要 Vue 给几千个小对象挨个套响应式代理
+      r.tokens = markRaw(tokens[i] || (r.text ? [{ type: '', text: r.text }] : []));
+    });
     for (const r of d.rows) {
       // 上一次是未覆盖、这次变成已覆盖 → 高亮闪一下，让「变绿」这件事可见
       r.justCovered = store.prevStatus[r.line] === 'MISSED' && r.status === 'COVERED';
@@ -237,6 +295,33 @@ export async function openFile(path) {
   }
   store.file = d;
   store.prevStatus = next;
+  if (d.found) {
+    try {
+      localStorage.setItem(lastFileKey(), path);
+    } catch (e) { /* 隐私模式下存不进去，只是下次不记得，不影响这一次 */ }
+  }
+}
+
+/** 每个项目各记各的「上次看的文件」：两个项目的路径集合互不相交，混记就等于没记 */
+function lastFileKey() {
+  return 'rtcc-last-file:' + store.projectId;
+}
+
+/**
+ * 换口径、进项目时选哪个文件：仍在范围内的当前文件 → 这个项目上次看的 → 第一个有覆盖的 → 第一个。
+ *
+ * 「第一个有覆盖的」排在「第一个」前面：按路径排第一的常是一个 0% 的文件（C++ 的 main.cpp），
+ * 一进来迎面一整屏红，读起来像「什么都没测到」，而别的文件明明已经绿了一片
+ */
+function pickFile(files) {
+  if (files.some(f => f.path === store.current)) return store.current;
+  let last = null;
+  try {
+    last = localStorage.getItem(lastFileKey());
+  } catch (e) { /* 读不到就当没记过 */ }
+  if (last && files.some(f => f.path === last)) return last;
+  const covered = files.find(f => f.coveredLines > 0);
+  return covered ? covered.path : (files.length ? files[0].path : null);
 }
 
 /** 换口径后文件范围会变，原先选中的文件可能已不在范围内 */
@@ -245,8 +330,7 @@ export async function reload() {
   const d = await loadSummary();
   // 视图不可用时保留 current，恢复后仍回到用户原先看的那个文件
   if (!d) return;
-  const keep = d.files.some(f => f.path === store.current);
-  const path = keep ? store.current : (d.files.length ? d.files[0].path : null);
+  const path = pickFile(d.files);
   store.current = null;
   if (path) {
     await openFile(path);
@@ -316,15 +400,27 @@ export async function loadActiveScenario() {
  *
  * 代价是一个 3 秒的轮询。它只读服务端内存里的一个字段，与门禁那种
  * 「每次要起三个 git 子进程」不是一回事，所以这里可以轮询而门禁不行。
+ *
+ * <b>采集心跳搭同一个定时器</b>，理由同上：推送只在覆盖率变化时才来，没人调接口时
+ * 拿「上次收到推送」当「上次采集」，数字会一直涨，把「平台在采、只是没变化」说成「平台卡住了」。
+ * 取的是项目列表里这个项目的 lastCollectedAt —— 列表页本来就每 5 秒轮询这个接口，
+ * 服务端只读内存里的几个标量。
  */
-let scenarioTimer = null;
-function followScenario() {
+let followTimer = null;
+function followProject() {
   // 换项目时必须先清掉：两个定时器同时写 store.activeScenario，
   // 页面会在两个项目的场景状态之间来回跳
-  if (scenarioTimer) clearInterval(scenarioTimer);
-  scenarioTimer = setInterval(() => {
+  if (followTimer) clearInterval(followTimer);
+  followTimer = setInterval(() => {
     loadActiveScenario().catch(() => { /* 取不到不该在页面上刷错误，下一轮再说 */ });
+    loadBeat().catch(() => { /* 同上：取不到时数字照常往上涨，本身就是信号 */ });
   }, 3000);
+}
+
+async function loadBeat() {
+  const d = await api.get('/api/projects');
+  const p = (d.projects || []).find(x => x.id === store.projectId);
+  if (p) noteCollect(p.lastCollectedAt);
 }
 
 export async function collectNow() {
@@ -413,8 +509,11 @@ export async function setProject(id, name) {
   store.perInst = null;
   store.perInstAt = '';
   store.activeScenario = null;
+  // 心跳也要归零：留着上一个项目的时间，新项目会先显示成「刚刚采过」
+  beatValue = null;
+  store.lastCollectSeen = 0;
   connectWs();
-  followScenario();
+  followProject();
   await loadActiveScenario().catch(() => { /* 取不到不该挡住染色 */ });
   await reload();
 }

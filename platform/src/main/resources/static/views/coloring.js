@@ -153,8 +153,29 @@ export const Coloring = {
       if (el) el.scrollIntoView({ block: 'center' });
     }, { immediate: true });
 
+    /**
+     * 状态符号。给色弱的人一个不靠颜色的通道 —— 红绿两条色条明度相近，只靠颜色分不出。
+     * diff 之外的行（OUT）不参与染色，也就没有符号
+     */
+    const GLYPH = { COVERED: '✓', MISSED: '✕', PARTIAL: '◐' };
+    const lineState = (r) => r.inDiff === false ? 'OUT' : r.status;
+
+    /**
+     * 部分分支行的悬停提示。数字取接口逐行给的 coveredBranches / missedBranches，
+     * 不在前端推算；拿不到分支数（Go / Rust，或非部分分支行）就不给提示 ——
+     * 写成「分支 0/0」会被读成「一个分支都没测」
+     */
+    function branchTip(r) {
+      if (lineState(r) !== 'PARTIAL' || r.coveredBranches == null || r.missedBranches == null) return null;
+      return '分支 ' + r.coveredBranches + '/' + (r.coveredBranches + r.missedBranches) + ' 已覆盖';
+    }
+
+    /** token 类型 → class：「string interpolation」→「tk-string tk-interpolation」；普通文本不加 class */
+    const tkClass = (type) => (type ? type.split(' ').map(t => 'tk-' + t).join(' ') : null);
+
     return { store, all, files, sorted, keyword, emptyHint, ratioText, openFile, hit,
-             pctClass, hasData, CHANGE, metricsOf, exportCsv, incremental };
+             pctClass, hasData, CHANGE, metricsOf, exportCsv, incremental,
+             GLYPH, lineState, branchTip, tkClass };
   },
   template: `
 <div class="view coloring" data-testid="view-coloring">
@@ -175,7 +196,7 @@ export const Coloring = {
       <el-input v-model="keyword" size="small" clearable placeholder="按文件名 / 包名 / 路径过滤"
                 data-testid="file-filter" />
     </div>
-    <div data-testid="file-list">
+    <div class="file-list" data-testid="file-list">
       <div v-if="!files.length" class="empty">{{ emptyHint }}</div>
       <!-- 两行式：左栏是固定 300px，一行放不下三组数。第一行是找文件用的
            （名字 + 那个百分比），第二行才是三组明细 -->
@@ -203,21 +224,23 @@ export const Coloring = {
                所以这一项整个不显示 -->
           <span v-if="!incremental" :class="{ na: !metricsOf(f).me }">法 {{ metricsOf(f).me || '不提供' }}</span>
         </span>
+        <!-- 行覆盖率细条：扫一眼列表就知道哪些文件绿了一片、哪些还空着，不用逐个读百分比 -->
+        <span class="bar"><i :class="pctClass(f.ratio)" :style="{ width: f.ratio + '%' }"></i></span>
       </button>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-head">
+    <div class="card-head src-head">
       <h2 data-testid="current-path">{{ store.current || '未选择文件' }}</h2>
       <span class="sub" data-testid="current-ratio">{{ ratioText }}</span>
     </div>
     <div class="legend">
-      <span><i style="background:var(--el-color-success)"></i>已覆盖</span>
-      <span><i style="background:var(--el-color-warning)"></i>部分分支</span>
-      <span><i style="background:var(--el-color-danger)"></i>未覆盖</span>
+      <span><i style="background:var(--cov-covered-bar)"></i>✓ 已覆盖</span>
+      <span><i style="background:var(--cov-partial-bar)"></i>◐ 部分分支</span>
+      <span><i style="background:var(--cov-missed-bar)"></i>✕ 未覆盖</span>
       <span><i style="background:var(--el-border-color)"></i>非可执行行</span>
-      <span style="margin-left:auto">探针为布尔型，只记录是否执行，不记录执行次数</span>
+      <span class="fi" style="margin-left:auto" title="探针为布尔型，只记录是否执行，不记录执行次数">ⓘ</span>
     </div>
     <div class="src" data-testid="source">
       <div v-if="!store.file" class="empty">在左侧选择一个文件</div>
@@ -226,8 +249,10 @@ export const Coloring = {
         <div v-for="r in store.file.rows" :key="r.line"
              class="ln"
              :class="r.inDiff === false ? 'out' : [r.status, { flash: r.justCovered, hit: r.line === hit }]"
-             :data-testid="'line-' + r.line" :data-status="r.inDiff === false ? 'OUT' : r.status">
-          <span class="no">{{ r.line }}</span><span class="tx">{{ r.text }}</span>
+             :data-testid="'line-' + r.line" :data-status="r.inDiff === false ? 'OUT' : r.status"
+             :title="branchTip(r)">
+          <span class="no">{{ r.line }}</span><span class="gl" :data-testid="GLYPH[lineState(r)] ? 'cov-glyph' : null">{{ GLYPH[lineState(r)] || '' }}</span><span class="tx"><!-- 逐段文本插值，不用 v-html：源码里的 < 只会是文本
+          --><template v-if="r.tokens"><span v-for="(t, i) in r.tokens" :key="i" :class="tkClass(t.type)">{{ t.text }}</span></template><template v-else>{{ r.text }}</template></span>
         </div>
       </template>
     </div>

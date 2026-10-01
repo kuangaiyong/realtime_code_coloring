@@ -21,16 +21,24 @@ const ROUTES = [
   // 顺序按「先看什么」排：代码染色是这个平台的核心价值，总览是同一份数据的汇总，
   // 门禁是基于它们的判断，最后才是接入 / 诊断 / 配置这些不常用的。
   // scoped 标记「这一页会显示覆盖数字」——全量/增量口径与清零只在它们上面出现
-  { path: 'coloring', name: '代码染色', icon: 'Document', comp: Coloring, scoped: true },
-  { path: 'overview', name: '总览看板', icon: 'DataLine', comp: Overview, scoped: true },
-  { path: 'gate', name: '覆盖门禁', icon: 'CircleCheck', comp: Gate, scoped: true },
-  { path: 'report', name: '覆盖率报表', icon: 'Histogram', comp: Report, scoped: true },
-  { path: 'onboard', name: '服务接入', icon: 'Connection', comp: Onboard },
+  { path: 'coloring', name: '代码染色', icon: 'Document', comp: Coloring, scoped: true, group: 'view' },
+  { path: 'overview', name: '总览看板', icon: 'DataLine', comp: Overview, scoped: true, group: 'view' },
+  { path: 'gate', name: '覆盖门禁', icon: 'CircleCheck', comp: Gate, scoped: true, group: 'view' },
+  { path: 'report', name: '覆盖率报表', icon: 'Histogram', comp: Report, scoped: true, group: 'view' },
+  { path: 'onboard', name: '服务接入', icon: 'Connection', comp: Onboard, group: 'manage' },
   // 接入页搬出来的说明。不 scoped —— 它一个覆盖数字都不显示，口径栏不该出现在这里
-  { path: 'help', name: '接入帮助', icon: 'QuestionFilled', comp: Help },
-  { path: 'events', name: '采集事件', icon: 'Warning', comp: Events },
-  { path: 'settings', name: '项目设置', icon: 'Setting', comp: Settings }
+  { path: 'help', name: '接入帮助', icon: 'QuestionFilled', comp: Help, group: 'manage' },
+  { path: 'events', name: '采集事件', icon: 'Warning', comp: Events, group: 'manage' },
+  { path: 'settings', name: '项目设置', icon: 'Setting', comp: Settings, group: 'manage' }
 ];
+/**
+ * 菜单分两组：天天看的（覆盖数字）与接一次就不常动的（接入、诊断、配置）。
+ * 八项平铺时，「我要看染色」与「我要改探针地址」在视觉上是同一个分量
+ */
+const GROUPS = [
+  { key: 'view', title: '看覆盖' },
+  { key: 'manage', title: '接入与管理' }
+].map(g => ({ ...g, routes: ROUTES.filter(r => r.group === g.key) }));
 const DEFAULT_ROUTE = 'coloring';
 
 const App = {
@@ -157,6 +165,29 @@ const App = {
         : '整体行覆盖率 ' + d.overallRatio + '%';
     });
 
+    // ---------- 顶栏：采集心跳 ----------
+    // 「什么时候又采了一轮」由 store 跟住（lastCollectSeen），这里只换算成「N 秒前」。
+    // 平台在采，它就在几秒内来回跳；采集失败时 lastCollectedAt 不再更新，它才会一直涨 —— 涨过三个周期就变色。
+    // 每半秒刷新而不是每秒：按秒取整显示时，刷新间隔若也是 1s，显示最多比真实值晚 1s，
+    // 和 3s 的心跳轮询叠在一起，会一连十几秒都停在「刚刚」，看着像没在走（实测见过连续 9s）
+    const now = ref(Date.now());
+    setInterval(() => { now.value = Date.now(); }, 500);
+    const beatAge = computed(() => store.lastCollectSeen
+      ? Math.max(0, Math.floor((now.value - store.lastCollectSeen) / 1000)) : null);
+    const beatText = computed(() => {
+      const s = beatAge.value;
+      if (s == null) return '尚无成功的采集';
+      if (s === 0) return '上次采集 刚刚';
+      if (s < 60) return '上次采集 ' + s + ' 秒前';
+      return '上次采集 ' + (s < 3600 ? Math.floor(s / 60) + ' 分钟前' : Math.floor(s / 3600) + ' 小时前');
+    });
+
+    // 清零影响的是全部实例、所有正在看这个项目的人，确认框里要把这两件事说出来
+    const resetTip = computed(() => {
+      const n = ((store.summary && store.summary.instances) || []).length;
+      return '会清零' + (n ? '全部 ' + n + ' 个实例' : '所有实例') + '的计数器，正在看这个项目的人会一起看到数据归零';
+    });
+
     // 场景只能经 API 开始 / 结束（页面上不再有入口），但进行中这件事必须显示出来 ——
     // 它会让清零和保存配置被服务端回 409，不显示的话那两处看起来就是「点了没反应」
     const running = computed(() => !!store.activeScenario);
@@ -185,10 +216,10 @@ const App = {
     syncRoute();
 
     return {
-      ROUTES, route, inProject, isNew, currentView, currentRoute, scoped,
+      GROUPS, route, inProject, isNew, currentView, currentRoute, scoped,
       navigate, toList, toNew, openSettings, openProject,
       store, probe, overall, dark,
-      running,
+      running, beatAge, beatText, resetTip,
       setMode, onCollect, onReset
     };
   },
@@ -198,7 +229,8 @@ const App = {
     <div class="brand"><span class="dot"></span><span class="nm">代码实时染色平台</span></div>
     <!-- 一级只有项目列表；进了项目才换成项目内菜单。两套菜单不并存，
          否则「概览」到底是平台的还是这个项目的，说不清 -->
-    <el-menu v-if="!inProject" default-active="projects">
+    <!-- @select 不能省：向导页（#/new）也挂着这套菜单，不绑的话点「项目管理」没有任何反应 -->
+    <el-menu v-if="!inProject" default-active="projects" @select="toList">
       <el-menu-item index="projects" data-testid="nav-projects">
         <el-icon><component is="Folder" /></el-icon><span>项目管理</span>
       </el-menu-item>
@@ -209,10 +241,12 @@ const App = {
       </div>
       <div class="proj-name" :title="store.projectId">{{ store.projectName || store.projectId }}</div>
       <el-menu :default-active="route" @select="navigate">
-        <el-menu-item v-for="r in ROUTES" :key="r.path" :index="r.path" :data-testid="'nav-' + r.path">
-          <el-icon><component :is="r.icon" /></el-icon>
-          <span>{{ r.name }}</span>
-        </el-menu-item>
+        <el-menu-item-group v-for="g in GROUPS" :key="g.key" :title="g.title" :data-testid="'nav-group-' + g.key">
+          <el-menu-item v-for="r in g.routes" :key="r.path" :index="r.path" :data-testid="'nav-' + r.path">
+            <el-icon><component :is="r.icon" /></el-icon>
+            <span>{{ r.name }}</span>
+          </el-menu-item>
+        </el-menu-item-group>
       </el-menu>
     </template>
     <div class="grow"></div>
@@ -225,6 +259,8 @@ const App = {
       <!-- 口径、采集、清零都是「对某个项目」的动作，列表页上没有落点 -->
       <template v-if="inProject">
       <span class="pill" :class="probe.cls" data-testid="probe-pill"><i></i>{{ probe.text }}</span>
+      <span class="beat" :class="{ stale: beatAge != null && beatAge > 15 }" data-testid="last-collect"
+            title="平台最近一次采集成功距今多久。采集失败（探针不可达、分析出错）时它不再更新，数字会一直涨">{{ beatText }}</span>
       <span class="overall" data-testid="overall">{{ overall }}</span>
       <!-- 「正在录制」跟着 inProject 而不是 scoped：录制期间清零会被拒、改配置会被拒，
            而后者是在「项目设置」页上做的 —— 只挂在显示覆盖数字的那几页，
@@ -243,12 +279,24 @@ const App = {
                 style="width:150px" data-testid="baseline"
                 title="增量基线 ref（分支名、tag 或 commit）"
                 @change="setMode('incremental')" />
-      <el-button size="small" data-testid="btn-collect" @click="onCollect">立即采集</el-button>
-      <!-- 场景进行中清零会让归因数据只剩清零之后那一段，服务端会拒绝，这里先把入口关掉 -->
-      <el-button size="small" type="primary" data-testid="btn-reset"
-                 :disabled="running"
-                 :title="running ? '场景进行中不能清零，否则该场景的归因数据会被截断' : ''"
-                 @click="onReset">清零计数器</el-button>
+      <el-button size="small" circle data-testid="btn-collect"
+                 title="立即采集（不等下一个轮询周期）" @click="onCollect">
+        <el-icon><component is="Refresh" /></el-icon>
+      </el-button>
+      <!-- 清零清的是全部实例、所有正在看的人都受影响：不做全页最醒目的按钮，且必须二次确认。
+           场景进行中清零会让归因数据只剩清零之后那一段，服务端会拒绝，这里先把入口关掉 -->
+      <el-popconfirm :title="resetTip" width="280" icon="WarningFilled"
+                     icon-color="var(--el-color-danger)" @confirm="onReset">
+        <template #reference>
+          <el-button size="small" type="danger" plain data-testid="btn-reset"
+                     :disabled="running"
+                     :title="running ? '场景进行中不能清零，否则该场景的归因数据会被截断' : ''">清零计数器</el-button>
+        </template>
+        <template #actions="{ confirm, cancel }">
+          <el-button size="small" @click="cancel">取消</el-button>
+          <el-button size="small" type="danger" data-testid="btn-reset-confirm" @click="confirm">确认清零</el-button>
+        </template>
+      </el-popconfirm>
       </template>
       <el-button size="small" circle data-testid="btn-theme"
                  :title="dark ? '切回浅色' : '切到深色'" @click="dark = !dark">
