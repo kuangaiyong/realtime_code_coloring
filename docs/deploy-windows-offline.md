@@ -665,7 +665,7 @@ java -jar target/platform-0.9.2.jar
 ### 8.4 各语言的要点
 
 四种语言都做到了**业务源码零改动**，只是 Go、C++、Rust 要带插桩重新编译一次。
-完整约定见 `.claude/skills/rtcc-probe-setup/SKILL.md` 和页面上的「接入帮助」。
+完整约定见 `.claude/skills/rtcc-probe-setup/SKILL.md` 和页面上「服务接入」里的「接入帮助」页签。
 这里只列最容易出错的几条：
 
 - **所有语言**：被测实例要自报构建版本，也就是 40 位 commit 号，工作树脏时加 `-dirty`。

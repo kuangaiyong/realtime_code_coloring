@@ -9,7 +9,6 @@ import { Settings } from './views/settings.js';
 import { Events } from './views/events.js';
 import { Gate } from './views/gate.js';
 import { Report } from './views/report.js';
-import { Help } from './views/help.js';
 
 const { createApp, computed, ref, watchEffect } = Vue;
 
@@ -26,8 +25,10 @@ const ROUTES = [
   { path: 'gate', name: '覆盖门禁', icon: 'CircleCheck', comp: Gate, scoped: true, group: 'view' },
   { path: 'report', name: '覆盖率报表', icon: 'Histogram', comp: Report, scoped: true, group: 'view' },
   { path: 'onboard', name: '服务接入', icon: 'Connection', comp: Onboard, group: 'manage' },
-  // 接入页搬出来的说明。不 scoped —— 它一个覆盖数字都不显示，口径栏不该出现在这里
-  { path: 'help', name: '接入帮助', icon: 'QuestionFilled', comp: Help, group: 'manage' },
+  // 接入帮助是服务接入页的一个页签，不再单占一个菜单项（hidden）。路由保留：
+  // #/p/<id>/help[/<lang>] 是接入页「详细说明」与书签的落点，渲染的仍是接入页、选中帮助页签。
+  // 不 scoped —— 它一个覆盖数字都不显示，口径栏不该出现在这里
+  { path: 'help', name: '服务接入', icon: 'QuestionFilled', comp: Onboard, group: 'manage', hidden: true, menu: 'onboard' },
   { path: 'events', name: '采集事件', icon: 'Warning', comp: Events, group: 'manage' },
   { path: 'settings', name: '项目设置', icon: 'Setting', comp: Settings, group: 'manage' }
 ];
@@ -38,7 +39,7 @@ const ROUTES = [
 const GROUPS = [
   { key: 'view', title: '看覆盖' },
   { key: 'manage', title: '接入与管理' }
-].map(g => ({ ...g, routes: ROUTES.filter(r => r.group === g.key) }));
+].map(g => ({ ...g, routes: ROUTES.filter(r => r.group === g.key && !r.hidden) }));
 const DEFAULT_ROUTE = 'coloring';
 
 const App = {
@@ -240,7 +241,7 @@ const App = {
         <el-icon><component is="ArrowLeft" /></el-icon><span>全部项目</span>
       </div>
       <div class="proj-name" :title="store.projectId">{{ store.projectName || store.projectId }}</div>
-      <el-menu :default-active="route" @select="navigate">
+      <el-menu :default-active="currentRoute.menu || route" @select="navigate">
         <el-menu-item-group v-for="g in GROUPS" :key="g.key" :title="g.title" :data-testid="'nav-group-' + g.key">
           <el-menu-item v-for="r in g.routes" :key="r.path" :index="r.path" :data-testid="'nav-' + r.path">
             <el-icon><component :is="r.icon" /></el-icon>

@@ -226,6 +226,19 @@ export const Coloring = {
     const newSet = computed(() => new Set((store.file && store.newLines[store.file.path]) || []));
     const isNew = (r) => r.inDiff !== false && newSet.value.has(r.line);
     const newCount = computed(() => (store.file && store.file.found ? store.file.rows.filter(isNew).length : 0));
+
+    // ---------- 文件墙 ----------
+    const mode = ref('list');
+    /** 按包分组；跟着过滤框走（与列表看到的是同一批文件） */
+    const wallGroups = computed(() => {
+      const m = new Map();
+      for (const f of files.value) {
+        const k = f.packageName || '（根目录）';
+        if (!m.has(k)) m.set(k, []);
+        m.get(k).push(f);
+      }
+      return [...m.entries()].map(([pkg, fs]) => ({ pkg, files: fs }));
+    });
     const clearNew = () => clearNewLines(store.file.path);
 
     // ---------- 缩略条：整份文件的四态缩成右边一条，新亮起的行更亮，框出当前看到的那一段 ----------
@@ -318,7 +331,7 @@ export const Coloring = {
 
     return { store, all, files, sorted, keyword, emptyHint, ratioText, openFile, hit,
              followOn, paused, onUser, resumeFollow, nameOf, ago, openChange, isChanged, latestDelta, isNew,
-             newCount, clearNew, srcEl, mmEl, mm, drawMinimap, mmDown,
+             newCount, clearNew, srcEl, mmEl, mm, drawMinimap, mmDown, mode, wallGroups,
              pctClass, hasData, CHANGE, metricsOf, exportCsv, incremental,
              GLYPH, lineState, branchTip, tkClass };
   },
@@ -367,8 +380,27 @@ export const Coloring = {
     <div class="filter">
       <el-input v-model="keyword" size="small" clearable placeholder="按文件名 / 包名 / 路径过滤"
                 data-testid="file-filter" />
+      <div class="seg mini" title="列表看明细；文件墙一屏看完整个项目哪片测到了、哪片还空着">
+        <button :class="{ on: mode === 'list' }" data-testid="coloring-mode-list" @click="mode = 'list'">列表</button>
+        <button :class="{ on: mode === 'wall' }" data-testid="coloring-mode-wall" @click="mode = 'wall'">文件墙</button>
+      </div>
     </div>
-    <div class="file-list" data-testid="file-list">
+    <!-- 文件墙：每个文件一格、按包分组、按覆盖率三档上色（与列表的百分比同一套 pctClass），刚有新亮起的格子脉动几下。
+         只放在染色页 —— 同一件事只在一个视图里出现 -->
+    <div v-if="mode === 'wall'" class="file-wall" data-testid="file-wall">
+      <div v-if="!files.length" class="empty">{{ emptyHint }}</div>
+      <div v-for="g in wallGroups" :key="g.pkg" class="wall-group">
+        <div class="wall-pkg" :title="g.pkg">{{ g.pkg }}</div>
+        <div class="wall-tiles">
+          <button v-for="f in g.files" :key="f.path" class="tile" :class="[pctClass(f.ratio), { on: f.path === store.current }]"
+                  data-testid="wall-tile" :data-path="f.path" :data-level="pctClass(f.ratio)"
+                  :data-changed="isChanged(f.path) ? '1' : null"
+                  :title="f.sourceFileName + ' · ' + f.ratio + '%（行 ' + f.coveredLines + '/' + (f.coveredLines + f.missedLines) + '）'"
+                  @click="openFile(f.path)"></button>
+        </div>
+      </div>
+    </div>
+    <div v-else class="file-list" data-testid="file-list">
       <div v-if="!files.length" class="empty">{{ emptyHint }}</div>
       <!-- 两行式：左栏是固定 300px，一行放不下三组数。第一行是找文件用的
            （名字 + 那个百分比），第二行才是三组明细 -->

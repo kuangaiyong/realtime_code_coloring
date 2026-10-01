@@ -178,6 +178,10 @@ body {
 .seg button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
 .seg button:hover { color: var(--el-color-primary); border-color: var(--el-color-primary); }
 .seg button.on { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; z-index: 1; }
+/* 服务接入页的「接入步骤 / 接入帮助」页签：页面是 grid，不靠左会被拉满整行 */
+.ob-tabs { justify-self: start; }
+/* 帮助页签里嵌的是整个帮助视图，它自己也是 .view —— 内层不再要外边距，否则左右各缩进一截 */
+.view > .view { padding: 0; }
 
 /* ---------------- 视图容器 ---------------- */
 
@@ -243,7 +247,26 @@ body {
 /* ---------------- 染色 ---------------- */
 
 /* 过滤框与文件列表之间要有分隔：贴在一起时输入框看着像列表的第一项 */
-.filter { padding: 9px 12px; border-bottom: 1px solid var(--el-border-color-lighter); }
+.filter { padding: 9px 12px; border-bottom: 1px solid var(--el-border-color-lighter); display: flex; gap: 8px; align-items: center; }
+.filter .el-input { flex: 1; min-width: 0; }
+.seg.mini button { height: 24px; padding: 0 8px; font-size: 12px; }
+
+/* ---------------- 文件墙 ----------------
+   高度与文件列表同一个 calc：两种模式切来切去，左栏不该一长一短 */
+.file-wall { overflow-y: auto; max-height: calc(100vh - var(--topbar-h) - 170px); padding: 8px 12px 12px; }
+.wall-group + .wall-group { margin-top: 10px; }
+.wall-pkg { font-size: 11px; font-family: var(--mono); color: var(--el-text-color-secondary); margin-bottom: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wall-tiles { display: flex; flex-wrap: wrap; gap: 4px; }
+.tile { width: 22px; height: 22px; border-radius: 4px; border: none; padding: 0; cursor: pointer; transition: transform .15s ease; }
+.tile.s { background: var(--el-color-success); }
+.tile.w { background: var(--el-color-warning); }
+.tile.d { background: var(--el-color-danger); opacity: .8; }
+.tile.on { outline: 2px solid var(--el-color-primary); outline-offset: 1px; }
+.tile:hover { transform: scale(1.15); }
+.tile[data-changed="1"] { animation: tile-pulse 1s ease-in-out 4; }
+@keyframes tile-pulse { 50% { box-shadow: 0 0 0 4px var(--cov-covered-bg); } }
+@media (prefers-reduced-motion: reduce) { .tile[data-changed="1"] { animation: none } .tile:hover { transform: none } }
 
 /* 两行式：左栏固定 300px，一行放不下三组数。第一行找文件，第二行看明细 */
 .file { display: flex; flex-direction: column; gap: 3px; padding: 7px 14px; cursor: pointer; border: none; background: none; width: 100%; text-align: left; font-family: inherit; font-size: 13px; color: var(--el-text-color-regular); }
@@ -373,7 +396,15 @@ html.dark {
 /* 门禁结论是三态而非两态：「判不了」必须与「不通过」分开显示 ——
    前者该找人看平台，后者该补测试，混成同一个红色就会把人指去错误的方向 */
 .gate { display: flex; align-items: center; gap: 14px; padding: 16px 18px; flex-wrap: wrap; }
-.gate .verdict { font-size: 18px; font-weight: 600; padding: 3px 14px; border-radius: var(--radius); border: 1px solid; }
+/* 结论是这一页的答案，要比卡片里任何一个数都大一号 */
+.gate .verdict { font-size: 24px; font-weight: 600; padding: 4px 16px; border-radius: var(--radius); border: 1px solid; }
+.gate .num .thr { font-size: 13px; color: var(--el-text-color-secondary); }
+.gate-hint { font-size: 12px; color: var(--el-text-color-secondary); margin-left: auto; white-space: nowrap; }
+.gate-hint + .sub { margin-left: 0; }
+details.why-more { margin: 4px 0 8px; }
+details.why-more > summary { cursor: pointer; font-size: 12px; color: var(--el-text-color-secondary); user-select: none; }
+details.why-more > summary:hover { color: var(--el-color-primary); }
+details.why-more[open] > summary { margin-bottom: 6px; }
 .gate.pass .verdict { color: var(--el-color-success); border-color: var(--el-color-success); background: var(--el-color-success-light-9); }
 .gate.block .verdict { color: var(--el-color-danger); border-color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
 .gate.undecided .verdict { color: var(--el-color-warning); border-color: var(--el-color-warning); background: var(--el-color-warning-light-9); }

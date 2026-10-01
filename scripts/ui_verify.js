@@ -649,13 +649,14 @@ async function baselineOptions(page, testid) {
     for (const v of ['coloring', 'overview', 'gate', 'report']) {
       if (await scopedBar(v)) barOn.push(v); else barOff.push(v + '(缺)');
     }
-    for (const v of ['onboard', 'help', 'events', 'settings']) {
+    // 「接入帮助」已并进服务接入页成为页签（不再有 nav-help），它的口径栏由 5g 那条单独验
+    for (const v of ['onboard', 'events', 'settings']) {
       if (await scopedBar(v)) barOff.push(v + '(多)');
     }
     if (barOff.length) {
       fail(`口径栏出现的位置不对：${barOff.join('、')}`);
     } else {
-      pass(`口径栏只出现在会显示数字的 ${barOn.length} 个视图上，设置/事件/接入/帮助页没有`);
+      pass(`口径栏只出现在会显示数字的 ${barOn.length} 个视图上，设置/事件/接入页没有`);
     }
 
     // ---------- 4f · 场景进行中：页面上唯一的解释 ----------
@@ -831,6 +832,19 @@ async function baselineOptions(page, testid) {
         }
       }
     }
+
+    // 门禁是决策点：结论要在首屏，原理说明默认收起 —— 原来结论淹没在四段说明里
+    const gateLayout = await page.evaluate(() => {
+      const verdicts = [...document.querySelectorAll('[data-testid^="gate-verdict-"]')].map(v => v.getBoundingClientRect());
+      const whys = [...document.querySelectorAll('[data-testid="gate-why"]')];
+      return { n: verdicts.length, above: verdicts.every(r => r.bottom <= innerHeight),
+               size: verdicts.length ? parseFloat(getComputedStyle(document.querySelector('[data-testid^="gate-verdict-"]')).fontSize) : 0,
+               whys: whys.length, open: whys.filter(d => d.open).length };
+    });
+    if (gateLayout.n !== 2 || !gateLayout.above) fail(`门禁结论不全在首屏：${JSON.stringify(gateLayout)}`);
+    else if (gateLayout.whys < 2 || gateLayout.open) fail(`门禁原理说明没有默认收起：${JSON.stringify(gateLayout)}`);
+    else if (gateLayout.size < 20) fail(`门禁结论字号 ${gateLayout.size}px，不够醒目`);
+    else pass(`门禁两张结论都在首屏（字号 ${gateLayout.size}px），原理说明默认收起`);
 
     // ---------- 4h · 增量列表的「新增 / 修改」 ----------
     // 值得标出来，是因为两者该看的东西不同：新增文件整份都是这次的责任，一片红说明
@@ -1183,7 +1197,14 @@ async function baselineOptions(page, testid) {
     }
 
     // ---------- 5g · 接入帮助：说明的新家，且支持按语言深链接 ----------
-    await page.click('[data-testid="nav-help"]');
+    // 帮助不再是独立菜单项：从服务接入页的页签进（菜单里少一项，「接入」相关的东西都在一处）
+    if (await page.evaluate(() => !!document.querySelector('[data-testid="nav-help"]'))) fail('菜单里仍有独立的「接入帮助」');
+    else pass('「接入帮助」不再占一个菜单项');
+    await page.click('[data-testid="nav-onboard"]');
+    await waitFor(page, () => !!document.querySelector('[data-testid="view-onboard"]'), null, 5000);
+    const helpTab = await page.$('[data-testid="ob-tab-help"]');
+    if (!helpTab) fail('服务接入页没有「接入帮助」页签');
+    else await helpTab.click();
     if (await waitFor(page, () => !!document.querySelector('[data-testid="view-help"]'), null, 8000) < 0) {
       fail('打不开「接入帮助」视图');
     } else {
@@ -1198,10 +1219,14 @@ async function baselineOptions(page, testid) {
       }
       // 从接入页点某语言的「详细说明」跳过来，必须落在那门语言上 ——
       // 人是带着「我要看 Rust 的」这个意图点过来的，落回 Java 等于没跳
+      // 先切回「接入步骤」再整页打开（书签就是这么进来的）：页签已经停在帮助上的话，
+      // 这条验不出「地址 → 页签」坏没坏（点页签走的是 hashchange，5g 开头已经验过）
+      await page.click('[data-testid="ob-tab-guide"]');
       await page.goto(`${PLATFORM}/#/p/default/help/rust`, { waitUntil: 'networkidle2' });
+      await page.reload({ waitUntil: 'networkidle2' });
       await waitFor(page, () => !!document.querySelector('[data-testid="view-help"]'), null, 8000);
       const onRust = await page.evaluate(() =>
-        !!document.querySelector('[data-testid="hp-lang-rust"].on'));
+        !!document.querySelector('[data-testid="ob-tab-help"].on') && !!document.querySelector('[data-testid="hp-lang-rust"].on'));
       if (!onRust) fail('深链接 /help/rust 没落在 Rust 那一节');
       else pass('帮助页支持按语言深链接（/help/rust 直接落在 Rust）');
       // 帮助页一个覆盖数字都不显示，口径栏不该出现在这里
@@ -1744,6 +1769,34 @@ async function baselineOptions(page, testid) {
     else pass('确认清零后新亮起标记与动态条一并清空');
     await fetch(`${DEMO}/api/order/query?bizNo=A1001`);
     await waitFor(page, () => document.querySelectorAll('[data-testid^="line-"][data-status="COVERED"]').length > 0, null, 15000);
+
+    // ---------- 6-6 · 文件墙：一眼看完整个项目哪里测到了 ----------
+    // 列表要一行行读百分比；墙是每个文件一格、按覆盖率三档上色，几百个文件也一屏看完「哪片还空着」
+    await clickOr('coloring-mode-wall');
+    const wall = await waitFor(page, () => document.querySelectorAll('[data-testid="wall-tile"]').length > 0, null, 3000);
+    const fresh = await (await fetch(`${PLATFORM}/api/coverage/summary`)).json();
+    const tiles = await page.evaluate(() => [...document.querySelectorAll('[data-testid="wall-tile"]')]
+      .map(t => ({ path: t.dataset.path, level: t.dataset.level })));
+    const levelOf = await page.evaluate(async (fs) => {
+      const { pctClass } = await import('/api.js');
+      return fs.map(f => [f.path, pctClass(f.ratio)]);
+    }, fresh.files);
+    const want = new Map(levelOf);
+    const wrong = tiles.filter(t => want.get(t.path) !== t.level);
+    if (wall < 0 || tiles.length !== fresh.files.length) fail(`文件墙格子数 ${tiles.length} ≠ 文件数 ${fresh.files.length}`);
+    else if (wrong.length) fail(`文件墙颜色档位与覆盖率不符：${JSON.stringify(wrong.slice(0, 3))}`);
+    else pass(`文件墙 ${tiles.length} 格，颜色档位与各文件覆盖率一致`);
+    const pick = tiles.find(t => t.path !== target.path) || tiles[0];
+    if (!pick) {
+      fail('判不了：文件墙上一个格子都没有，没法验证点格子打开文件');
+    } else {
+      await page.click(`[data-testid="wall-tile"][data-path="${pick.path}"]`);
+      const openedWall = await waitFor(page, (p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, pick.path, 5000);
+      if (openedWall < 0) fail(`点文件墙的格子没有打开 ${pick.path}`);
+      else pass(`点文件墙的格子打开 ${pick.path.split('/').pop()}`);
+    }
+    await clickOr('coloring-mode-list');
+    await page.click(`[data-testid="file-item"][data-path="${target.path}"]`);
 
     // ---------- 6b · 走完向导建出一个能采数的项目 ----------
     // 这是方案 A 的核心承诺：向导最后一步强制自检，不通过就建不出来。
