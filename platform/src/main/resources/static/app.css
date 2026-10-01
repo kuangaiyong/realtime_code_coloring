@@ -185,8 +185,30 @@ body {
 /* 染色视图是两栏：左边文件列表、右边源码。源码是核心，不能被挤到折叠线以下 */
 .view.coloring { grid-template-columns: 300px minmax(0, 1fr); align-items: start; }
 /* 左栏贴住顶栏、文件列表自己滚：几百个文件的工程里，列表不能把整页拉长、把源码区一起带走 */
-.view.coloring > .card:first-child { position: sticky; top: calc(var(--topbar-h) + 14px); }
-.file-list { overflow-y: auto; max-height: calc(100vh - var(--topbar-h) - 120px); }
+.view.coloring > .live-bar + .card { position: sticky; top: calc(var(--topbar-h) + 14px); }
+.file-list { overflow-y: auto; max-height: calc(100vh - var(--topbar-h) - 170px); }
+
+/* ---------------- 实时动态条 ----------------
+   横跨两栏的一条：左边「● 实时 + 跟随开关」，中间是刚亮起的文件（放不下的截掉，新的在前），右端是图例 */
+.live-bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 4px 12px; min-width: 0;
+  background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius);
+  box-shadow: var(--card-shadow); font-size: 12px; color: var(--el-text-color-secondary); }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--el-text-color-placeholder); flex: none; }
+.live-dot.on { background: var(--cov-covered-bar); animation: pulse 1.6s ease-in-out infinite; }
+.live-label { font-weight: 600; color: var(--el-text-color-primary); flex: none; }
+.live-follow { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.live-paused { flex: none; color: var(--el-color-warning); white-space: nowrap; }
+.live-paused a { color: var(--el-color-primary); cursor: pointer; }
+.live-list { flex: 1; min-width: 0; display: flex; gap: 6px; overflow: hidden; }
+.live-empty { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.live-change { flex: none; border: 1px solid var(--el-border-color); background: var(--el-fill-color-light); border-radius: 12px;
+  padding: 2px 10px; font-size: 12px; font-family: inherit; color: var(--el-text-color-regular); cursor: pointer; white-space: nowrap; }
+.live-change b { color: var(--el-text-color-primary); font-weight: 600; }
+.live-change:hover { border-color: var(--cov-covered-bar); }
+/* 最新的那一条描绿：一眼知道「刚才那一下」落在哪 */
+.live-change:first-child { border-color: var(--cov-covered-bar); background: var(--cov-covered-bg); }
+.live-bar .legend { margin-left: auto; padding: 0; background: none; border: none; flex: none; flex-wrap: nowrap; }
+@media (prefers-reduced-motion: reduce) { .live-dot.on { animation: none } }
 @media (max-width: 900px) {
   .view.coloring { grid-template-columns: minmax(0, 1fr); }
   .aside { position: static; height: auto; }
@@ -207,6 +229,9 @@ body {
 .card-head.src-head { flex-wrap: wrap; row-gap: 2px; }
 .card-head.src-head h2 { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-head.src-head .sub { flex: none; overflow: visible; }
+.card-head.src-head .clear-new { flex: none; border: none; background: none; padding: 0; font: inherit; font-size: 12px;
+  line-height: 16px; color: var(--el-color-primary); cursor: pointer; }
+.card-head.src-head .clear-new:hover { text-decoration: underline; }
 
 .empty { padding: 40px 20px; text-align: center; color: var(--el-text-color-secondary); }
 .err { margin: 14px; padding: 10px 14px; background: var(--el-color-danger-light-9); color: var(--el-color-danger); border-radius: var(--radius); font-size: 13px; line-height: 1.7; }
@@ -244,6 +269,10 @@ body {
 .file .bar i.s { background: var(--el-color-success); }
 .file .bar i.w { background: var(--el-color-warning); }
 .file .bar i.d { background: var(--el-color-danger); }
+/* 刚有新亮起的文件亮约 4 秒并标 +N：动态条说的是「哪个文件」，列表上要能对上是哪一项 */
+.file { transition: background-color .6s ease, box-shadow .6s ease; }
+.file[data-changed="1"] { background: var(--cov-covered-bg); box-shadow: inset 3px 0 0 var(--cov-covered-bar); }
+.file .fdelta { flex: none; font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--cov-covered-bar); }
 
 /* 图例压成一条窄行：每行已经带了 ✓ ◐ ✕ 符号，图例只是第一次看时的对照，省下的高度留给源码 */
 .legend { display: flex; gap: 12px; padding: 5px 14px; background: var(--el-fill-color-light); border-bottom: 1px solid var(--el-border-color-lighter); font-size: 12px; color: var(--el-text-color-secondary); flex-wrap: wrap; }
@@ -252,9 +281,16 @@ body {
 
 /* 源码区<b>永远实心、永不加毛玻璃</b>：四态色（绿/黄/红/灰）是这个平台的核心
    信息载体，半透明叠底会让绿与黄在小面积上难分。观感让位于辨识度 */
-/* 180 = 顶栏 60 + 上下边距 28 + 卡片头（一行约 44，1280 宽时折成两行约 59）+ 图例约 29 + 边框，
-   整张源码卡落在一屏里，窄屏也不出整页滚动条 */
-.src { font-family: var(--mono); font-size: 13px; line-height: 21px; overflow-x: auto; max-height: calc(100vh - 180px); overflow-y: auto; }
+/* 200 = 顶栏 60 + 上下边距 28 + 动态条约 36 + 间距 14 + 卡片头（一行约 44，1280 宽时折成两行约 59）+ 边框，
+   整张源码卡落在一屏里，窄屏也不出整页滚动条（图例已并进动态条，源码卡里不再占一行） */
+.src { font-family: var(--mono); font-size: 13px; line-height: 21px; overflow-x: auto; max-height: calc(100vh - 200px); overflow-y: auto; }
+/* 缩略条贴在源码区右边，高度由脚本设成源码区的可视高度 */
+.src-wrap { display: flex; align-items: flex-start; }
+.src-wrap .src { flex: 1; min-width: 0; }
+.minimap { flex: none; width: 12px; cursor: pointer; border-left: 1px solid var(--el-border-color-lighter); background: var(--el-fill-color-lighter); }
+/* 新亮起的行：行号前一个小圆点、行号转绿，直到「清除标记」—— 回答「我刚才那几下测到了哪些行」 */
+.ln[data-new="1"] .no { color: var(--cov-covered-bar); opacity: 1; font-weight: 600; }
+.ln[data-new="1"] .no::before { content: '●'; font-size: 8px; margin-right: 4px; vertical-align: 1px; }
 .ln { display: flex; white-space: pre; border-left: 4px solid transparent; }
 .ln.COVERED { background-color: var(--cov-covered-bg); border-left-color: var(--cov-covered-bar); }
 .ln.MISSED { background-color: var(--cov-missed-bg); border-left-color: var(--cov-missed-bar); }
@@ -288,7 +324,8 @@ html.dark {
   --tk-number: #ffa657;
   --tk-function: #79c0ff;
 }
-.ln.flash { animation: flash 1s ease-out; }
+/* 2 秒：1 秒时眼睛刚从别处挪过来它就褪完了，尤其是跟随模式把人带到一个新文件的那一下 */
+.ln.flash { animation: flash 2s ease-out; }
 @keyframes flash { from { background: var(--el-color-success); } to { } }
 @media (prefers-reduced-motion: reduce) { .ln.flash { animation: none } }
 /* 增量视图：基线之后没动过的行仍要显示以保留上下文，但不参与染色 */
@@ -430,9 +467,11 @@ a.drill:hover { text-decoration: underline; }
 /* 「不提供」比一个差数字更弱 —— 它不是差，是没有这个概念 */
 table.tbl td.na { color: var(--el-text-color-secondary); opacity: .6; }
 
-/* 从报表点方法跳过来时，目标行要能一眼找到。用左边框而不是背景色：
-   背景色会与四态染色打架，而那四种颜色是这一屏的主信息 */
-.ln.hit { border-left-color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
+/* 跳转的目标行（从报表点方法、跟随模式、点动态条）要能一眼找到。用内描边圈出来，
+   背景色与左色条都不动：那是这一行的覆盖状态，是这一屏的主信息。
+   原先这里写着「用左边框而不是背景色」，规则里却两样都改了 —— 跳转只在报表那一处时看不出来，
+   跟随模式一开，最该看的那行新亮起的代码反而失去了绿色 */
+.ln.hit { outline: 2px solid var(--el-color-primary); outline-offset: -2px; }
 
 /* nowrap：表格列窄时「部分实例掉线」会被折成两行，看上去像个方块而不是一枚标签 */
 .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px; border: 1px solid; white-space: nowrap; }

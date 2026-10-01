@@ -104,6 +104,8 @@ public class ProjectRuntime {
     private volatile String lastError;
     private volatile Instant lastCollectedAt;
     private volatile List<InstanceStatus> instances = List.of();
+    /** 当前快照（state）是哪几台实例的数据并出来的。与 state 同在 collectLock 下更新，供 rejoined 判断 */
+    private volatile Set<String> snapshotFrom = Set.of();
 
     /**
      * 一个测试场景独占的覆盖：start 时清零计数器，stop 时抓取快照，
@@ -515,7 +517,11 @@ public class ProjectRuntime {
                     (System.nanoTime() - tAna0) / 1_000_000);
 
             Map<String, FileCoverage> previous = state.get().files();
+            Set<String> previousFrom = snapshotFrom;
+            List<String> nowFrom = statuses.stream().filter(s -> "CONNECTED".equals(s.status()))
+                    .map(InstanceStatus::endpoint).toList();
             state.set(new Snapshot(fresh, unified, versionConflict(statuses)));
+            snapshotFrom = Set.copyOf(nowFrom);
             // 少一台实例，聚合结果就少一部分覆盖：那些行会显示成红色，但其实别的机器跑到了。
             // 这不是「数据不可用」而是「数据不完整」，所以照常出报告，但状态必须与全连上区分开
             setProbeStatus(connected == endpoints.size() ? "CONNECTED" : "PARTIAL",
@@ -546,10 +552,16 @@ public class ProjectRuntime {
                 history.record(props.getId(), v.commit(), round(overallRatio(fresh)), covered, missed, fresh.size());
             }
 
-            if (changed(previous, fresh)) {
+            List<Map<String, Object>> improved = improvedLines(previous, fresh);
+            // 推不推看的是真实的变好（含失而复得的）：实例回来时染色要恢复，只是不把那些行说成新亮起
+            if (pushNeeded(previous, fresh, improved)) {
                 log.info("覆盖率发生变化，已推送：{} 个文件，整体 {}%",
                         fresh.size(), String.format("%.1f", overallRatio(fresh)));
-                publisher.broadcast(props.getId(), summary());
+                // 推送 = REST summary 的副本 + 顶层 changes。file 对象一个字段都不加：
+                // ws_verify 校验推送里每个 file 的字段集合与 REST 一致
+                Map<String, Object> payload = new LinkedHashMap<>(summary());
+                payload.put("changes", rejoined(previousFrom, nowFrom) ? List.of() : improved);
+                publisher.broadcast(props.getId(), payload);
             }
         } catch (Exception e) {
             if (!"ANALYZE_ERROR".equals(probeStatus)) {
@@ -818,17 +830,91 @@ public class ProjectRuntime {
                 + "聚合覆盖会静默丢弃对不上的那部分，请统一版本后重启被测服务";
     }
 
-    private boolean changed(Map<String, FileCoverage> before, Map<String, FileCoverage> after) {
-        if (before.size() != after.size()) {
+    /** 一次推送的 changes 最多带几个文件、每个文件最多几行：推送体不能随项目规模无界增长 */
+    static final int CHANGES_MAX_FILES = 20;
+    static final int CHANGES_MAX_LINES = 200;
+
+    /**
+     * 本轮与上一轮相比状态<b>变好</b>的行（未覆盖→已覆盖、未覆盖→部分、部分→已覆盖），按文件列出。
+     * 跟随模式、实时动态条、新亮起标记都靠它回答「我刚才那几下测到了哪些行」。
+     *
+     * <p>多报一行就是一句假话，所以只比两轮都有的文件、两轮都有的行：上一轮为空（平台刚起来的第一轮）
+     * 或上一轮没有这个文件，一律不报 —— 否则一上来已覆盖的行全被说成「刚亮起」。
+     * 变差（清零、掉线）不报。按变好的行数降序、路径升序；超上限时截断行号列表，delta 仍是精确行数。
+     * 静态且包级可见，供单测直接验证。
+     */
+    static List<Map<String, Object>> improvedLines(Map<String, FileCoverage> previous, Map<String, FileCoverage> fresh) {
+        if (previous == null || previous.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map.Entry<String, FileCoverage> e : fresh.entrySet()) {
+            FileCoverage old = previous.get(e.getKey());
+            if (old == null) {
+                continue;
+            }
+            Map<Integer, String> before = new HashMap<>();
+            for (FileCoverage.LineCoverage l : old.lines()) {
+                before.put(l.line(), l.status());
+            }
+            List<Integer> lines = new ArrayList<>();
+            for (FileCoverage.LineCoverage l : e.getValue().lines()) {
+                if (improved(before.get(l.line()), l.status())) {
+                    lines.add(l.line());
+                }
+            }
+            if (lines.isEmpty()) {
+                continue;
+            }
+            boolean truncated = lines.size() > CHANGES_MAX_LINES;
+            Map<String, Object> c = new LinkedHashMap<>();
+            c.put("path", e.getKey());
+            c.put("lines", truncated ? List.copyOf(lines.subList(0, CHANGES_MAX_LINES)) : lines);
+            c.put("delta", lines.size());
+            c.put("truncated", truncated);
+            out.add(c);
+        }
+        out.sort(Comparator.comparingInt((Map<String, Object> c) -> (Integer) c.get("delta")).reversed()
+                .thenComparing(c -> (String) c.get("path")));
+        return out.size() > CHANGES_MAX_FILES ? List.copyOf(out.subList(0, CHANGES_MAX_FILES)) : out;
+    }
+
+    private static boolean improved(String before, String now) {
+        if ("MISSED".equals(before)) {
+            return "COVERED".equals(now) || "PARTIAL".equals(now);
+        }
+        return "PARTIAL".equals(before) && "COVERED".equals(now);
+    }
+
+    /**
+     * 这一轮要不要推送：文件集合变了、某个文件的已覆盖行数变了，或者有行变好了。
+     *
+     * <p>最后一条不能省：部分分支→已覆盖时已覆盖行数不变（部分本来就算已覆盖），只看行数的话
+     * 这次变化永远推不出去，页面上的分支提示一直是旧的。
+     */
+    static boolean pushNeeded(Map<String, FileCoverage> previous, Map<String, FileCoverage> fresh,
+                              List<Map<String, Object>> improved) {
+        if (!improved.isEmpty() || previous.size() != fresh.size()) {
             return true;
         }
-        for (Map.Entry<String, FileCoverage> e : after.entrySet()) {
-            FileCoverage old = before.get(e.getKey());
+        for (Map.Entry<String, FileCoverage> e : fresh.entrySet()) {
+            FileCoverage old = previous.get(e.getKey());
             if (old == null || old.coveredLines() != e.getValue().coveredLines()) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * 这一轮有没有「上一轮没取到、这一轮又取到了」的实例。
+     *
+     * <p>有的话，它带回来的覆盖是<b>失而复得</b>而不是刚测到的：瞬时取不到数（tcpserver 被拒、超时）时
+     * 那台 JVM 没重启，计数器一直在。这一轮的变好里混着它的旧行，分不出哪些是真新的，
+     * 所以整轮不报 changes —— 宁可不报也不错报。只少了实例不算：剩下那些刚测到的行照常报。
+     */
+    static boolean rejoined(Set<String> before, Collection<String> now) {
+        return !before.containsAll(now);
     }
 
     public Map<String, Object> summary() {

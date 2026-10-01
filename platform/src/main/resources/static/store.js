@@ -92,6 +92,25 @@ export const store = reactive({
   /** 正在录制的场景 id。页面上没有录制入口，但经 API 开着的场景要显示出来 */
   activeScenario: null,
 
+  // ---- 实时变化（推送里的 changes）----
+  /** 最近几条「哪个文件新亮起了几行」，新的在前，最多 8 条；只存在这次打开页面的内存里 */
+  recentChanges: [],
+  /** 这次打开页面以来每个文件新亮起的行号（并集，升序），直到「清除标记」或确认清零 */
+  newLines: {},
+  /** 每个文件最近一次有新亮起的时刻（本地 ms），文件列表据此亮几秒 */
+  changedAt: {},
+  /**
+   * 每个文件最近一次新亮起了几行（列表上的 +N）。不从 recentChanges 里找：一次推送最多 20 个文件，
+   * 动态条只留 8 条，没进动态条的文件也会亮，找不到就成了「+undefined」（评审发现）
+   */
+  changedDelta: {},
+
+  // ---- 跟随模式 ----
+  /** 有新亮起时自动打开变化最多的文件、滚到新行。默认开，记在本地 */
+  follow: readFollow(),
+  /** 人刚操作过（点、滚、按键）就暂停跟随到这个时刻，免得从正在看代码的人手里抢焦点 */
+  followPausedUntil: 0,
+
   // ---- 采集心跳 ----
   /**
    * 看到平台的 lastCollectedAt 换成新值的那一刻（本地时间，ms），顶栏据此显示「上次采集 N 秒前」。
@@ -99,6 +118,95 @@ export const store = reactive({
    */
   lastCollectSeen: 0
 });
+
+function readFollow() {
+  try {
+    return localStorage.getItem('rtcc-follow') !== '0';
+  } catch (e) {
+    return true;
+  }
+}
+
+export function setFollow(on) {
+  store.follow = !!on;
+  store.followPausedUntil = 0;
+  try {
+    localStorage.setItem('rtcc-follow', on ? '1' : '0');
+  } catch (e) { /* 存不进去只是下次不记得 */ }
+}
+
+/** 人刚动过页面：10 秒内有新亮起也不切文件、不滚动 */
+export function pauseFollow() {
+  store.followPausedUntil = Date.now() + 10000;
+}
+
+export function resumeFollow() {
+  store.followPausedUntil = 0;
+}
+
+/** 某个文件新亮起的第一行；没有记录时为 null */
+export function firstNewLine(path) {
+  const ls = store.newLines[path];
+  return ls && ls.length ? ls[0] : null;
+}
+
+/** 把推送里的 changes 记下来：动态条、文件列表高亮、行上的新亮起标记都从这里取 */
+function noteChanges(changes) {
+  if (!Array.isArray(changes) || !changes.length) return;
+  const now = Date.now();
+  // 推送里已按变好的行数降序；倒着插到最前面，同一次推送里变化最多的那个排第一
+  for (const c of [...changes].reverse()) {
+    store.recentChanges.unshift({ path: c.path, delta: c.delta, lines: c.lines, at: now });
+    const merged = new Set(store.newLines[c.path] || []);
+    for (const l of c.lines) merged.add(l);
+    store.newLines[c.path] = [...merged].sort((a, b) => a - b);
+    store.changedAt[c.path] = now;
+    store.changedDelta[c.path] = c.delta;
+    flashNext[c.path] = { lines: c.lines, at: now };
+  }
+  store.recentChanges.splice(8);
+}
+
+function clearChanges() {
+  store.recentChanges = [];
+  store.newLines = {};
+  store.changedAt = {};
+  store.changedDelta = {};
+}
+
+/** 与服务端 improvedLines 同一个口径：三种变好，变差与不变都不算 */
+function improved(before, now) {
+  if (before === 'MISSED') return now === 'COVERED' || now === 'PARTIAL';
+  return before === 'PARTIAL' && now === 'COVERED';
+}
+
+/** 「清除标记」：只清这个文件的新亮起标记，动态条上的历史不动（那是「刚才发生过什么」的记录） */
+export function clearNewLines(path) {
+  delete store.newLines[path];
+}
+
+/**
+ * 下一次渲染某个文件时要闪的行（最近一次推送里它新亮起的那些），渲染一次就丢。
+ *
+ * 光靠「与上一版逐行比」不够：跟随把人带到一个新文件时没有「上一版」可比（换文件就丢弃上一份行状态，
+ * 见 openFile），刚亮起的那几行反而一行都不闪 —— 而那正是最该被看见的一下
+ */
+const flashNext = {};
+
+/**
+ * 跟随：这次推送该不该把人带到别的文件去。返回要打开的文件，null 表示留在当前文件。
+ *
+ * 关着、或人刚操作过 → 不动。当前文件自己就在变化里 → 留在原地，只滚到它这次新亮起的行
+ * （人正看着它，切走反而丢了上下文）。否则去变化最多的那个文件（推送里已按行数降序）。
+ */
+function followTarget(changes) {
+  if (!store.follow || !Array.isArray(changes) || !changes.length) return null;
+  if (Date.now() < store.followPausedUntil) return null;
+  const pick = changes.find(c => c.path === store.current) || changes[0];
+  // 只给出「去哪个文件、滚到哪一行」，不在这里写 jumpToLine：增量口径下目标文件可能不在范围里、
+  // 最后留在原文件 —— 先写了的话，别的文件的行号会被用在当前文件上（评审发现）
+  return { path: pick.path, line: Math.min(...pick.lines) };
+}
 
 /** 把项目 id 拼进地址。id 由用户自取，必须转义 —— 它会落进 URL 路径 */
 function url(path) {
@@ -287,9 +395,13 @@ export async function openFile(path) {
       // markRaw：token 只读，不需要 Vue 给几千个小对象挨个套响应式代理
       r.tokens = markRaw(tokens[i] || (r.text ? [{ type: '', text: r.text }] : []));
     });
+    // 最近一次推送里这个文件刚亮起的行：只在推送后十秒内打开才闪，过了这个窗口就不是「刚」了
+    const pending = flashNext[path];
+    delete flashNext[path];
+    const fresh = new Set(pending && Date.now() - pending.at < 10000 ? pending.lines : []);
     for (const r of d.rows) {
-      // 上一次是未覆盖、这次变成已覆盖 → 高亮闪一下，让「变绿」这件事可见
-      r.justCovered = store.prevStatus[r.line] === 'MISSED' && r.status === 'COVERED';
+      // 比上一版变好了（未覆盖→已覆盖 / 部分、部分→已覆盖），或是刚亮起的 → 闪一下，让「变绿」这件事可见
+      r.justCovered = improved(store.prevStatus[r.line], r.status) || fresh.has(r.line);
       next[r.line] = r.status;
     }
   }
@@ -339,10 +451,18 @@ export async function reload() {
   }
 }
 
-/** 重取当前口径的数据，并保持选中的文件 */
-export async function refresh() {
+/**
+ * 重取当前口径的数据，并保持选中的文件。
+ * follow：跟随模式要去的 { path, line }。目标不在当前口径的范围里（增量下没改过的文件）时
+ * 留在原文件，<b>也不滚</b> —— 那个行号是别的文件的
+ */
+export async function refresh(follow) {
   const d = await loadSummary();
-  if (d && store.current) await openFile(store.current);
+  if (!d) return d;
+  const go = follow && d.files.some(f => f.path === follow.path) ? follow : null;
+  if (go) store.jumpToLine = go.line;
+  const path = go ? go.path : store.current;
+  if (path) await openFile(path);
   return d;
 }
 
@@ -438,6 +558,8 @@ export async function collectNow() {
 export async function resetCounters() {
   await api.post(url('/coverage/reset'));
   store.prevStatus = {};
+  // 清零之后「新亮起」从头算：留着的话，清零前亮的行还挂着标记，像是清零之后测到的
+  clearChanges();
   await refresh();
 }
 
@@ -464,14 +586,20 @@ export function connectWs() {
   ws.onmessage = (ev) => {
     // 换项目时旧连接可能还有一条消息在路上，认准是不是当前这条
     if (mine !== ws) return;
+    const d = JSON.parse(ev.data);
+    // changes 与口径无关（是哪些行刚亮起），增量视图下也先记下来、先定跟不跟
+    noteChanges(d.changes);
+    const follow = followTarget(d.changes);
     // 推送内容是全量口径，增量视图下改为按当前口径重取
     if (store.mode === 'incremental') {
-      refresh();
+      refresh(follow);
       return;
     }
-    applySummary(JSON.parse(ev.data));
+    applySummary(d);
     loadGate();
-    if (store.current) openFile(store.current);
+    if (follow) store.jumpToLine = follow.line;
+    const path = follow ? follow.path : store.current;
+    if (path) openFile(path);
   };
   ws.onclose = () => {
     if (wsClosing || mine !== ws) return;
@@ -512,6 +640,8 @@ export async function setProject(id, name) {
   // 心跳也要归零：留着上一个项目的时间，新项目会先显示成「刚刚采过」
   beatValue = null;
   store.lastCollectSeen = 0;
+  clearChanges();
+  store.followPausedUntil = 0;
   connectWs();
   followProject();
   await loadActiveScenario().catch(() => { /* 取不到不该挡住染色 */ });

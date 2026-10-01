@@ -1345,7 +1345,7 @@ async function baselineOptions(page, testid) {
       for (const s of ['COVERED', 'MISSED', 'PARTIAL']) {
         const el = document.querySelector(`[data-testid^="line-"][data-status="${s}"]`);
         if (!el) { out[s] = null; continue; }
-        // 刚变绿的行带着 flash 动画（1s 内底色从实心绿褪回常态），要量的是常态配色，先把动画撤掉。
+        // 刚变绿的行带着 flash 动画（2s 内底色从实心绿褪回常态），要量的是常态配色，先把动画撤掉。
         // 本机的 headless Chrome 报 prefers-reduced-motion: reduce，动画本来就被 CSS 关着；
         // 换到开着动画的机器，不撤就会量到半途的颜色，已覆盖那几项判据等于在量闪烁色
         el.getAnimations().forEach(a => a.cancel());
@@ -1521,6 +1521,229 @@ async function baselineOptions(page, testid) {
     else if (clipped.sw > clipped.cw + 1) fail(`1280×720 下覆盖率信息被截断：${JSON.stringify(clipped)}`);
     else pass(`1280×720 下覆盖率信息完整显示：${clipped.text}`);
     await page.setViewport({ width: 1600, height: 1000 });
+
+    // ---------- 6-5 · 实时体验 ----------
+    // 新元素在实现之前不存在：直接 page.click 会抛错、把后面所有段落一起带走。
+    // 找不到就记一条 FAIL 接着跑 —— 红的时候每条断言各自报出来
+    const clickOr = async (testid) => {
+      const el = await page.$(`[data-testid="${testid}"]`);
+      if (!el) { fail(`找不到 ${testid}`); return false; }
+      await el.click();
+      return true;
+    };
+    // 刚刷新过页面（6f），还没收到任何带 changes 的推送：动态条要说「在等」，不能是一块空白
+    const idle = await page.evaluate(() => {
+      const e = document.querySelector('[data-testid="live-empty"]');
+      return e ? e.innerText.trim() : '';
+    });
+    if (!/等待/.test(idle)) fail(`动态条空状态没有提示：「${idle}」`);
+    else pass(`动态条空状态：「${idle}」`);
+    const liveEntries = () => page.evaluate(() => [...document.querySelectorAll('[data-testid="live-change"]')]
+      .map(e => ({ path: e.dataset.path, delta: Number(e.dataset.delta), text: e.innerText,
+                   lines: (e.dataset.lines || '').split(',').filter(Boolean).map(Number) })));
+    const newLineCount = () => page.evaluate(() => document.querySelectorAll('[data-testid^="line-"][data-new="1"]').length);
+    // 跟随默认开
+    if (await page.evaluate(() => document.querySelector('[data-testid="follow-toggle"]')?.dataset.on) !== '1') {
+      fail('跟随模式默认不是开着的');
+    }
+    // 1) 刚点过文件 → 暂停；点「继续」解除
+    const cpp = sum.files.find(f => f.sourceFileName === 'main.cpp');
+    await page.click(`[data-testid="file-item"][data-path="${cpp.path}"]`);
+    await waitFor(page, (p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, cpp.path, 5000);
+    const pausedShown = await waitFor(page, () => !!document.querySelector('[data-testid="follow-paused"]'), null, 2000);
+    if (pausedShown < 0) fail('刚点过文件后没有显示「跟随已暂停」');
+    await clickOr('follow-resume');
+    const resumed = await waitFor(page, () => !document.querySelector('[data-testid="follow-paused"]'), null, 2000);
+    if (pausedShown >= 0 && resumed >= 0) pass('用户刚操作过时跟随暂停，点「继续」恢复');
+    else if (resumed < 0) fail('点了「继续」，「跟随已暂停」还在');
+
+    // 2) 当前文件与退款无关 → 自动切到刚被覆盖的文件，并把新亮起的行滚进视野
+    await fetch(`${DEMO}/api/order/callback?bizNo=A1002&status=SUCCESS`, { method: 'POST' });
+    await fetch(`${DEMO}/api/order/refund?bizNo=A1002&amount=1`, { method: 'POST' });
+    const switched2 = await waitFor(page, () => {
+      const p = document.querySelector('[data-testid="current-path"]').innerText.trim();
+      if (!/Order(Controller|Service)\.java$/.test(p)) return false;
+      const src = document.querySelector('[data-testid="source"]').getBoundingClientRect();
+      return [...document.querySelectorAll('[data-testid^="line-"][data-new="1"]')].some(l => {
+        const r = l.getBoundingClientRect();
+        return r.top >= src.top && r.bottom <= src.bottom;
+      });
+    }, null, 15000);
+    if (switched2 < 0) fail('开着跟随，调了退款接口，页面没有自动切到被覆盖的文件或新行不在视野里');
+    else pass(`跟随模式：${(switched2 / 1000).toFixed(1)}s 内自动切到刚被覆盖的文件，新亮起的行在视野里`);
+    // 跳转目标行（hit）要保留它的覆盖底色：高亮若换掉背景，最该看的那行新亮起的代码反而不绿了
+    // （反向验证时发现：.ln.hit 原先把背景换成了浅靛蓝，四态检查量到它就报「COVERED 离卡片底色只差 22」）
+    await waitFor(page, () => !!document.querySelector('.ln.hit'), null, 2000);
+    const hitBg = await page.evaluate(() => {
+      const h = document.querySelector('.ln.hit');
+      if (!h) return null;
+      const same = document.querySelector(`.ln[data-status="${h.dataset.status}"]:not(.hit):not(.flash)`);
+      if (!same) return { status: h.dataset.status, hit: null, other: null };
+      h.getAnimations().forEach(a => a.cancel());
+      return { status: h.dataset.status, hit: getComputedStyle(h).backgroundColor, other: getComputedStyle(same).backgroundColor };
+    });
+    if (!hitBg || !hitBg.other) fail(`判不了：跟随跳过去后找不到可对比的目标行 ${JSON.stringify(hitBg)}`);
+    else if (hitBg.hit !== hitBg.other) fail(`跳转目标行的底色被换掉了：${JSON.stringify(hitBg)}`);
+    else pass(`跳转目标行保留 ${hitBg.status} 的底色（只加描边）`);
+    // 刚亮起的行要闪 —— 这是「一操作就看见」最直接的那一下
+    const flashed = await waitFor(page, () => !!document.querySelector('.ln.flash[data-new="1"]'), null, 3000);
+    if (flashed < 0) fail('自动切过去的文件里，新亮起的行没有闪');
+    else pass('新亮起的行在切过去时闪了一下');
+    // 动态条上该文件各条报的行（并集），必须与源码里带新亮起标记的行完全一致 —— 两处说法不一致就是有一处在撒谎。
+    // 比的是行号集合而不是「+N 之和 = 标记数」：同一行跨两轮先变部分、再变已覆盖时，前者会把它算两次（评审发现）
+    const followed = await page.evaluate(() => document.querySelector('[data-testid="current-path"]').innerText.trim());
+    const entries = await liveEntries();
+    const mine = entries.filter(e => e.path === followed);
+    const reported = [...new Set(mine.flatMap(e => e.lines))].sort((a, b) => a - b);
+    const markedLines = await page.evaluate(() => [...document.querySelectorAll('[data-testid^="line-"][data-new="1"]')]
+      .map(e => Number(e.dataset.testid.slice(5))).sort((a, b) => a - b));
+    if (!mine.length) fail(`动态条里没有 ${followed} 的条目：${JSON.stringify(entries)}`);
+    else if (!mine.every(e => e.text.includes(followed.split('/').pop()) && e.text.includes(`+${e.delta} 行`))) fail(`动态条条目缺文件名或 +N 行：${JSON.stringify(mine)}`);
+    else if (JSON.stringify(reported) !== JSON.stringify(markedLines)) fail(`动态条报的 ${followed} 新亮起行 ${reported} 与源码里标的 ${markedLines} 不一致`);
+    else pass(`动态条：${followed.split('/').pop()} 报的 ${reported.length} 行与源码里的新亮起标记逐行一致`);
+
+    // 列表高亮：变化的文件要亮起来并带 +N，约 4 秒后自己消退
+    const lit = await page.evaluate((p) => {
+      const e = document.querySelector(`[data-testid="file-item"][data-path="${p}"]`);
+      const d = e && e.querySelector('[data-testid="file-delta"]');
+      return e ? { changed: e.dataset.changed, delta: d ? d.innerText.trim() : '' } : null;
+    }, followed);
+    if (!lit || lit.changed !== '1' || !/^\+\d+$/.test(lit.delta)) fail(`文件列表里 ${followed} 没有变化高亮：${JSON.stringify(lit)}`);
+    else pass(`文件列表里 ${followed.split('/').pop()} 亮起并标 ${lit.delta}`);
+    const faded = await waitFor(page, (p) => {
+      const e = document.querySelector(`[data-testid="file-item"][data-path="${p}"]`);
+      return e && e.dataset.changed !== '1';
+    }, followed, 8000);
+    if (faded < 0) fail('文件列表的变化高亮 8 秒都没消退');
+    else pass(`文件列表的变化高亮在 ${(faded / 1000).toFixed(1)}s 后消退`);
+
+    // 点动态条上另一个文件的条目：打开它，并把它的首条新行滚进视野
+    const other2 = (await liveEntries()).find(e => e.path !== followed);
+    if (!other2) {
+      fail('判不了：这次退款只改了一个文件，动态条上没有第二个条目可点');
+    } else {
+      await page.click(`[data-testid="live-change"][data-path="${other2.path}"]`);
+      const jumped = await waitFor(page, (p) => {
+        if (document.querySelector('[data-testid="current-path"]').innerText.trim() !== p) return false;
+        const src = document.querySelector('[data-testid="source"]').getBoundingClientRect();
+        const first = document.querySelector('[data-testid^="line-"][data-new="1"]');
+        if (!first) return false;
+        const r = first.getBoundingClientRect();
+        return r.top >= src.top && r.bottom <= src.bottom;
+      }, other2.path, 5000);
+      if (jumped < 0) fail(`点动态条条目没有打开 ${other2.path} 并定位到新行`);
+      else pass(`点动态条条目打开 ${other2.path.split('/').pop()} 并定位到首条新行`);
+    }
+    // 3) 刚操作过 → 即使有别的文件变了也不切走
+    await page.click(`[data-testid="file-item"][data-path="${cpp.path}"]`);
+    await waitFor(page, (p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, cpp.path, 5000);
+    // 等的必须是「这次请求之后」才来的条目：用「8 秒内的条目」判的话，上一步退款留下的条目才 5 秒，
+    // 立刻就满足了 —— 新推送还没到就去判「没切走」，这条恒过（反向验证时发现：忽略暂停照样 PASS）
+    // 只等 9 秒：暂停是 10 秒，推送若在那之后才到，跟随按设计就该切走 —— 等得比暂停还久会把正确行为判成 FAIL（评审发现）
+    const tNope = Date.now();
+    await fetch(`${DEMO}/api/order/query?bizNo=NOPE`);
+    const nudged = await waitFor(page, (t0) => [...document.querySelectorAll('[data-testid="live-change"]')]
+      .some(e => Number(e.dataset.at || 0) >= t0), tNope, 9000);
+    const stillCpp = await page.evaluate((p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, cpp.path);
+    if (nudged < 0) fail('判不了：query?bizNo=NOPE 之后 9 秒内没收到带 changes 的推送（暂停只有 10 秒）');
+    else if (!stillCpp) fail('用户刚点过文件，跟随模式还是把页面切走了');
+    else pass('用户刚操作过时，别的文件变化不会把页面切走');
+    // 暂停可能已经自然到期（「继续」随之消失）：在就点，不在就算了
+    const resumeLink = await page.$('[data-testid="follow-resume"]');
+    if (resumeLink) await resumeLink.click();
+
+    // 4) 当前文件本身在变化里 → 留在原地
+    await page.click(`[data-testid="file-item"][data-path="${target.path}"]`);
+    await waitFor(page, (p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, target.path, 5000);
+    await clickOr('follow-resume');
+    const beforeNew = await newLineCount();
+    await fetch(`${DEMO}/api/order/cancel?bizNo=NOPE&reason=ui`, { method: 'POST' });
+    let leftTarget = false;
+    const grewNew = await waitFor(page, (args) => {
+      const cur = document.querySelector('[data-testid="current-path"]').innerText.trim();
+      if (cur !== args.p) { window.__leftTarget = true; }
+      return document.querySelectorAll('[data-testid^="line-"][data-new="1"]').length > args.n;
+    }, { p: target.path, n: beforeNew }, 15000);
+    leftTarget = await page.evaluate(() => !!window.__leftTarget);
+    if (grewNew < 0) fail('判不了：cancel?bizNo=NOPE 之后 OrderController 没有新亮起的行');
+    else if (leftTarget) fail('当前文件自己就在变化里，跟随模式却切到了别的文件');
+    else pass('当前文件本身有新行时，跟随模式留在原地');
+
+    // 5) 关掉跟随：刷新后仍是关，之后的变化不切文件
+    await clickOr('follow-toggle');
+    await page.reload({ waitUntil: 'networkidle2' });
+    await waitFor(page, (p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, target.path, 8000);
+    const offAfterReload = await page.evaluate(() => document.querySelector('[data-testid="follow-toggle"]')?.dataset.on);
+    await fetch('http://localhost:18070/api/order/query?bizNo=G1002');
+    const goSeen = await waitFor(page, () => [...document.querySelectorAll('[data-testid="live-change"]')]
+      .some(e => /\.go$/.test(e.dataset.path)), null, 12000);
+    const stayed = await page.evaluate((p) => document.querySelector('[data-testid="current-path"]').innerText.trim() === p, target.path);
+    if (offAfterReload !== '0') fail('关掉跟随后刷新，开关又变回了开');
+    else if (goSeen < 0) fail('判不了：调了 Go 服务后动态条上没出现 .go 文件');
+    else if (!stayed) fail('跟随已关，页面仍被切到了别的文件');
+    else pass('跟随关掉后会被记住，之后的变化不再切文件');
+    await clickOr('follow-toggle');   // 还原成默认的开，免得影响后面的段落
+
+    // 6) 跟随要去的文件不在当前口径的范围里（增量下没改过的文件）时：留在原文件，也不把那个文件的行号用在当前文件上。
+    //    评审发现原先先写了 jumpToLine 再判能不能切，留在原地时就滚到了一行无关的代码并描了边。
+    //    直接调页面里同一个 store 的 refresh，给一个范围外的目标，看当前文件第 7 行有没有被标成跳转目标
+    const stray = await page.evaluate(async () => {
+      const m = await import('/store.js');
+      const line7 = () => !!document.querySelector('[data-testid="line-7"].hit');
+      const before = line7();
+      const cur = m.store.current;
+      await m.refresh({ path: '__not_in_scope__/X.java', line: 7 });
+      await new Promise(r => setTimeout(r, 300));
+      return { before, after: line7(), stayed: m.store.current === cur };
+    });
+    if (stray.before) fail('判不了：调用前第 7 行就已经是跳转目标');
+    else if (!stray.stayed) fail('跟随目标不在当前口径范围里，页面却换了文件');
+    else if (stray.after) fail('跟随目标不在当前口径范围里，别的文件的行号被用在了当前文件上（第 7 行被标成跳转目标）');
+    else pass('跟随目标不在当前口径范围里时，留在原文件且不乱滚');
+    // 缩略条的计数必须与源码实际渲染的行状态一致 —— 两者来自同一份 rows，对不上就是画错了
+    const mm = await page.evaluate(() => {
+      const c = document.querySelector('[data-testid="minimap"]');
+      if (!c) return null;
+      const n = (s) => document.querySelectorAll(`[data-testid^="line-"][data-status="${s}"]`).length;
+      return { got: { lines: +c.dataset.lines, covered: +c.dataset.covered, missed: +c.dataset.missed, partial: +c.dataset.partial },
+               want: { lines: document.querySelectorAll('[data-testid^="line-"]').length, covered: n('COVERED'), missed: n('MISSED'), partial: n('PARTIAL') } };
+    });
+    if (!mm) fail('源码区没有缩略条');
+    else if (JSON.stringify(mm.got) !== JSON.stringify(mm.want)) fail(`缩略条计数与源码不一致：${JSON.stringify(mm)}`);
+    else pass(`缩略条计数与源码一致（${JSON.stringify(mm.got)}）`);
+    // 点缩略条底部 → 源码滚到接近末尾（没有缩略条时上面已经记了 FAIL，这里不再点）
+    if (mm) {
+      const box = await page.evaluate(() => { const r = document.querySelector('[data-testid="minimap"]').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.bottom - 2 }; });
+      await page.mouse.click(box.x, box.y);
+      const nearEnd = await waitFor(page, () => {
+        const s = document.querySelector('[data-testid="source"]');
+        return s.scrollHeight <= s.clientHeight || s.scrollTop + s.clientHeight >= s.scrollHeight - 60;
+      }, null, 2000);
+      if (nearEnd < 0) fail('点缩略条底部，源码没有滚到末尾附近');
+      else pass('点缩略条底部，源码滚到文件末尾附近');
+    }
+    await page.click('[data-testid="follow-resume"]').catch(() => {});   // 点缩略条也算操作，解除暂停
+    // 「清除标记」清掉当前文件的新亮起标记。上一段刚整页刷新过（标记只存在内存里，已经没了），
+    // 先让它亮出几行再清 —— 跟随开着，亮在哪个文件就会被带到哪个文件
+    await fetch(`${DEMO}/api/order/cancel?bizNo=A1001&reason=ui2`, { method: 'POST' });
+    await waitFor(page, () => document.querySelectorAll('[data-testid^="line-"][data-new="1"]').length > 0, null, 12000);
+    if (await newLineCount() === 0) fail('判不了：清除前当前文件没有新亮起标记');
+    await clickOr('btn-clear-new');
+    const clearedNew = await waitFor(page, () => document.querySelectorAll('[data-testid^="line-"][data-new="1"]').length === 0, null, 2000);
+    if (clearedNew < 0) fail('点了「清除标记」，新亮起标记还在');
+    else pass('「清除标记」清掉新亮起标记');
+    // 确认清零也清掉标记与动态条（此刻动态条上有前面几段留下的条目；清零后再染一次，免得后面的段落面对一个全红的项目）
+    if (!(await liveEntries()).length) fail('判不了：清零前动态条上没有条目，验不出「清零会清空动态条」');
+    await page.click('[data-testid="btn-reset"]');
+    // 确认框弹出要一点时间：紧跟着点会撞上「还没渲染出来」，随机失败
+    await page.waitForSelector('[data-testid="btn-reset-confirm"]', { visible: true, timeout: 5000 });
+    await page.click('[data-testid="btn-reset-confirm"]');
+    const resetNew = await waitFor(page, () => document.querySelectorAll('[data-testid^="line-"][data-new="1"]').length === 0
+      && document.querySelectorAll('[data-testid="live-change"]').length === 0, null, 20000);
+    if (resetNew < 0) fail('确认清零后新亮起标记或动态条没清空');
+    else pass('确认清零后新亮起标记与动态条一并清空');
+    await fetch(`${DEMO}/api/order/query?bizNo=A1001`);
+    await waitFor(page, () => document.querySelectorAll('[data-testid^="line-"][data-status="COVERED"]').length > 0, null, 15000);
 
     // ---------- 6b · 走完向导建出一个能采数的项目 ----------
     // 这是方案 A 的核心承诺：向导最后一步强制自检，不通过就建不出来。

@@ -11,6 +11,86 @@ const TIMEOUT_MS = 10000;
 
 function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/** 实例恢复那一轮的 changes 不能带它失而复得的行。前提做不实就报「判不了」，不照判 */
+async function rejoinCase() {
+  const net = require('net');
+  const DEMO2 = 'http://localhost:18081';
+  const PROBE2 = 6301;
+  const pushes = [];
+  const ws2 = new WebSocket(`ws://localhost:18090/ws/coverage`);
+  ws2.onmessage = (ev) => pushes.push({ at: Date.now(), d: JSON.parse(ev.data) });
+  await new Promise((r, j) => {
+    ws2.onopen = r;
+    setTimeout(() => j(new Error('WebSocket 连接超时（实例恢复用例）')), 5000);
+  }).catch(e => fail(e.message));
+
+  // 1) 让 demo2 跑出一段新覆盖，记下推送报的那些行
+  const tries = [
+    () => fetch(`${DEMO2}/api/order/query?bizNo=WS-REJOIN`),
+    () => fetch(`${DEMO2}/api/order/cancel?bizNo=WS-REJOIN&reason=ws`, { method: 'POST' }),
+    () => fetch(`${DEMO2}/api/order/refund?bizNo=WS-REJOIN&amount=1`, { method: 'POST' }),
+  ];
+  let fresh = null;
+  for (const call of tries) {
+    const t = Date.now();
+    await call();
+    for (let i = 0; i < 40 && !fresh; i++) {
+      const p = pushes.find(x => x.at >= t && (x.d.changes || []).length);
+      if (p) fresh = p.d.changes;
+      else await sleep(250);
+    }
+    if (fresh) break;
+  }
+  if (!fresh) fail('判不了：在 demo2 上调了三个接口，都没收到带新亮起行的推送');
+
+  // 2) 占住 demo2 的探针，等平台判它掉线；只留下这时变回未覆盖的行 —— 那才是只有 demo2 跑过的
+  const sock = net.connect(PROBE2, '127.0.0.1');
+  sock.on('error', () => {});
+  let releasedAt = 0;
+  try {
+    await new Promise((r, j) => { sock.once('connect', r); sock.once('error', j); })
+      .catch(e => fail(`连不上 demo2 的探针端口 ${PROBE2}：${e.message}`));
+    let down = false;
+    for (let i = 0; i < 40 && !down; i++) {
+      const s = await (await fetch(`${PLATFORM}/api/coverage/summary`)).json();
+      down = (s.instances || []).some(x => String(x.endpoint).includes(String(PROBE2)) && x.status !== 'CONNECTED');
+      if (!down) await sleep(500);
+    }
+    if (!down) fail(`判不了：占住 ${PROBE2} 20 秒，平台始终没把 demo2 判成取不到数`);
+    const only2 = [];
+    for (const c of fresh) {
+      const d = await (await fetch(`${PLATFORM}/api/coverage/file?path=${encodeURIComponent(c.path)}`)).json();
+      const st = new Map((d.rows || []).map(r => [r.line, r.status]));
+      for (const l of c.lines) if (st.get(l) === 'MISSED') only2.push(c.path + ':' + l);
+    }
+    if (!only2.length) fail('判不了：demo2 新跑出的行在它掉线后仍是已覆盖（别的实例也跑过），没有「失而复得」可验');
+
+    // 3) 放开，等这些行重新变绿；这期间的推送一行都不能把它们报成新亮起
+    sock.destroy();
+    releasedAt = Date.now();
+    const [p0, l0] = [only2[0].slice(0, only2[0].lastIndexOf(':')), Number(only2[0].split(':').pop())];
+    let back = false;
+    for (let i = 0; i < 40 && !back; i++) {
+      const d = await (await fetch(`${PLATFORM}/api/coverage/file?path=${encodeURIComponent(p0)}`)).json();
+      back = (d.rows || []).some(r => r.line === l0 && r.status !== 'MISSED');
+      if (!back) await sleep(500);
+    }
+    if (!back) fail(`判不了：放开 ${PROBE2} 后 20 秒，demo2 跑过的行仍没变回已覆盖`);
+    await sleep(1500);
+    const after = pushes.filter(x => x.at >= releasedAt);
+    if (!after.length) fail('判不了：demo2 回来后一条推送都没收到');
+    const lied = after.flatMap(x => (x.d.changes || []).flatMap(c => c.lines.map(l => c.path + ':' + l)))
+      .filter(k => only2.includes(k));
+    if (lied.length) fail(`demo2 回来那一轮把它失而复得的 ${lied.length} 行报成了新亮起：${lied.slice(0, 4).join('、')}`);
+    console.log(`  [PASS] 瞬时掉线的实例回来后，它的 ${only2.length} 行旧覆盖照常变回已覆盖，但没被报成新亮起（期间 ${after.length} 条推送）`);
+  } finally {
+    if (!releasedAt) sock.destroy();
+    ws2.close();
+  }
+}
+
 (async () => {
   console.log('='.repeat(70));
   console.log('实时推送链路验证');
@@ -47,6 +127,14 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
   await otherOpen;
   console.log(`  WebSocket 已连接（本项目 1 个会话，项目 ${OTHER} 1 个会话）`);
 
+  // 调用之前各行的状态。changes 报的行「此刻已覆盖」还不够 —— 把一直绿着的行也报上去，那条照样能过；
+  // 只有拿调用前的状态比，才挡得住「把旧行说成刚亮起」
+  const statusBefore = new Map();
+  for (const f of before.files.filter(x => /Order(Controller|Service)\.java$/.test(x.path))) {
+    const d = await (await fetch(`${PLATFORM}/api/coverage/file?path=${encodeURIComponent(f.path)}`)).json();
+    statusBefore.set(f.path, new Map((d.rows || []).map(r => [r.line, r.status])));
+  }
+
   // 触发一次新的覆盖：先让订单回到可退款状态，再调用退款接口
   await fetch(`${DEMO}/api/order/callback?bizNo=A1002&status=SUCCESS`, { method: 'POST' });
   const t0 = Date.now();
@@ -69,6 +157,24 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
     fail(`覆盖率未上升: ${beforeRatio}% -> ${payload.overallRatio}%`);
   }
   console.log(`  [PASS] 覆盖率由 ${beforeRatio}% 上升至 ${payload.overallRatio}%`);
+
+  // changes：退款接口刚覆盖的行必须被报出来，且每一行此刻确实是已覆盖 / 部分 —— 多报就是假话
+  if (!Array.isArray(payload.changes)) fail('推送里没有 changes 数组');
+  const hit = payload.changes.find(c => /Order(Controller|Service)\.java$/.test(c.path) && c.lines.length > 0);
+  if (!hit) fail(`退款后的推送没报出 OrderController / OrderService 的新行：${JSON.stringify(payload.changes).slice(0, 200)}`);
+  const fd = await (await fetch(`${PLATFORM}/api/coverage/file?path=${encodeURIComponent(hit.path)}`)).json();
+  const statusOf = new Map(fd.rows.map(r => [r.line, r.status]));
+  const bogus = hit.lines.filter(l => !['COVERED', 'PARTIAL'].includes(statusOf.get(l)));
+  if (bogus.length) fail(`changes 把 ${bogus.length} 行报成新亮起，但它们现在不是已覆盖/部分：${bogus.slice(0, 5)}`);
+  const wasGreen = hit.lines.filter(l => (statusBefore.get(hit.path) || new Map()).get(l) === 'COVERED');
+  if (wasGreen.length) fail(`changes 把调用前就已覆盖的 ${wasGreen.length} 行也报成了新亮起：${wasGreen.slice(0, 5)}`);
+  if (!hit.truncated && hit.delta !== hit.lines.length) fail(`delta ${hit.delta} 与 lines 长度 ${hit.lines.length} 不符`);
+  const greenBefore = [...(statusBefore.get(hit.path) || new Map()).values()].filter(s => s === 'COVERED').length;
+  console.log(`  [PASS] 推送带出 ${hit.path.split('/').pop()} 的 ${hit.delta} 行新亮起：逐行核对此刻都已覆盖/部分，`
+    + `且没有一行是调用前就已覆盖的（调用前该文件已覆盖 ${greenBefore} 行）`);
+  const rest = await (await fetch(`${PLATFORM}/api/coverage/summary`)).json();
+  if ('changes' in rest) fail('REST summary 也带上了 changes —— 它只该出现在推送里');
+  console.log('  [PASS] changes 只在推送里，REST summary 不带');
   if (latency > 6000) fail(`推送延迟 ${latency}ms 过高`);
   console.log(`  [PASS] 推送延迟 ${latency}ms 在可接受范围`);
 
@@ -203,6 +309,13 @@ function fail(msg) { console.error('  [FAIL] ' + msg); process.exit(1); }
   const badBody = await bad.json();
   if (!badBody.error) fail('门禁拒判时没有说明原因');
   console.log(`  [PASS] 判不了时返回 HTTP ${bad.status} 而非 200（${badBody.error}）`);
+
+  // ---- 瞬时取不到数的实例回来时，它的旧覆盖不能报成「新亮起」 ----
+  // 那台 JVM 没重启、计数器一直在，只是上一轮没取到（CLAUDE.md 记过两种：tcpserver 被拒、Rust 溢出）。
+  // 失而复得的行若进了 changes，跟随会乱跳、动态条冒出一串假的 +N，告诉人「你刚测到了它」。
+  // 制造办法：占住 demo2 的 JaCoCo tcpserver —— 它一次只服务一个连接，平台这一轮 dump 它会超时、
+  // 判成掉线；放开后下一轮又取到，那台 JVM 的计数器原封不动
+  await rejoinCase();
 
   ws.close();
   console.log('-'.repeat(70));

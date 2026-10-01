@@ -1,4 +1,4 @@
-import { store, openFile, hasData, projectUrl } from '../store.js';
+import { store, openFile, hasData, projectUrl, pauseFollow } from '../store.js';
 import { api, pctClass } from '../api.js';
 
 const { computed, ref, watch } = Vue;
@@ -141,6 +141,8 @@ export const Report = {
      * 而不清标记，人正看着代码就会每 3 秒被拽回那一行。
      */
     function toSource(m) {
+      // 人是专程来看这个方法的：跟随模式要先停一停，否则下一次推送就把他带去别的文件
+      pauseFollow();
       store.jumpToLine = m.firstLine;
       openFile(filePath.value);
       location.hash = '#/p/' + encodeURIComponent(store.projectId) + '/coloring';
