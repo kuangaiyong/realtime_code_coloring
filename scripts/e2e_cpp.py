@@ -12,12 +12,15 @@ P3 端到端验收：C++ 接入。真实 C++ 服务、真实 gcov 插桩、真�
   4. 多个 C++ 实例聚合成并集 —— 走的是第三条合并路径（gcov-tool merge，
      在 .gcda 原生层面合并），合错了就是静默少算；
   5. 场景归因对 C++ 同样成立 —— 只在 C++ 上跑的场景不该染到 Java/Go 的代码；
-  6. 版本一致性校验覆盖 C++ —— C++ 源码相对产物漂移时，增量口径拒绝出报告并点名 C++ 文件。
+  6. 版本一致性校验覆盖 C++ —— C++ 源码相对产物漂移时，增量口径拒绝出报告并点名 C++ 文件；
+  7. 源码正被改写（为空 / 只写了一半）时报告与源码完整时相同 —— 归一化不读源码；
+  8. 编译单元的 .gcno 坏了（gcov 崩溃 / 读不出函数）时整轮 ANALYZE_ERROR 并点名，绝不静默少一个文件。
 
 被测 C++ 服务的既有业务源码一行未改：探针是独立编译单元，靠全局对象的构造函数
 （早于 main 执行）自动启动，业务代码不 include 也不调用它任何东西。
 """
 import json
+import shutil
 import sys
 import time
 import urllib.error
@@ -35,10 +38,14 @@ CPPFILE = "demo-service-cpp/order.cpp"
 GOFILE = "demo-service-go/main.go"
 JAVAFILE = "demo-service/src/main/java/com/shop/order/service/OrderService.java"
 POLL_SEC = 25
+GCNO_PID = "cpp-gcno-e2e"
 
 
-def http(url, method="GET"):
-    req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
+def http(url, method="GET", body=None):
+    data = json.dumps(body).encode("utf-8") if body is not None else (b"" if method == "POST" else None)
+    req = urllib.request.Request(url, method=method, data=data)
+    if body is not None:
+        req.add_header("Content-Type", "application/json")
     try:
     # 超时按平台的最坏情况取：一次采集要挨个 dump 8 个实例，探针挂掉时每个耗尽
     # timeout-ms（3s）＝24s，再叠加各语言的外部工具，还可能排在调度那一轮后面。
@@ -284,6 +291,113 @@ def main():
     else:
         print(f"  [FAIL] C++ 源码已恢复，平台仍拒绝出报告：{status}")
         ok = False
+
+    # ---- 7. 源码正被改写的那一刻，报告不能缺文件、也不能少行 ----
+    # 平台读的是工作树里的源码；git pull、切分支、编辑器保存都会改写它（很多是先截断再写）。
+    # 2026-10-01 发版前的全量验收撞上过：一轮采集恰好在 order.cpp 被截断的那一刻跑 gcov，
+    # 报告里少了 order.cpp、平台不报任何错（gcov 的文本格式是照着源码逐行印的，源码为空就一行不印）。
+    # 这里不靠时序去撞：把源码真的留在「为空 / 只写了一半」，再立即采集一轮，报告必须与源码完整时相同
+    print("\n  >> 源码正被改写（为空 / 只写了一半）时立即采集一轮：报告必须与源码完整时相同")
+    keys = ("coveredLines", "missedLines", "coveredBranches", "missedBranches", "coveredMethods", "missedMethods")
+
+    def collect_now():
+        s = must(*http(f"{PLATFORM}/api/coverage/collect", "POST"), what="/api/coverage/collect")
+        f = next((x for x in s["files"] if x["path"] == CPPFILE), None)
+        return None if f is None else {k: f.get(k) for k in keys}
+
+    # 先让 order.cpp 有一些非零计数（上面的场景用例刚清过零）：比的不只是「文件在不在、几行」，
+    # 还有已覆盖行与已执行分支的数目 —— 全是 0 的两份报告相等，证明不了计数没被源码状态带偏。
+    # 查询与业务状态无关，可重复调用
+    status, _ = http(f"{CPP}/api/order/query?bizNo=C1001")
+    src_file = ROOT / CPPFILE
+    src_bytes = src_file.read_bytes()
+    whole = collect_now()
+    if status != 200:
+        print(f"  [FAIL] 判不了：查询接口返回 {status}，{CPPFILE} 没被调到，比不出计数有没有被带偏")
+        ok = False
+    elif whole is None:
+        print(f"  [FAIL] 判不了：源码完整时报告里就没有 {CPPFILE}")
+        ok = False
+    elif whole["coveredLines"] == 0:
+        print(f"  [FAIL] 判不了：调过查询接口之后 {CPPFILE} 仍是 0 行已覆盖，比不出计数有没有被带偏")
+        ok = False
+    else:
+        try:
+            for label, content in (("为空", b""), ("只写了一半", src_bytes[:300])):
+                src_file.write_bytes(content)
+                got = collect_now()
+                if got != whole:
+                    print(f"  [FAIL] 源码{label}时报告变了：{CPPFILE} "
+                          f"{'整个不见了' if got is None else got}，源码完整时是 {whole}")
+                    ok = False
+                else:
+                    print(f"  [PASS] 源码{label}时报告与源码完整时相同（{whole['coveredLines'] + whole['missedLines']} 行、"
+                          f"分支 {whole['coveredBranches']}/{whole['coveredBranches'] + whole['missedBranches']}）")
+        finally:
+            src_file.write_bytes(src_bytes)
+
+    # ---- 8. 编译单元的 .gcno 坏了：整轮拒绝出报告并点名，绝不静默少一个文件 ----
+    # gcov 读到坏的 .gcno，有两种情形光看退出码管不住（实测 gcov 16.2，把真实的 order.gcno 逐字节截断）：
+    # 截在文件头里会段错误、stderr 一个字都没有；截在第一个函数记录之前则退出 0、只说一句 no functions found，
+    # 这个编译单元的源码就从报告里静默消失了。产物仓库收进来的包、正被重新构建的对象目录都可能是这样。
+    # 在默认项目上做会把它整轮打成 ANALYZE_ERROR、记进采集事件，所以另建一个只采 C++ 两台的临时项目，
+    # 对象目录指向一份副本，只弄坏副本里的 order.gcno
+    print("\n  >> 编译单元的 .gcno 坏了：整轮 ANALYZE_ERROR 并点名是哪个，绝不静默少一个文件")
+    dcfg = must(*http(f"{PLATFORM}/api/projects/default"), what="/api/projects/default")
+    obj_dir = (ROOT / "platform" / dcfg["cppObjectsDir"]).resolve()  # 平台的工作目录是 platform/
+    full = (obj_dir / "order.gcno").read_bytes()
+    # 第一个函数记录：标记 GCOV_TAG_FUNCTION（小端 00 00 00 01）后面紧跟一个非零的长度字。
+    # 从 16 字节的文件头之后找，且不限 4 字节对齐 —— GCC 12 起字符串不再补齐，记录可能落在任意偏移；
+    # 旧版补齐用的零字节加上标志字的 01 也能拼出这四个字节，但那里后面跟着的是 0，靠长度字排除
+    tag = next((i for i in range(16, len(full) - 8) if full[i:i + 4] == b"\x00\x00\x00\x01"
+                and 0 < int.from_bytes(full[i + 4:i + 8], "little") < 0x10000), -1)
+    cases = [("只剩文件头（gcov 段错误，stderr 一个字都没有）", full[:12], None)]
+    if tag > 0:
+        cases.insert(0, ("截在第一个函数记录之前（gcov 退出 0，只说一句 no functions found）",
+                         full[:tag], "读不出任何函数"))
+    else:
+        print("  [FAIL] 判不了：order.gcno 里找不到第一个函数记录的标记 —— .gcno 的格式变了，截法要跟着改")
+        ok = False
+    scratch = ROOT / ".run" / "e2e-cpp-gcno"
+    shutil.rmtree(scratch, ignore_errors=True)
+    shutil.copytree(obj_dir, scratch)
+    project = f"{PLATFORM}/api/projects/{GCNO_PID}"
+    http(project, "DELETE")  # 上一次没删干净也不影响这一次
+    status, body = http(f"{PLATFORM}/api/projects", "POST", {
+        "id": GCNO_PID, "name": "C++ 坏 gcno 端到端", "repoDir": dcfg["repoDir"], "artifactSource": "local",
+        "instances": [i for i in dcfg["instances"] if i.startswith("cpp://")],
+        "cppSourceRoot": dcfg["cppSourceRoot"], "cppObjectsDir": str(scratch)})
+    if status != 200:
+        print(f"  [FAIL] 判不了：建临时项目返回 {status}：{body}")
+        ok = False
+    else:
+        try:
+            for label, content, reason in cases:
+                (scratch / "order.gcno").write_bytes(content)
+                http(f"{project}/collect", "POST")
+                s = must(*http(f"{project}/coverage/summary"), what="临时项目的 summary")
+                err = s.get("lastError") or ""
+                if s.get("probeStatus") == "ANALYZE_ERROR" and "order.gcno" in err and (reason is None or reason in err):
+                    print(f"  [PASS] {label}：拒绝出报告并点名 —— {err}")
+                else:
+                    print(f"  [FAIL] {label}：probeStatus={s.get('probeStatus')}，lastError={err or '—'}，"
+                          f"报告里的文件 {[f['path'] for f in s.get('files') or []]}")
+                    ok = False
+            (scratch / "order.gcno").write_bytes(full)
+            http(f"{project}/collect", "POST")
+            s = must(*http(f"{project}/coverage/summary"), what="临时项目的 summary")
+            if s.get("probeStatus") == "CONNECTED" and any(f["path"] == CPPFILE for f in s.get("files") or []):
+                print("  [PASS] 对照：换回完好的 order.gcno 立即恢复 —— 上面的报错是 .gcno 坏了，不是临时项目本身配错了")
+            else:
+                print(f"  [FAIL] 对照：order.gcno 完好时仍出不来 {CPPFILE}：probeStatus={s.get('probeStatus')}，"
+                      f"lastError={s.get('lastError')}")
+                ok = False
+        finally:
+            status, _ = http(project, "DELETE")
+            if status != 200:
+                print(f"  [FAIL] 收尾没删掉临时项目 {GCNO_PID}（DELETE 回 {status}），平台会一直采下去")
+                ok = False
+            shutil.rmtree(scratch, ignore_errors=True)
 
     print("\n" + "-" * 78)
     print("  验收结论：" + ("全部通过" if ok else "存在失败项"))
