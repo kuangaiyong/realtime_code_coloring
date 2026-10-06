@@ -1,5 +1,7 @@
 package com.rtcc.platform.collector;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rtcc.platform.config.CoverageProperties;
 import com.rtcc.platform.config.ProjectConfig;
 import com.rtcc.platform.model.FileCoverage;
@@ -13,14 +15,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * 归一化层（C++）：.gcno + .gcda → 行级覆盖模型。
  *
- * 与 Go 侧同构 —— 二进制格式没有对外稳定契约，交给官方工具转成文本再解析：
- * {@code gcov -t -r} 输出每行的执行次数，{@code gcov-tool merge} 在**原生数据层**
+ * 与 Go 侧同构 —— 二进制格式没有对外稳定契约，交给官方工具转成可解析的格式：
+ * {@code gcov --json-format} 输出每行的执行次数（JSON，不依赖源码文件），{@code gcov-tool merge} 在**原生数据层**
  * 合并多实例（与 Java 的 exec 探针取或、Go 的 covdata 按块求和是同一层次的操作，
  * 精度不会因为提前退化成行状态而损失）。
  *
@@ -30,23 +30,6 @@ import java.util.regex.Pattern;
 public class CppCoverageAnalyzer {
 
     private static final Logger log = LoggerFactory.getLogger(CppCoverageAnalyzer.class);
-
-    /** gcov -t 的每一行：{@code <计数>:<行号>:<源码>}，行号 0 的是 Source/Graph/Data 这些元信息 */
-    private static final Pattern ROW = Pattern.compile("^\\s*([^:]+):\\s*(\\d+):(.*)$");
-
-    /** {@code branch  0 taken 2 (fallthrough)} / {@code branch  1 never executed} */
-    private static final Pattern BRANCH = Pattern.compile("^branch\\s+\\d+\\s+(.+)$");
-    /**
-     * {@code function Store::pay(int) called 3 returned 100% blocks executed 75%}
-     *
-     * <b>函数名必须用非贪婪捕获，不能用 \s 的反义类</b>：加了 gcov 的 -m 之后名字是
-     * demangled 的，里面带空格（如 {@code (anonymous namespace)::isFinalState(Order const&)}）。
-     * 用「非空白串」去匹配的话，无参函数还能匹配上、带参数的就匹配不上 ——
-     * 5 个方法只解析出 1 个，页面显示「1/1」，比全丢成 0/0 更隐蔽，因为比例看着正常。
-     * e2e_cpp.py 的 1b 钉着数量下界专门守这件事。
-     */
-    private static final Pattern FUNCTION =
-            Pattern.compile("^function\\s+(.+?)\\s+called\\s+(\\d+)\\s.*$");
 
     private final ProjectConfig props;
     /** 工具链可执行文件的路径是部署机器的属性，换机器才改，与项目无关，因此仍从平台配置取 */
@@ -139,25 +122,112 @@ public class CppCoverageAnalyzer {
     }
 
     /**
-     * {@code -t} 让 profile 走标准输出，不在源码树里留下 .gcov 文件；
-     * {@code -r} 只输出相对路径的源码，把系统头文件挡在外面。
-     * 工作目录必须是 C++ 源码根：.gcno 里记的源码名是编译时的相对名。
+     * {@code --json-format} 出 JSON 中间格式，它的行与计数全部来自 .gcno / .gcda，<b>不读源码</b>。
+     * 原先用的文本格式是「把源码逐行印出来、在行前标计数」，能印几行取决于此刻读到的源码文件 ——
+     * 源码正被改写（git pull、切分支、编辑器保存，很多是先截断再写）时为空就一行不印、写了一半就只印一半，
+     * 而 gcov 照样退出 0：报告静默少一个文件，或少一截行。2026-10-01 发版前的全量验收撞上过一次
+     * （拿 demo 的真实数据对照过，两种格式解出的结果逐字段相同）。
+     * 用长选项是因为短选项 {@code -j} 在 GCC 9、10 里是 --human-readable（那两版的 JSON 是 {@code -i}），
+     * 照样退出 0、出的却是文本；长选项从 GCC 9 起一直是 JSON，与 {@code -t} 同版出现，最低版本没有因此抬高。
+     * {@code -t} 让结果走标准输出，不在源码树里留下文件；{@code -r} 只出相对路径的源码，把系统头文件挡在外面。
      */
     private String runGcov(Path profileDir, List<Path> gcno) throws IOException {
-        // -b 输出分支明细，-c 让分支给出执行次数而不是百分比（百分比在「0 次」与
-        // 「未执行」之间分不清）。二者是分支覆盖率的唯一来源
-        List<String> cmd = new ArrayList<>(List.of(platform.getGcovTool(), "-t", "-r", "-b", "-c", "-m",
+        // -b 让 JSON 带上分支（不加就没有），-c 让分支给出执行次数，-m 给 demangled 的函数名
+        List<String> cmd = new ArrayList<>(List.of(platform.getGcovTool(), "--json-format", "-t", "-r", "-b", "-c", "-m",
                 "-o", profileDir.toAbsolutePath().toString()));
-        gcno.forEach(p -> cmd.add(p.getFileName().toString()));
+        List<String> units = gcno.stream().map(p -> p.getFileName().toString()).toList();
+        cmd.addAll(units);
         Path cwd = Path.of(props.getRepoDir(), props.getCppSourceRoot());
-        return exec(cmd, cwd, "gcov");
+        Run r = run(cmd, cwd, "gcov");
+        Set<String> withData = new HashSet<>();
+        for (String u : units) {
+            if (Files.exists(profileDir.resolve(u.substring(0, u.length() - ".gcno".length()) + ".gcda"))) {
+                withData.add(u);
+            }
+        }
+        requireAllUnits(r, units, withData);
+        return r.out();
+    }
+
+    /** 外部工具跑完的样子。退出码留给调用方判：gcov 崩在半路时，stdout 里缺了谁是唯一的线索 */
+    record Run(int exit, String out, String err) {}
+
+    private static final String REFUSE = "这一轮不出报告 —— 照常出的话，它的源码会从报告里静默消失，看上去像是没有这个文件";
+
+    /**
+     * 交给 gcov 的每个编译单元都必须有结果，否则整轮拒绝出报告并点名。退出码管不全 ——
+     * 实测（gcov 16.2，把真实的 .gcno 逐字节截断）有两种情形光看它不够：
+     * <ul>
+     *   <li>gcov 崩在某个 .gcno 上（截在文件头里会段错误）：退出码非 0，但 stderr 什么都没有，
+     *       只知道「gcov 失败」、不知道是谁。gcov 按命令行顺序一份一份出 JSON，第一份没回来的就是它停下的地方</li>
+     *   <li>.gcno 截在第一个函数记录之前：gcov <b>退出 0</b>，那份 JSON 照常回来、一个文件都没有，
+     *       只在 stderr 说 no functions found。真没有函数的编译单元（只有声明、常量）也这么说，
+     *       区别是它编不出计数器、不会有 .gcda —— 有 .gcda 却读不出函数的，就是 .gcno 坏了。
+     *       只在退出 0 时这么判：数据目录里留着旧构建的 .gcda 时，gcov 还会报 stamp mismatch、以 5 退出，
+     *       那一轮照样拒绝出报告，原因由 gcov 自己的 stderr 说，不能说成截断
+     *       （用 -frandom-seed 让两次编译 stamp 相同的构建除外，那里旧 .gcda 会被这条误判）</li>
+     * </ul>
+     * 包级可见是为了让测试直接喂实测时 gcov 给出的输出。
+     *
+     * @param withData 有 .gcda 的编译单元
+     */
+    static void requireAllUnits(Run r, List<String> units, Set<String> withData) throws IOException {
+        if (r.exit() == 0) {
+            String mark = ":no functions found";
+            List<String> unreadable = r.err().lines()
+                    .filter(l -> l.endsWith(mark))
+                    .map(l -> fileName(l.substring(0, l.length() - mark.length())))
+                    .filter(withData::contains)
+                    .toList();
+            if (!unreadable.isEmpty()) {
+                throw new IOException("编译单元 " + String.join("、", unreadable) + " 有覆盖数据（.gcda），"
+                        + "gcov 却从它的 .gcno 里读不出任何函数 —— .gcno 多半被截断了。" + REFUSE);
+            }
+            return;
+        }
+        Set<String> answered = new HashSet<>();
+        for (String doc : r.out().split("\r?\n")) {
+            try {
+                answered.add(fileName(JSON.readTree(doc).path("data_file").asText()));
+            } catch (IOException e) {
+                // 崩在半路时最后一份可能只写了一半，读不了就当它没回来
+            }
+        }
+        Optional<String> stopped = units.stream().filter(u -> !answered.contains(u)).findFirst();
+        if (stopped.isEmpty()) {
+            throw failed("gcov", r); // 每份都回来了，gcov 在 stderr 里自己点了名（not a gcov notes file、corrupted、stamp mismatch ……）
+        }
+        String err = r.err().trim();
+        throw new IOException("gcov 失败（exit " + r.exit() + "），停在编译单元 " + stopped.get()
+                + " 上，它和排在后面的都没有给出结果" + (err.isEmpty()
+                ? "；gcov 没留下任何报错，多半是这个 .gcno 已损坏、让 gcov 崩了。" : "：" + err + "。") + REFUSE);
+    }
+
+    /** 路径的末段：gcov 的 stderr 带全路径，JSON 的 data_file 也不保证各版本都原样回传命令行上的名字 */
+    private static String fileName(String path) {
+        return path.substring(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
     }
 
     private String exec(List<String> cmd, Path cwd, String what) throws IOException {
+        Run r = run(cmd, cwd, what);
+        if (r.exit() != 0) {
+            throw failed(what, r);
+        }
+        return r.out();
+    }
+
+    private static IOException failed(String what, Run r) {
+        return new IOException(what + " 失败（exit " + r.exit() + "）：" + r.err().trim()
+                + "。请确认平台所在环境已安装 GCC 工具链（coverage.gcov-tool / gcov-merge-tool）");
+    }
+
+    private Run run(List<String> cmd, Path cwd, String what) throws IOException {
         ProcessBuilder pb = new ProcessBuilder(cmd);
         if (cwd != null) {
             pb.directory(cwd.toFile());
         }
+        // gcov 的 no functions found 要按原文认（见 requireAllUnits），装了翻译的机器上它会被本地化
+        pb.environment().put("LC_ALL", "C");
         Process p = pb.start();
         // stderr 另起线程读走，避免管道写满时两端互相阻塞
         StringBuilder err = new StringBuilder();
@@ -176,35 +246,13 @@ public class CppCoverageAnalyzer {
                 p.destroyForcibly();
                 throw new IOException(what + " 超时未返回");
             }
-            drain.join(1000);
+            // 进程已经退出，stderr 一定读得到头。不能只等一会儿：是否拒绝出报告要按它的原文判，读一半就会静默放行
+            drain.join();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("等待 " + what + " 被中断", e);
         }
-        if (p.exitValue() != 0) {
-            throw new IOException(what + " 失败（exit " + p.exitValue() + "）：" + err.toString().trim()
-                    + "。请确认平台所在环境已安装 GCC 工具链（coverage.gcov-tool / gcov-merge-tool）");
-        }
-        return out;
-    }
-
-    /**
-     * 正在累计的一个函数。gcov 的 function 行只给名字与调用次数 ——
-     * 首行号要等它之后第一条源码行，行覆盖要把这个函数范围内的源码行累计起来。
-     *
-     * <b>这是个近似</b>：两个 function 行之间若夹着不属于任何函数的源码
-     * （如文件作用域的初始化），会被算进前一个函数。gcov 不给函数的行范围，
-     * 要精确就得自己解析 C++ 源码，代价与收益不成正比。
-     */
-    private static final class Pending {
-        final String name;
-        int firstLine;
-        int coveredLines;
-        int missedLines;
-
-        Pending(String name) {
-            this.name = name;
-        }
+        return new Run(p.exitValue(), out, err.toString());
     }
 
     /**
@@ -226,146 +274,136 @@ public class CppCoverageAnalyzer {
                         "std::string");
     }
 
-    /** 把累计完的函数落进结果。firstLine 为 0 说明这个函数一条源码行都没跟着，丢弃 */
-    private static void flush(Map<String, List<FileCoverage.MethodCoverage>> into,
-                              String path, Pending p) {
-        if (p == null || path == null || p.firstLine == 0) {
-            return;
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    /**
+     * 某个源码的一行。同一行可能出现好几次：被几个编译单元 include 的头文件每份 JSON 里各有一次，
+     * 实例化了几次的模板在同一份里每个实例各有一次。按 gcov 文本格式汇总段自己的口径合起来：
+     * 计数相加、「有块没跑到」取或、分支并列（gcov 自己数分支总数也是并列的）。
+     *
+     * <b>这个口径对「被几个编译单元 include 的内联函数」并不准</b>：链接器只留其中一份，其余几份的计数
+     * 永远是 0，于是跑全了的行也一直是部分覆盖、分支数翻倍、同一个函数既算跑过又算没跑过。
+     * 原先的文本解析同样如此，而且更糟 —— 汇总段和各实例的子段它都照收，同一行记了好几遍。
+     * 该怎么合（按函数去重、零计数的那几份不参与取或）另行决定
+     */
+    private static final class Row {
+        final int no;
+        long count;
+        boolean unexecuted;
+        int coveredBranches;
+        int missedBranches;
+
+        Row(int no) {
+            this.no = no;
         }
-        into.computeIfAbsent(path, k -> new ArrayList<>()).add(new FileCoverage.MethodCoverage(
-                p.name, p.firstLine, p.coveredLines, p.missedLines, null, null));
     }
 
-    /** 包级可见是为了让测试直接喂真实的 gcov 输出文本 —— 起一次真实 gcov 要有 .gcno 与 .gcda */
-    Map<String, FileCoverage> parse(String gcovOut, String root) throws IOException {
-        Map<String, List<FileCoverage.LineCoverage>> byFile = new LinkedHashMap<>();
-        // 逐文件的方法计数。function 行同样不带行号，只能按「当前是哪个文件」归集
-        Map<String, int[]> methodsByFile = new LinkedHashMap<>();
-        // 方法明细。gcov 的 function 行不带行号，但实测确认它<b>紧贴函数定义行之前</b>，
-        // 所以首行号取「它之后第一条源码行」。函数的行 / 分支覆盖靠顺序累计：
-        // gcov 是按 function → 该函数的源码行 → 下一个 function 的顺序输出的
-        Map<String, List<FileCoverage.MethodCoverage>> methodDetail = new LinkedHashMap<>();
-        Pending pend = null;
-        String currentPath = null;
-        List<FileCoverage.LineCoverage> current = null;
-        // gcov 的 branch 行不带行号，跟在它所属的源码行之后。必须记住最近一条源码行，
-        // 否则分支全部落空 —— 而「一条分支都没有」与「这门语言不提供」长得一模一样
-        int lastLineIdx = -1;
+    private record Fn(String name, int startLine, long calls) {}
 
-        for (String line : gcovOut.split("\r?\n")) {
-            Matcher br = BRANCH.matcher(line);
-            if (br.matches()) {
-                String rest = br.group(1);
-                // (throw) 是编译器为可能抛异常的操作生成的路径，不是源码里写的条件。
-                // 实测一个几百行的 demo 有 359 条分支，其中 120 条是 throw，
-                // 而源码里真正的条件语句只有 32 处
-                if (rest.contains("(throw)") || current == null || lastLineIdx < 0) {
-                    continue;
-                }
-                boolean taken = rest.startsWith("taken") && !rest.startsWith("taken 0");
-                FileCoverage.LineCoverage old = current.get(lastLineIdx);
-                current.set(lastLineIdx, new FileCoverage.LineCoverage(
-                        old.line(), old.status(),
-                        old.coveredBranches() + (taken ? 1 : 0),
-                        old.missedBranches() + (taken ? 0 : 1)));
+    /**
+     * 解析 {@code gcov --json-format -t} 的输出：一个 .gcno 一份 JSON（一行一份）。包级可见是为了让测试直接喂真实形态的输出。
+     */
+    Map<String, FileCoverage> parse(String gcovJson, String root) throws IOException {
+        Map<String, TreeMap<Integer, Row>> rowsByFile = new LinkedHashMap<>();
+        Map<String, List<Fn>> fnsByFile = new LinkedHashMap<>();
+        String base = root.replace('\\', '/');
+        for (String doc : gcovJson.split("\r?\n")) {
+            if (doc.isBlank()) {
                 continue;
             }
-            Matcher fn = FUNCTION.matcher(line);
-            if (fn.matches()) {
-                if (currentPath != null) {
-                    flush(methodDetail, currentPath, pend);
-                    int[] fm = methodsByFile.computeIfAbsent(currentPath, k -> new int[2]);
-                    if (Long.parseLong(fn.group(2)) > 0) {
-                        fm[0]++;
-                    } else {
-                        fm[1]++;
+            JsonNode d = JSON.readTree(doc);
+            for (JsonNode f : d.path("files")) {
+                String path = base + "/" + f.path("file").asText().replace('\\', '/');
+                TreeMap<Integer, Row> rows = rowsByFile.computeIfAbsent(path, k -> new TreeMap<>());
+                for (JsonNode ln : f.path("lines")) {
+                    Row r = rows.computeIfAbsent(ln.path("line_number").asInt(), Row::new);
+                    r.count += ln.path("count").asLong();
+                    r.unexecuted |= ln.path("unexecuted_block").asBoolean();
+                    for (JsonNode br : ln.path("branches")) {
+                        // (throw) 是编译器为可能抛异常的操作生成的路径，不是源码里写的条件。
+                        // 实测一个几百行的 demo 有 359 条分支，其中 120 条是 throw，
+                        // 而源码里真正的条件语句只有 32 处
+                        if (br.path("throw").asBoolean()) {
+                            continue;
+                        }
+                        if (br.path("count").asLong() > 0) {
+                            r.coveredBranches++;
+                        } else {
+                            r.missedBranches++;
+                        }
                     }
-                    pend = new Pending(shorten(fn.group(1)));
                 }
-                continue;
-            }
-
-            Matcher m = ROW.matcher(line);
-            if (!m.matches()) {
-                continue; // call 明细等其余行本切片不用
-            }
-            String count = m.group(1).strip();
-            int no = Integer.parseInt(m.group(2));
-            if (no == 0) {
-                String text = m.group(3);
-                if (text.startsWith("Source:")) {
-                    // 换文件了，把上一个文件里还在累计的函数结算掉
-                    flush(methodDetail, currentPath, pend);
-                    pend = null;
-                    String src = text.substring("Source:".length()).strip().replace('\\', '/');
-                    currentPath = root.replace('\\', '/') + "/" + src;
-                    current = byFile.computeIfAbsent(currentPath, k -> new ArrayList<>());
-                    lastLineIdx = -1;
-                }
-                continue;
-            }
-            if (current == null || "-".equals(count)) {
-                lastLineIdx = -1; // 非可执行行，后面若跟着 branch 行也无处可归
-                continue; // "-" 是非可执行行，与 JaCoCo 的 EMPTY 一样不进 IR
-            }
-            String st = status(count);
-            current.add(new FileCoverage.LineCoverage(no, st, 0, 0));
-            lastLineIdx = current.size() - 1;
-            if (pend != null) {
-                // function 行紧贴函数定义行之前，所以它之后的第一条源码行就是首行号
-                if (pend.firstLine == 0) {
-                    pend.firstLine = no;
-                }
-                if ("MISSED".equals(st)) {
-                    pend.missedLines++;
-                } else {
-                    pend.coveredLines++;
+                List<Fn> fns = fnsByFile.computeIfAbsent(path, k -> new ArrayList<>());
+                for (JsonNode fn : f.path("functions")) {
+                    fns.add(new Fn(shorten(fn.path("demangled_name").asText()),
+                            fn.path("start_line").asInt(), fn.path("execution_count").asLong()));
                 }
             }
         }
-        // 最后一个函数没有后继的 function / Source 行来触发结算
-        flush(methodDetail, currentPath, pend);
-        if (byFile.isEmpty()) {
-            throw new IOException("gcov 没有输出任何源码的覆盖数据。"
-                    + "请确认 coverage.cpp-source-root 指向编译时的工作目录（.gcno 里记的是相对源码名）");
-        }
-
         Map<String, FileCoverage> result = new LinkedHashMap<>();
-        byFile.forEach((path, lines) -> {
-            if (lines.isEmpty()) {
+        rowsByFile.forEach((path, rows) -> {
+            if (rows.isEmpty()) {
                 return; // 纯声明的头文件没有可执行行，列进来只会是一行 0/0 的噪声
             }
+            NavigableMap<Integer, FileCoverage.LineCoverage> byLine = new TreeMap<>();
+            for (Row r : rows.values()) {
+                byLine.put(r.no, new FileCoverage.LineCoverage(r.no, r.count == 0 ? "MISSED"
+                        : r.unexecuted ? "PARTIAL" : "COVERED", r.coveredBranches, r.missedBranches));
+            }
+            List<FileCoverage.LineCoverage> lines = new ArrayList<>(byLine.values());
+            List<Fn> fns = new ArrayList<>(fnsByFile.getOrDefault(path, List.of()));
+            fns.sort(Comparator.comparingInt(Fn::startLine)); // 稳定排序：同一行起头的几个函数保持 gcov 给的先后
+            int calledFns = (int) fns.stream().filter(f -> f.calls() > 0).count();
             int missed = (int) lines.stream().filter(l -> "MISSED".equals(l.status())).count();
             int covered = lines.size() - missed;
             int cb = lines.stream().mapToInt(FileCoverage.LineCoverage::coveredBranches).sum();
             int mb = lines.stream().mapToInt(FileCoverage.LineCoverage::missedBranches).sum();
-            int[] fm = methodsByFile.getOrDefault(path, new int[2]);
             int slash = path.lastIndexOf('/');
             result.put(path, new FileCoverage(
                     path,
                     slash < 0 ? "" : path.substring(0, slash).replace('/', '.'),
                     slash < 0 ? path : path.substring(slash + 1),
                     covered, missed,
-                    lines.isEmpty() ? 0d : covered * 100d / lines.size(),
-                    cb, mb, fm[0], fm[1],
-                    methodDetail.getOrDefault(path, List.of()),
+                    covered * 100d / lines.size(),
+                    cb, mb, calledFns, fns.size() - calledFns,
+                    methodsOf(fns, byLine),
                     lines));
         });
+        // 判的是结果而不是 gcov 给了几个条目：每份 JSON 都会给 include 进来的纯声明头文件列一个空条目，
+        // 只看条目数的话这道兜底永远走不到。不读源码之后源码根配错也不再让 gcov 出不来数，
+        // 走到这里的是源码全以绝对路径编译（被 -r 当成系统头文件滤掉了），或者没有一个编译单元含有函数
+        if (result.isEmpty()) {
+            throw new IOException("gcov 没有输出任何源码的覆盖数据：源码若是以绝对路径编译的，会被当成系统头文件滤掉。"
+                    + "请确认被测服务是在 coverage.cpp-source-root 指向的目录下、用相对路径编译的（.gcno 里记的是相对源码名）");
+        }
         return result;
     }
 
     /**
-     * gcov 的计数字段一共四种形态：
-     * {@code #####}/{@code =====} 没跑过（后者是只能由异常路径到达的块），
-     * {@code N*} 跑过但行内还有块没跑到 —— 正是 JaCoCo 的 PARTIAL，
-     * {@code N} 全跑到了。C++ 因此能做到与 Java 同级的四态染色。
+     * 方法明细，口径与原先的文本格式一致：函数的行 = 落在「它的起始行」到「下一个起始行更大的函数的起始行」
+     * 之间的可执行行（两个函数之间若夹着文件作用域的代码，会算进前一个 —— 原先就是这个近似）；
+     * 几个函数从同一行起头时，行只归最后一个，前面的没有行、不进明细（方法计数照算）。
+     * 首行号取这些行里的第一行，一行都没有的函数不进明细
      */
-    String status(String count) {
-        // 认不出来的一律当没跑过：把没跑过的说成跑过，是这个平台最不能犯的错
-        if (count.isEmpty() || !Character.isDigit(count.charAt(0))) {
-            return "MISSED";
+    private static List<FileCoverage.MethodCoverage> methodsOf(List<Fn> fns,
+                                                               NavigableMap<Integer, FileCoverage.LineCoverage> lines) {
+        List<FileCoverage.MethodCoverage> out = new ArrayList<>();
+        for (int i = 0; i < fns.size(); i++) {
+            Fn f = fns.get(i);
+            if (i + 1 < fns.size() && fns.get(i + 1).startLine() == f.startLine()) {
+                continue;
+            }
+            // fns 按起始行排好序、同一行起头的前几个已经跳过，所以下一个就是起始行更大的那个
+            int end = i + 1 < fns.size() ? fns.get(i + 1).startLine() : Integer.MAX_VALUE;
+            Collection<FileCoverage.LineCoverage> own = lines.subMap(f.startLine(), true, end, false).values();
+            if (own.isEmpty()) {
+                continue;
+            }
+            int missed = (int) own.stream().filter(l -> "MISSED".equals(l.status())).count();
+            out.add(new FileCoverage.MethodCoverage(f.name(), own.iterator().next().line(),
+                    own.size() - missed, missed, null, null));
         }
-        return count.endsWith("*") ? "PARTIAL" : "COVERED";
+        return out;
     }
 
     private List<Path> listBySuffix(Path dir, String suffix) throws IOException {

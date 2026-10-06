@@ -82,7 +82,7 @@
 | 7 | 产物与源码版本一致性校验 | `scripts/e2e_incremental.py`、`scripts/e2e_artifact.py` | 源码漂移时返回 409 而非 200；**产物按 buildId 取时**（`artifact-source: uploaded`）解出的行号与本地路径逐行一致（行号 + 状态 + 分支数集合相等），取不到产物一律 ANALYZE_ERROR 并点名缺哪个 buildId，绝不退化成「这些代码没被调用过」 |
 | 8 | 多实例聚合 + 实例间版本校验 | `e2e_multi_instance.py`（Java）、`e2e_go.py`（Go）、`e2e_cpp.py`（C++）、`e2e_rust.py`（Rust） | 各实例覆盖取并集（`/api/coverage/instances` 按实例分别归一化，断言 单实例最大 ≤ 聚合 ≤ 相加 且 ≠ 相加）；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
 | 9 | Go 采集与归一化（多语言共存） | `scripts/e2e_go.py` | Go 行级染色与 Java 同等质量；清零生效；路径以仓库根为基准；跨语言场景归因互不越界 |
-| 10 | C++ 采集与归一化（多语言共存） | `scripts/e2e_cpp.py` | C++ 行级染色达到与 Java 同级的**四态**；清零生效（含删 .gcda）；三种语言共存于同一套口径；跨语言场景归因互不越界 |
+| 10 | C++ 采集与归一化（多语言共存） | `scripts/e2e_cpp.py` | C++ 行级染色达到与 Java 同级的**四态**；清零生效（含删 .gcda）；三种语言共存于同一套口径；跨语言场景归因互不越界；**源码正被改写（为空 / 写了一半）时报告与源码完整时相同**（不缺文件、不少行）；**编译单元的 .gcno 坏了（gcov 崩溃 / 读不出函数）整轮 ANALYZE_ERROR 并点名是哪个**，换回完好的立即恢复 |
 | 11 | Rust 采集与归一化（多语言共存） | `scripts/e2e_rust.py` | Rust 行级染色成立；清零生效（含删 .profraw）；四种语言共存于同一套口径；跨语言场景归因互不越界 |
 | 12 | 覆盖率门禁（判定与「判不了」分离） | `scripts/e2e_incremental.py`、`scripts/ws_verify.js` | 门禁给的数字与页面同一个四舍五入结果；空 diff 放行且 `actual` 为 null；源码漂移 / 基线不存在一律 409，绝不返回 200+`passed:false` |
 | 13 | 项目管理与配置热生效 | `scripts/e2e_project.py` | 建项目 / 改配置**不重启**即生效；填错分 400（你填错了）/ 409（现在不能做）/ 503（平台依赖挂了）三类；场景进行中拒绝保存（409）；产物目录指错报 ANALYZE_ERROR 并点名；数据库不可用时采集、门禁照常，只有保存配置 503 |
@@ -128,7 +128,7 @@ bash scripts/run_local.sh verify
 
 `e2e_artifact.py`（产物仓库）排在它前面、四种语言的用例之后：它要与默认项目**逐行比对**，
 所以必须等四种语言都采过数；而它自己只建临时项目、不跑场景、不清零，不会洗掉谁的数据。
-它是全仓唯一让平台**同时带两个活项目采集**的用例 —— 撞上 JaCoCo tcpserver
+它是全仓唯一让平台**同时带两个活项目采集 Java 实例**的用例（`e2e_cpp.py` 也建临时项目，但只采 C++ 两台）—— 撞上 JaCoCo tcpserver
 （accept backlog 只有 1）被 RST 的概率因此变高，所以它比对前会先把前提做实：
 取不到「全部实例都连上」的快照就重试取数，绝不拿缺了实例的数据去比
 （那会报出一个根本不存在的行号错位，见 §三「五个反复踩到的坑」第 4 条）。
@@ -153,6 +153,9 @@ export PATH="$JAVA_HOME/bin:/c/Users/Administrator/devtools/apache-maven-3.9.16/
 `WindowsApps/python` 是 0 字节的 Store 别名，直接调得到 `Permission denied`。
 用 `/c/Users/Administrator/AppData/Local/Python/bin/python`（`run_local.sh` 的
 `resolve_python` 就是跳过它，但那只管 verify 自己）。
+从这个 python 里再 `subprocess` 调 `bash`，拿到的是 `System32\bash.exe`（WSL 启动器）而不是 Git Bash ——
+`mvn` 一条都没跑，而 surefire 上一次绿跑留下的报告还在、照样写着 0 失败。要跑 mvn 就直接调 `mvn.cmd`、
+自己设 `JAVA_HOME`，并且**先核对报告的修改时间晚于这次开跑**再读（2026-10-06 的反向验证差点拿旧报告当了结果）。
 
 ### 工具链依赖
 
@@ -165,7 +168,7 @@ export PATH="$JAVA_HOME/bin:/c/Users/Administrator/devtools/apache-maven-3.9.16/
 | 语言 | 平台调用的工具 | 配置项（默认取 PATH） |
 |---|---|---|
 | Go | `go tool covdata textfmt`（行）、`covdata func`（方法） | `coverage.go-tool` |
-| C++ | `gcov -t -r -b -c`、`gcov-tool merge` | `coverage.gcov-tool`、`coverage.gcov-merge-tool` |
+| C++ | `gcov --json-format -t -r -b -c`（JSON，不读源码；GCC ≥ 9。必须用长选项：9、10 里短选项 `-j` 是 human-readable）、`gcov-tool merge` | `coverage.gcov-tool`、`coverage.gcov-merge-tool` |
 | Rust | `llvm-profdata merge -sparse`、`llvm-cov export --format=lcov` | `coverage.llvm-profdata-tool`、`coverage.llvm-cov-tool` |
 
 **Rust 的两个工具版本必须与 rustc 匹配**，系统上随便一个 LLVM 往往对不上，
