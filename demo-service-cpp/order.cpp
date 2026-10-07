@@ -1,4 +1,5 @@
 #include "order.h"
+#include "pricing.h"
 
 namespace {
 
@@ -63,4 +64,8 @@ std::string Store::refund(const std::string& bizNo, long long amount) {
     }
     o.status = "REFUNDED";
     return "REFUNDED";
+}
+
+long long Store::estimateFee(long long amount, int quantity) {
+    return feeCents(amount) * clampTo<int>(quantity, 1, 10);
 }

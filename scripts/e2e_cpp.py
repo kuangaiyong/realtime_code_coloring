@@ -14,7 +14,9 @@ P3 端到端验收：C++ 接入。真实 C++ 服务、真实 gcov 插桩、真�
   5. 场景归因对 C++ 同样成立 —— 只在 C++ 上跑的场景不该染到 Java/Go 的代码；
   6. 版本一致性校验覆盖 C++ —— C++ 源码相对产物漂移时，增量口径拒绝出报告并点名 C++ 文件；
   7. 源码正被改写（为空 / 只写了一半）时报告与源码完整时相同 —— 归一化不读源码；
-  8. 编译单元的 .gcno 坏了（gcov 崩溃 / 读不出函数）时整轮 ANALYZE_ERROR 并点名，绝不静默少一个文件。
+  8. 编译单元的 .gcno 坏了（gcov 崩溃 / 读不出函数）时整轮 ANALYZE_ERROR 并点名，绝不静默少一个文件；
+  9. 同一段源码编进好几个函数实例时按源码口径计数 —— 被两个编译单元引用的内联函数跑全了就是已覆盖、分支不翻倍、
+     只算一个方法；模板的每个实例在方法表里各占一行。
 
 被测 C++ 服务的既有业务源码一行未改：探针是独立编译单元，靠全局对象的构造函数
 （早于 main 执行）自动启动，业务代码不 include 也不调用它任何东西。
@@ -398,6 +400,78 @@ def main():
                 print(f"  [FAIL] 收尾没删掉临时项目 {GCNO_PID}（DELETE 回 {status}），平台会一直采下去")
                 ok = False
             shutil.rmtree(scratch, ignore_errors=True)
+
+    # ---- 9. 同一段源码编进好几个函数实例时，按源码口径计数 ----
+    # pricing.h 的 feeCents 是内联函数，main.cpp 与 order.cpp 都用到它：两个编译单元各编出一份，链接器只留一份，
+    # 另一份的计数永远是 0。clampTo 是模板，实例化了 long long（手续费接口在用）与 int（Store::estimateFee 里，
+    # 没有接口调它）两次。按 gcov 文本格式汇总段的口径合并的话，跑全了的行永远是部分覆盖、分支翻倍、
+    # 同一个函数既算跑过又算没跑过，模板只剩一个实例进得了方法明细。
+    # 模板的两个实例则是各自的机器码：int 那个没跑过，它的行只能算部分覆盖、分支并列 —— 不能学内联副本那样忽略它
+    print("\n  >> 同一段源码编进好几个函数实例：内联函数跨编译单元、模板实例化两次，都要按源码口径计数")
+    pricing = "demo-service-cpp/pricing.h"
+    called = True
+    for amount in (25000, 30):  # 一高一低，走遍 feeCents 的两个分支；两次都落在 clampTo 的上下限之间
+        status, body = http(f"{CPP}/api/order/fee?amount={amount}")
+        if status != 200 or body.get("ok") is not True:
+            print(f"  [FAIL] 判不了：手续费接口（amount={amount}）返回 {status}：{body}")
+            ok = called = False
+    s = must(*http(f"{PLATFORM}/api/coverage/collect", "POST"), what="/api/coverage/collect")
+    pf = next((x for x in s["files"] if x["path"] == pricing), None)
+    if called and pf is None:
+        print(f"  [FAIL] 判不了：调过手续费接口之后报告里仍没有 {pricing}")
+        ok = False
+    elif called:
+        d = detail(pricing)
+        rows = {}
+        for r in d["rows"]:
+            rows.setdefault(r["text"].strip(), r)  # 下面查的都是这个文件里独一无二的行
+
+        def row(text):
+            r = rows.get(text)
+            if r is None:
+                print(f"  [FAIL] 判不了：{pricing} 里找不到整行为「{text}」的代码")
+            return r
+
+        def verdict(passed, good, bad):
+            nonlocal ok
+            print(f"  [PASS] {good}" if passed else f"  [FAIL] {bad}")
+            ok = ok and passed
+
+        fee_lines = ["inline long long feeCents(long long amount) {", "if (amount >= 10000) {",
+                     "return amount / 100;", "return 50;"]
+        got = {t: (row(t) or {}).get("status") for t in fee_lines}
+        verdict(all(v == "COVERED" for v in got.values()),
+                "走遍分支的内联函数 feeCents 每一行都是已覆盖（零计数的副本没有把它拉成部分覆盖）",
+                f"feeCents 的行应全部是已覆盖，实际 {got}")
+        r = row("if (amount >= 10000) {") or {}
+        verdict((r.get("coveredBranches"), r.get("missedBranches")) == (2, 0),
+                "feeCents 条件行的分支是 2/2（不随副本翻倍）",
+                f"feeCents 条件行的分支应为已覆盖 2、未覆盖 0，实际 {r.get('coveredBranches')}/{r.get('missedBranches')}")
+        methods = d.get("methods") or []
+        fee = [m for m in methods if m["name"].startswith("feeCents")]
+        verdict(len(fee) == 1 and fee[0]["missedLines"] == 0,
+                "方法明细里 feeCents 只出现一次，且没有未覆盖的行",
+                f"方法明细里的 feeCents 应恰好一条且无未覆盖行，实际 {fee}")
+        verdict((pf["coveredMethods"], pf["missedMethods"]) == (2, 1),
+                "pricing.h 的方法：已调用 2 个（feeCents、clampTo<long long>）、未调用 1 个（clampTo<int>）",
+                f"pricing.h 的方法应为已调用 2、未调用 1，实际 {pf['coveredMethods']}/{pf['missedMethods']}"
+                f"（feeCents 的零计数副本被算成了一个没跑过的方法？）")
+        got = {t: (row(t) or {}).get("status") for t in ("return value;", "return lo;", "return hi;")}
+        verdict(got == {"return value;": "PARTIAL", "return lo;": "MISSED", "return hi;": "MISSED"},
+                "模板 clampTo：return value; 是部分覆盖（clampTo<int> 在这一行上从没跑过，不说成跑全了），"
+                "return lo / return hi 未覆盖",
+                f"clampTo 的三个 return 应为 部分覆盖 / 未覆盖 / 未覆盖，实际 {got}")
+        got = {t: ((row(t) or {}).get("coveredBranches"), (row(t) or {}).get("missedBranches"))
+               for t in ("if (value < lo) {", "if (value > hi) {")}
+        verdict(all(v == (1, 3) for v in got.values()),
+                "模板 clampTo 两个条件行的分支都是 1/4（两个实例各 2 条并列，long long 走了其中一条）",
+                f"clampTo 条件行的分支应都是已覆盖 1、未覆盖 3，实际 {got}")
+        ll = [m for m in methods if "clampTo<long long>" in m["name"]]
+        ii = [m for m in methods if "clampTo<int>" in m["name"]]
+        verdict(len(ll) == 1 and ll[0]["coveredLines"] > 0 and len(ii) == 1
+                and ii[0]["coveredLines"] == 0 and ii[0]["missedLines"] > 0,
+                "方法明细里模板的两个实例各占一行：clampTo<long long> 有已覆盖的行、clampTo<int> 全部未覆盖",
+                f"方法明细应同时列出两个实例，实际 long long：{ll}，int：{ii}")
 
     print("\n" + "-" * 78)
     print("  验收结论：" + ("全部通过" if ok else "存在失败项"))

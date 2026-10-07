@@ -24,6 +24,8 @@ public:
     bool queryOrder(const std::string& bizNo, Order& out);
     // 接口 C：退款
     std::string refund(const std::string& bizNo, long long amount);
+    // 手续费预估：没有接口调用它，只为让 order.cpp 也编出 pricing.h 里 feeCents 的一份副本、并实例化 clampTo<int>
+    long long estimateFee(long long amount, int quantity);
 
 private:
     std::mutex mu_;
