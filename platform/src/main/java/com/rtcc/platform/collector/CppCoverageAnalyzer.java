@@ -277,35 +277,75 @@ public class CppCoverageAnalyzer {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /**
-     * 某个源码的一行。同一行可能出现好几次：被几个编译单元 include 的头文件每份 JSON 里各有一次，
-     * 实例化了几次的模板在同一份里每个实例各有一次。按 gcov 文本格式汇总段自己的口径合起来：
-     * 计数相加、「有块没跑到」取或、分支并列（gcov 自己数分支总数也是并列的）。
-     *
-     * <b>这个口径对「被几个编译单元 include 的内联函数」并不准</b>：链接器只留其中一份，其余几份的计数
-     * 永远是 0，于是跑全了的行也一直是部分覆盖、分支数翻倍、同一个函数既算跑过又算没跑过。
-     * 原先的文本解析同样如此，而且更糟 —— 汇总段和各实例的子段它都照收，同一行记了好几遍。
-     * 该怎么合（按函数去重、零计数的那几份不参与取或）另行决定
+     * 一个函数在某一行上的样子。同一个函数（修饰名相同）的几份副本合在一个 Row 里：被几个编译单元 include 的内联函数
+     * 每份 JSON 各有一份，链接器只留其中一份，其余副本的计数永远是 0 —— 它们在最终的程序里根本不存在，
+     * 所以「有块没跑到」只看跑过的副本；同一段源码编出的副本控制流相同，分支按位置合并、任一副本走过就算覆盖
      */
     private static final class Row {
-        final int no;
         long count;
-        boolean unexecuted;
-        int coveredBranches;
-        int missedBranches;
+        boolean partial;
+        final BitSet taken = new BitSet();
+        int branches;
 
-        Row(int no) {
-            this.no = no;
+        void add(JsonNode ln) {
+            long c = ln.path("count").asLong();
+            count += c;
+            if (c > 0 && ln.path("unexecuted_block").asBoolean()) {
+                partial = true;
+            }
+            int i = 0;
+            for (JsonNode br : ln.path("branches")) {
+                // (throw) 是编译器为可能抛异常的操作生成的路径，不是源码里写的条件。
+                // 实测一个几百行的 demo 有 359 条分支，其中 120 条是 throw，
+                // 而源码里真正的条件语句只有 32 处
+                if (br.path("throw").asBoolean()) {
+                    continue;
+                }
+                if (br.path("count").asLong() > 0) {
+                    taken.set(i);
+                }
+                i++;
+            }
+            branches = Math.max(branches, i);
         }
     }
 
-    private record Fn(String name, int startLine, long calls) {}
+    /**
+     * 一个源码函数，以修饰名为键：同名的几份是同一个函数的副本（内联函数、头文件里的 static 函数），合成一个、调用次数相加；
+     * 模板的不同实例化修饰名不同，各算一个 —— 合成一个的话「某个实例化从没跑过」就看不见了。
+     * firstLine / covered / missed 是方法明细，在生成行状态时顺手累计，只看它自己在各行上的样子
+     */
+    private static final class Fn {
+        final String name;
+        final int startLine;
+        final int endLine;
+        long calls;
+        int firstLine = Integer.MAX_VALUE;
+        int covered;
+        int missed;
+
+        Fn(String name, int startLine, int endLine) {
+            this.name = name;
+            this.startLine = startLine;
+            this.endLine = endLine;
+        }
+
+        boolean contains(int line) {
+            return startLine <= line && line <= endLine;
+        }
+    }
 
     /**
      * 解析 {@code gcov --json-format -t} 的输出：一个 .gcno 一份 JSON（一行一份）。包级可见是为了让测试直接喂真实形态的输出。
+     *
+     * <p>同一段源码常被编进好几个函数实例（openspec：cpp-normalization），每一行先按所属函数分组：
+     * 组内是同一个函数的副本，按 {@link Row} 的规则合；组间是<b>不同的函数</b>（模板的不同实例化、同一行起头的几个 lambda），
+     * 各是一段真实的机器码 —— 只要有一个在这一行上没跑过、或跑过但有块没跑到，这一行就只算部分覆盖，分支并列。
+     * 学内联副本那样忽略没跑过的函数，就是把没跑过的代码说成跑过
      */
     Map<String, FileCoverage> parse(String gcovJson, String root) throws IOException {
-        Map<String, TreeMap<Integer, Row>> rowsByFile = new LinkedHashMap<>();
-        Map<String, List<Fn>> fnsByFile = new LinkedHashMap<>();
+        Map<String, TreeMap<Integer, Map<String, Row>>> linesByFile = new LinkedHashMap<>();
+        Map<String, Map<String, Fn>> fnsByFile = new LinkedHashMap<>();
         String base = root.replace('\\', '/');
         for (String doc : gcovJson.split("\r?\n")) {
             if (doc.isBlank()) {
@@ -314,46 +354,59 @@ public class CppCoverageAnalyzer {
             JsonNode d = JSON.readTree(doc);
             for (JsonNode f : d.path("files")) {
                 String path = base + "/" + f.path("file").asText().replace('\\', '/');
-                TreeMap<Integer, Row> rows = rowsByFile.computeIfAbsent(path, k -> new TreeMap<>());
-                for (JsonNode ln : f.path("lines")) {
-                    Row r = rows.computeIfAbsent(ln.path("line_number").asInt(), Row::new);
-                    r.count += ln.path("count").asLong();
-                    r.unexecuted |= ln.path("unexecuted_block").asBoolean();
-                    for (JsonNode br : ln.path("branches")) {
-                        // (throw) 是编译器为可能抛异常的操作生成的路径，不是源码里写的条件。
-                        // 实测一个几百行的 demo 有 359 条分支，其中 120 条是 throw，
-                        // 而源码里真正的条件语句只有 32 处
-                        if (br.path("throw").asBoolean()) {
-                            continue;
-                        }
-                        if (br.path("count").asLong() > 0) {
-                            r.coveredBranches++;
-                        } else {
-                            r.missedBranches++;
-                        }
-                    }
-                }
-                List<Fn> fns = fnsByFile.computeIfAbsent(path, k -> new ArrayList<>());
+                TreeMap<Integer, Map<String, Row>> lines = linesByFile.computeIfAbsent(path, k -> new TreeMap<>());
+                Map<String, Fn> fns = fnsByFile.computeIfAbsent(path, k -> new LinkedHashMap<>());
+                // 先收函数再收行：行只能归给这份 JSON 里这个文件的函数
+                Map<String, Fn> here = new LinkedHashMap<>();
                 for (JsonNode fn : f.path("functions")) {
-                    fns.add(new Fn(shorten(fn.path("demangled_name").asText()),
-                            fn.path("start_line").asInt(), fn.path("execution_count").asLong()));
+                    String key = fn.path("name").asText();
+                    Fn x = fns.computeIfAbsent(key, k -> new Fn(shorten(fn.path("demangled_name").asText()),
+                            fn.path("start_line").asInt(), fn.path("end_line").asInt()));
+                    x.calls += fn.path("execution_count").asLong();
+                    here.put(key, x);
+                }
+                for (JsonNode ln : f.path("lines")) {
+                    int no = ln.path("line_number").asInt();
+                    lines.computeIfAbsent(no, k -> new LinkedHashMap<>())
+                            .computeIfAbsent(owner(here, ln.path("function_name").asText(), no), k -> new Row())
+                            .add(ln);
                 }
             }
         }
         Map<String, FileCoverage> result = new LinkedHashMap<>();
-        rowsByFile.forEach((path, rows) -> {
-            if (rows.isEmpty()) {
+        linesByFile.forEach((path, byLine) -> {
+            if (byLine.isEmpty()) {
                 return; // 纯声明的头文件没有可执行行，列进来只会是一行 0/0 的噪声
             }
-            NavigableMap<Integer, FileCoverage.LineCoverage> byLine = new TreeMap<>();
-            for (Row r : rows.values()) {
-                byLine.put(r.no, new FileCoverage.LineCoverage(r.no, r.count == 0 ? "MISSED"
-                        : r.unexecuted ? "PARTIAL" : "COVERED", r.coveredBranches, r.missedBranches));
-            }
-            List<FileCoverage.LineCoverage> lines = new ArrayList<>(byLine.values());
-            List<Fn> fns = new ArrayList<>(fnsByFile.getOrDefault(path, List.of()));
-            fns.sort(Comparator.comparingInt(Fn::startLine)); // 稳定排序：同一行起头的几个函数保持 gcov 给的先后
-            int calledFns = (int) fns.stream().filter(f -> f.calls() > 0).count();
+            Map<String, Fn> fns = fnsByFile.getOrDefault(path, Map.of());
+            List<FileCoverage.LineCoverage> lines = new ArrayList<>();
+            byLine.forEach((no, byFn) -> {
+                long count = 0;
+                boolean partial = false;
+                int taken = 0;
+                int branches = 0;
+                for (Map.Entry<String, Row> e : byFn.entrySet()) {
+                    Row r = e.getValue();
+                    count += r.count;
+                    partial |= r.count == 0 || r.partial;
+                    taken += r.taken.cardinality();
+                    branches += r.branches;
+                    Fn fn = fns.get(e.getKey());
+                    if (fn != null) {
+                        fn.firstLine = Math.min(fn.firstLine, no);
+                        if (r.count > 0) {
+                            fn.covered++;
+                        } else {
+                            fn.missed++;
+                        }
+                    }
+                }
+                lines.add(new FileCoverage.LineCoverage(no, count == 0 ? "MISSED" : partial ? "PARTIAL" : "COVERED",
+                        taken, branches - taken));
+            });
+            List<Fn> sorted = new ArrayList<>(fns.values());
+            sorted.sort(Comparator.comparingInt(fn -> fn.startLine)); // 稳定排序：同一行起头的几个函数保持 gcov 给的先后
+            int calledFns = (int) sorted.stream().filter(fn -> fn.calls > 0).count();
             int missed = (int) lines.stream().filter(l -> "MISSED".equals(l.status())).count();
             int covered = lines.size() - missed;
             int cb = lines.stream().mapToInt(FileCoverage.LineCoverage::coveredBranches).sum();
@@ -365,8 +418,8 @@ public class CppCoverageAnalyzer {
                     slash < 0 ? path : path.substring(slash + 1),
                     covered, missed,
                     covered * 100d / lines.size(),
-                    cb, mb, calledFns, fns.size() - calledFns,
-                    methodsOf(fns, byLine),
+                    cb, mb, calledFns, sorted.size() - calledFns,
+                    methodsOf(sorted),
                     lines));
         });
         // 判的是结果而不是 gcov 给了几个条目：每份 JSON 都会给 include 进来的纯声明头文件列一个空条目，
@@ -380,28 +433,39 @@ public class CppCoverageAnalyzer {
     }
 
     /**
-     * 方法明细，口径与原先的文本格式一致：函数的行 = 落在「它的起始行」到「下一个起始行更大的函数的起始行」
-     * 之间的可执行行（两个函数之间若夹着文件作用域的代码，会算进前一个 —— 原先就是这个近似）；
-     * 几个函数从同一行起头时，行只归最后一个，前面的没有行、不进明细（方法计数照算）。
-     * 首行号取这些行里的第一行，一行都没有的函数不进明细
+     * 这一行归哪个函数。先信 gcov 标的 {@code function_name}，但要那个函数的范围真包含这一行 ——
+     * GCC 9、10 标的是「最后一个开始的函数」，lambda 结束后的行也标成 lambda；GCC 11 起按结束行维护嵌套栈，
+     * 可两层在同一行结束时也只弹一层。不包含就归给包含这一行的最内层函数（范围最小的那个）；
+     * 一个都不包含时返回 ""，这一行不进任何方法
      */
-    private static List<FileCoverage.MethodCoverage> methodsOf(List<Fn> fns,
-                                                               NavigableMap<Integer, FileCoverage.LineCoverage> lines) {
+    private static String owner(Map<String, Fn> here, String named, int line) {
+        Fn f = here.get(named);
+        if (f != null && f.contains(line)) {
+            return named;
+        }
+        String best = "";
+        int span = Integer.MAX_VALUE;
+        for (Map.Entry<String, Fn> e : here.entrySet()) {
+            Fn g = e.getValue();
+            if (g.contains(line) && g.endLine - g.startLine < span) {
+                best = e.getKey();
+                span = g.endLine - g.startLine;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 方法明细：每个函数在它自己那些行上的样子（行的归属见 {@link #owner}）。lambda 自成一个方法 —— 不能用
+     * 「起始行到下一个起始行」近似，那会把外层函数后半段全算给 lambda。同一行起头的几个函数各占一条、首行号相同；
+     * 一行都没有的函数不进明细（方法计数照算）
+     */
+    private static List<FileCoverage.MethodCoverage> methodsOf(List<Fn> fns) {
         List<FileCoverage.MethodCoverage> out = new ArrayList<>();
-        for (int i = 0; i < fns.size(); i++) {
-            Fn f = fns.get(i);
-            if (i + 1 < fns.size() && fns.get(i + 1).startLine() == f.startLine()) {
-                continue;
+        for (Fn fn : fns) {
+            if (fn.covered + fn.missed > 0) {
+                out.add(new FileCoverage.MethodCoverage(fn.name, fn.firstLine, fn.covered, fn.missed, null, null));
             }
-            // fns 按起始行排好序、同一行起头的前几个已经跳过，所以下一个就是起始行更大的那个
-            int end = i + 1 < fns.size() ? fns.get(i + 1).startLine() : Integer.MAX_VALUE;
-            Collection<FileCoverage.LineCoverage> own = lines.subMap(f.startLine(), true, end, false).values();
-            if (own.isEmpty()) {
-                continue;
-            }
-            int missed = (int) own.stream().filter(l -> "MISSED".equals(l.status())).count();
-            out.add(new FileCoverage.MethodCoverage(f.name(), own.iterator().next().line(),
-                    own.size() - missed, missed, null, null));
         }
         return out;
     }

@@ -405,7 +405,8 @@ def main():
     # pricing.h 的 feeCents 是内联函数，main.cpp 与 order.cpp 都用到它：两个编译单元各编出一份，链接器只留一份，
     # 另一份的计数永远是 0。clampTo 是模板，实例化了 long long（手续费接口在用）与 int（Store::estimateFee 里，
     # 没有接口调它）两次。按 gcov 文本格式汇总段的口径合并的话，跑全了的行永远是部分覆盖、分支翻倍、
-    # 同一个函数既算跑过又算没跑过，模板只剩一个实例进得了方法明细
+    # 同一个函数既算跑过又算没跑过，模板只剩一个实例进得了方法明细。
+    # 模板的两个实例则是各自的机器码：int 那个没跑过，它的行只能算部分覆盖、分支并列 —— 不能学内联副本那样忽略它
     print("\n  >> 同一段源码编进好几个函数实例：内联函数跨编译单元、模板实例化两次，都要按源码口径计数")
     pricing = "demo-service-cpp/pricing.h"
     called = True
@@ -456,14 +457,15 @@ def main():
                 f"pricing.h 的方法应为已调用 2、未调用 1，实际 {pf['coveredMethods']}/{pf['missedMethods']}"
                 f"（feeCents 的零计数副本被算成了一个没跑过的方法？）")
         got = {t: (row(t) or {}).get("status") for t in ("return value;", "return lo;", "return hi;")}
-        verdict(got == {"return value;": "COVERED", "return lo;": "MISSED", "return hi;": "MISSED"},
-                "模板 clampTo：执行过的 return value; 是已覆盖，return lo / return hi 未覆盖",
-                f"clampTo 的三个 return 应为 已覆盖 / 未覆盖 / 未覆盖，实际 {got}")
-        totals = {t: ((row(t) or {}).get("coveredBranches") or 0) + ((row(t) or {}).get("missedBranches") or 0)
-                  for t in ("if (value < lo) {", "if (value > hi) {")}
-        verdict(all(v == 2 for v in totals.values()),
-                "模板 clampTo 两个条件行的分支总数都是 2（两个实例按位置合并）",
-                f"clampTo 条件行的分支总数应都是 2，实际 {totals}")
+        verdict(got == {"return value;": "PARTIAL", "return lo;": "MISSED", "return hi;": "MISSED"},
+                "模板 clampTo：return value; 是部分覆盖（clampTo<int> 在这一行上从没跑过，不说成跑全了），"
+                "return lo / return hi 未覆盖",
+                f"clampTo 的三个 return 应为 部分覆盖 / 未覆盖 / 未覆盖，实际 {got}")
+        got = {t: ((row(t) or {}).get("coveredBranches"), (row(t) or {}).get("missedBranches"))
+               for t in ("if (value < lo) {", "if (value > hi) {")}
+        verdict(all(v == (1, 3) for v in got.values()),
+                "模板 clampTo 两个条件行的分支都是 1/4（两个实例各 2 条并列，long long 走了其中一条）",
+                f"clampTo 条件行的分支应都是已覆盖 1、未覆盖 3，实际 {got}")
         ll = [m for m in methods if "clampTo<long long>" in m["name"]]
         ii = [m for m in methods if "clampTo<int>" in m["name"]]
         verdict(len(ll) == 1 and ll[0]["coveredLines"] > 0 and len(ii) == 1
