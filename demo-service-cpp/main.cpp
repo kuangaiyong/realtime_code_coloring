@@ -9,6 +9,7 @@
 #include <string>
 
 #include "order.h"
+#include "pricing.h"
 
 namespace {
 
@@ -106,6 +107,11 @@ void handle(SOCKET c, const std::string& target) {
             }
         }
         sendJson(c, R"({"ok":true,"data":")" + jsonEscape(g_store.refund(bizNo, amount)) + "\"}");
+    } else if (path == "/api/order/fee") {
+        // 手续费试算：用到 pricing.h 里的内联函数与模板，让平台有一段被几个编译单元共享的真实代码可测
+        long long amount = clampTo<long long>(std::strtoll(queryParam(target, "amount").c_str(), nullptr, 10),
+                                              0, 100000000);
+        sendJson(c, R"({"ok":true,"data":)" + std::to_string(feeCents(amount)) + "}");
     } else {
         sendJson(c, R"({"ok":false,"data":"NO_ROUTE"})");
     }
