@@ -217,8 +217,14 @@ public class CppCoverageAnalyzer {
     }
 
     private static IOException failed(String what, Run r) {
-        return new IOException(what + " 失败（exit " + r.exit() + "）：" + r.err().trim()
-                + "。请确认平台所在环境已安装 GCC 工具链（coverage.gcov-tool / gcov-merge-tool）");
+        String err = r.err().trim();
+        // stamp mismatch 说的是 .gcda 与 .gcno 不是同一次编译的产物，工具链本身没问题 ——
+        // 接「请确认已安装 GCC 工具链」会把人引去完全不相干的方向
+        String hint = err.contains("stamp mismatch")
+                ? "。.gcda 与 .gcno 不是同一次编译的产物：被测实例跑的二进制与平台拿到的 .gcno 不是同一次构建，"
+                        + "或实例的数据目录里留着旧构建写下的 .gcda —— 让实例与产物对上同一次构建，并清掉数据目录里的旧 .gcda"
+                : "。请确认平台所在环境已安装 GCC 工具链（coverage.gcov-tool / gcov-merge-tool）";
+        return new IOException(what + " 失败（exit " + r.exit() + "）：" + err + hint);
     }
 
     private Run run(List<String> cmd, Path cwd, String what) throws IOException {

@@ -149,6 +149,22 @@ class CppCoverageAnalyzerTest {
         assertFalse(e.getMessage().contains("截断"), "不是截断，别把人引去查产物：" + e.getMessage());
     }
 
+    /**
+     * 实例跑的二进制与平台拿到的 .gcno 不是同一次编译（实例没随新构建重启）：gcov 说 stamp mismatch、以 5 退出，
+     * 每份 JSON 照常回来（实测 gcov 16.2，旧 .gcda 配新 .gcno）。拒绝出报告是对的，但提示原先一律接
+     * 「请确认已安装 GCC 工具链」—— 工具链没有问题，那句话把人引去了完全不相干的方向
+     */
+    @Test
+    void stamp对不上时指向实例与产物不是同一次构建而不是工具链() {
+        String err = "C:/x/mix/order.gcda:stamp mismatch with notes file\n";
+        IOException e = assertThrows(IOException.class, () -> CppCoverageAnalyzer.requireAllUnits(
+                new CppCoverageAnalyzer.Run(5, MAIN_DOC + "\n{\"data_file\":\"order.gcno\",\"files\":[]}\n", err),
+                UNITS, BOTH_HAVE_DATA));
+        assertTrue(e.getMessage().contains("order.gcda:stamp mismatch"), e.getMessage());
+        assertTrue(e.getMessage().contains("不是同一次构建"), "要指向实例与产物对不上：" + e.getMessage());
+        assertFalse(e.getMessage().contains("GCC 工具链"), "工具链没问题，别把人引去查它：" + e.getMessage());
+    }
+
     /** 每份都回来了、gcov 自己在 stderr 里点了名（not a gcov notes file、corrupted ……）：照原样报出来 */
     @Test
     void gcov自己点了名的失败原样报出来() {
