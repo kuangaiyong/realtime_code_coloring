@@ -178,6 +178,18 @@ public class CoverageHistory {
         }
     }
 
+    /** 项目删了，它的趋势也没有留着的理由 —— 留着的话，同 id 重建的项目会接着显示旧项目的点 */
+    public void forget(String projectId) {
+        if (!ensureReady()) {
+            return;
+        }
+        try {
+            jdbc.update("DELETE FROM build_coverage WHERE project_id = ?", projectId);
+        } catch (Exception e) {
+            log.warn("删除项目 {} 的趋势记录失败：{}", projectId, describe(e));
+        }
+    }
+
     private static String describe(Exception e) {
         String m = e.getMessage();
         return m == null || m.isBlank() ? e.getClass().getSimpleName() : m;

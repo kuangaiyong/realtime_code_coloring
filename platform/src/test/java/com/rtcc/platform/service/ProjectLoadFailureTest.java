@@ -69,7 +69,8 @@ class ProjectLoadFailureTest {
                 return super.create(cfg);
             }
         };
-        return new ProjectRegistry(seed, store, factory, new CollectEvents(unreachable()));
+        return new ProjectRegistry(seed, store, factory, new CollectEvents(unreachable()),
+                new CoverageHistory(unreachable()));
     }
 
     @Test

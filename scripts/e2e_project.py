@@ -373,6 +373,21 @@ def main():
     st, body = http(f"{PLATFORM}/api/projects/{P1}")
     check(st == 404, f"删掉之后再查返回 404：{body.get('error')}", f"删掉的项目还在：{st} {body}")
 
+    # 回归：删项目原先只删配置和采集事件，趋势表里这个 id 的记录全留着 ——
+    # 用同一个 id 重建，新项目一次都没采过，趋势图上却是旧项目的几十个点。
+    # 重建时只给一个连不上的实例：它写不出趋势，读到的任何一个点都只能是旧项目留下的
+    must(*http(f"{PLATFORM}/api/projects", method="POST", body=make(P2, "同 id 重建", ["go://127.0.0.1:1"])),
+         what=f"同 id 重建 {P2}")
+    tr = must(*http(f"{PLATFORM}/api/projects/{P2}/coverage/trend"), what=f"重建后 {P2} 趋势")
+    if not tr["available"]:
+        print(f"  [跳过] 历史库不可用（{tr.get('error')}），删项目是否清掉趋势无法验证")
+    else:
+        old = tr["builds"]
+        check(not old, "删掉的项目不留趋势：同 id 重建后趋势是空的",
+              f"同 id 重建的新项目带出了旧项目的 {len(old)} 个趋势点"
+              + (f"（最早 {old[0]['buildCommit'][:8]} @ {old[0]['peakAt']}）" if old else ""))
+    must(*http(f"{PLATFORM}/api/projects/{P2}", method="DELETE"), what=f"删除重建的 {P2}")
+
     lst = must(*http(f"{PLATFORM}/api/projects"), what="项目列表")
     ids = sorted(p["id"] for p in lst["projects"])
     check(ids == preexisting,

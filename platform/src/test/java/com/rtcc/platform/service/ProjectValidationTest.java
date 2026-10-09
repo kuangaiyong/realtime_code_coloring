@@ -43,7 +43,8 @@ class ProjectValidationTest {
                 // 这些用例全在「写库之前」就被挡下或走到写库失败，取不到产物那一步到不了
                 new ArtifactStore(java.nio.file.Path.of("target", "artifacts-unused"), 10));
         // 库连不上时 loadAll 退回种子，因此这里拿到的是一个只有 default 的注册表
-        registry = new ProjectRegistry(seed, store, factory, new CollectEvents(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")));
+        registry = new ProjectRegistry(seed, store, factory, new CollectEvents(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")),
+                new CoverageHistory(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:1/nonexistent")));
     }
 
     private ProjectConfig cfg(String id, String name, List<String> instances) {
