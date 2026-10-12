@@ -1,6 +1,7 @@
 import { api, LANG } from '../api.js';
 import { store } from '../store.js';
 import { BaselineField } from '../components/baseline-field.js';
+import { ARTIFACT_FIELDS } from './onboard-data.js';
 
 const { computed, reactive, ref, onMounted } = Vue;
 
@@ -88,8 +89,12 @@ export const Settings = {
     const instances = computed(() =>
       rows.filter(r => r.host && r.port).map(r => r.lang + '://' + r.host + ':' + r.port));
     const languages = computed(() => [...new Set(rows.map(r => r.lang))]);
+    const uploaded = computed(() => String(cfg.artifactSource || '').toLowerCase() === 'uploaded');
+    // 切到 uploaded 时只是不显示三条本地产物路径，值仍留在 cfg 里照存：切回 local 不用重填，
+    // 而 uploaded 下它们本来就会被产物仓库里的路径盖掉
     const pathFields = computed(() =>
-      languages.value.flatMap(l => (PATH_FIELDS[l] || []).map(f => [l, ...f])));
+      languages.value.flatMap(l => (PATH_FIELDS[l] || []).map(f => [l, ...f]))
+        .filter(f => !(uploaded.value && ARTIFACT_FIELDS.has(f[1]))));
 
     function payload() {
       return Object.assign({}, cfg, { instances: instances.value });
@@ -128,7 +133,7 @@ export const Settings = {
     function removeRow(i) { rows.splice(i, 1); }
 
     return { GROUPS, LANG, cfg, rows, loading, busy, loadError, items, prefilled, hiddenPrefilled,
-      instances, languages, pathFields, check, save, addRow, removeRow, emit };
+      instances, languages, uploaded, pathFields, check, save, addRow, removeRow, emit };
   },
   template: `
 <div class="view" data-testid="view-settings">
@@ -194,6 +199,17 @@ export const Settings = {
 
         <h3>语言与产物<span style="font-weight:normal;color:var(--el-text-color-secondary)">
           （按上面配到的语言显示：{{ languages.map(l => LANG[l]).join('、') }}）</span></h3>
+        <!-- data-testid 挂在外层：el-select 的根元素拿不拿得到透传属性随版本而变，挂外层最稳 -->
+        <div class="fld"><label>产物来源</label>
+          <div data-testid="st-artifactSource" :data-value="cfg.artifactSource">
+            <el-select v-model="cfg.artifactSource" style="width: 320px">
+              <el-option value="local" label="local · 产物在平台本机" />
+              <el-option value="uploaded" label="uploaded · CI 按构建推给平台" />
+            </el-select>
+          </div>
+        </div>
+        <div v-if="uploaded" class="note info">产物由 CI 在构建后按构建版本推给平台，推产物的命令见「服务接入」页；
+          所以这里不再列本地产物路径。</div>
         <div v-for="f in pathFields" :key="f[1]" class="fld">
           <label>{{ LANG[f[0]] }} · {{ f[2] }}</label>
           <el-input v-model="cfg[f[1]]" :data-testid="'st-' + f[1]" />

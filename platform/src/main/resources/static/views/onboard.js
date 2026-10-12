@@ -1,7 +1,8 @@
 import { store, loadPerInstance } from '../store.js';
 import { api, esc, copyText, LANG, pctClass } from '../api.js';
 // 四种语言的接入定义与「接入帮助」页共用一份，见 onboard-data.js 的说明
-import { MARK, run, OB, OB_HINT } from './onboard-data.js';
+import { MARK, run, OB, OB_HINT, CI_UPLOAD, ciUploadLines, ARTIFACT_FIELDS, renderLines, rawLines }
+  from './onboard-data.js';
 import { Help } from './help.js';
 
 const { computed, ref, watch, onBeforeUnmount } = Vue;
@@ -35,6 +36,30 @@ export const Onboard = {
     }, { immediate: true });
 
     const o = computed(() => OB[lang.value]);
+
+    // ---- 产物来源 ----
+    // 只在项目配置里有（summary 没有这个字段），进页与切项目时各取一次。
+    // uploaded 项目的平台侧不要本地产物路径，改由 CI 在构建后把产物推上来
+    const artifactSource = ref('local');
+    watch(() => store.projectId, async (id) => {
+      artifactSource.value = 'local';
+      if (!id) return;
+      try {
+        const d = await api.get('/api/projects/' + encodeURIComponent(id));
+        if (store.projectId === id) artifactSource.value = d.artifactSource || 'local';
+      } catch (e) { /* 取不到就按 local 显示：这一页只生成、不保存，错了的代价是多显示几个输入框 */ }
+    }, { immediate: true });
+    const uploaded = computed(() => String(artifactSource.value).toLowerCase() === 'uploaded');
+    const ci = computed(() => (uploaded.value && CI_UPLOAD[lang.value]) || null);
+
+    /**
+     * 这一页实际要填的字段：uploaded 项目去掉平台侧的三条产物路径、加上 CI 侧的产物路径。
+     * 「填齐了没有」、命令、配置片段都按这张表算 —— 按 OB 原样算的话，
+     * uploaded 项目会永远差三项填不齐，而那三项它根本用不上
+     */
+    const fields = computed(() => (o.value.fields || [])
+      .filter(fd => !(uploaded.value && ARTIFACT_FIELDS.has(fd.cfgField)))
+      .concat(ci.value ? [ci.value.field] : []));
 
     /** 从最近一份非空实例列表里挑出该语言实际配置的地址，没有就给个占位 */
     const eps = computed(() => liveInstances.value
@@ -94,7 +119,7 @@ export const Onboard = {
      * 空着就把命令藏起来或者留一串空洞，等于把这一页原本的价值也弄丢了。
      */
     function valueOf(key) {
-      const fd = (o.value.fields || []).find(x => x.key === key);
+      const fd = fields.value.find(x => x.key === key);
       const v = (form.value[key] || '').trim();
       if (!v) return fd ? fd.ph : '';
       // 填过的包上 MARK，渲染时是蓝色；没填的原样给示例值，保持灰色。
@@ -114,15 +139,21 @@ export const Onboard = {
      * Vue 的模板编译（whitespace: condense 会动它），只能自己拼好 HTML。
      * 拼进去的每一段都过 esc()。
      */
-    const cmdHtml = computed(() => cmdLines.value.map(([cls, t]) => {
-      const body = esc(t).split(MARK)
-        .map((x, n) => n % 2 ? '<span class="val">' + x + '</span>' : x).join('');
-      return cls ? '<span class="' + cls + '">' + body + '</span>' : body;
-    }).join('\n'));
+    const cmdHtml = computed(() => renderLines(cmdLines.value));
 
     // 复制出去的是纯命令：剥掉高亮标记，不含任何页面用于渲染的东西
-    const rawCmd = computed(() =>
-      cmdLines.value.map(([, t]) => t.split(MARK).join('')).join('\n'));
+    const rawCmd = computed(() => rawLines(cmdLines.value));
+
+    // ---- uploaded：CI 构建后把产物推给平台 ----
+    // 平台地址取浏览器此刻访问它的地址；CI 那边若走另一个地址，命令上方的注释写了要换
+    const ciLines = computed(() => ci.value
+      ? ciUploadLines(lang.value, { origin: location.origin, project: store.projectId }, valueOf) : []);
+    const ciHtml = computed(() => renderLines(ciLines.value));
+    const ciCopyLabel = ref('复制');
+    async function copyCi() {
+      ciCopyLabel.value = await copyText(rawLines(ciLines.value)) ? '已复制' : '复制失败，请手动选中';
+      setTimeout(() => { ciCopyLabel.value = '复制'; }, 1600);
+    }
 
     const epNote = computed(() => eps.value.length
       ? '蓝色部分取自本平台的项目配置，是实际在监听的地址。'
@@ -139,12 +170,14 @@ export const Onboard = {
      * 在这里也能存的话，实例地址与 classes-dir 就有两个地方能改，
      * 而两处改出不同的值时，没有任何地方看得出是哪一处生效了。
      */
-    const cfgFields = computed(() => (o.value.fields || []).filter(fd => fd.cfgField));
+    const cfgFields = computed(() => fields.value.filter(fd => fd.cfgField));
 
     const ymlSnippet = computed(() => {
       const lines = ['coverage:', '  instances:',
         '    - "' + (lang.value === 'java' ? '' : lang.value + '://')
           + hp.value.host + ':' + hp.value.port + '"'];
+      // uploaded 项目要写明：漏了它，照抄这份配置得到的是一个按本地路径找产物的项目
+      if (uploaded.value) lines.push('  artifact-source: uploaded');
       // 没填的项也列出来，值留空 —— 漏掉的话，人照抄完还差几项却不知道差在哪
       for (const fd of cfgFields.value) {
         lines.push('  ' + fd.cfgKey + ': ' + ((form.value[fd.key] || '').trim() || '<还没填>'));
@@ -213,10 +246,10 @@ export const Onboard = {
     // 而它们的提示自己写着「Linux 上留空即可」—— 都算必填的话，
     // Linux 用户这一步永远点不亮，而页面还不说漏的是哪一项
     const allFilled = computed(() =>
-      (o.value.fields || []).every(fd => fd.optional || (form.value[fd.key] || '').trim()));
+      fields.value.every(fd => fd.optional || (form.value[fd.key] || '').trim()));
 
     /** 还差哪几项没填 —— 第 2 步不亮时要说得出原因，否则人只能一个个框去找 */
-    const missingFields = computed(() => (o.value.fields || [])
+    const missingFields = computed(() => fields.value
       .filter(fd => !fd.optional && !(form.value[fd.key] || '').trim())
       .map(fd => fd.label));
 
@@ -307,7 +340,8 @@ export const Onboard = {
     }
 
     return {
-      lang, o, cmdHtml, epNote, ymlSnippet, copyLabel, doCopy,
+      lang, o, fields, cmdHtml, epNote, ymlSnippet, copyLabel, doCopy,
+      ci, ciHtml, ciCopyLabel, copyCi,
       form, setField, cfgCopyLabel, copyCfg, toSettings, missingFields,
       artifact, allFilled, anyConnected, probing, probeOne, probeText,
       src, inst, checkMeta, checkEmpty, langOf, todo,
@@ -375,10 +409,10 @@ export const Onboard = {
 
       <h3>1 · 填参数，命令自己算出来</h3>
       <div class="ob-form" data-testid="ob-form">
-        <div class="ob-field" v-for="fd in o.fields" :key="fd.key" :data-field="fd.key">
+        <div class="ob-field" v-for="fd in fields" :key="fd.key" :data-field="fd.key">
           <label>
             {{ fd.label }}
-            <span class="side" :class="fd.side">{{ fd.side === 'target' ? '被测机器' : '平台机器' }}</span>
+            <span class="side" :class="fd.side">{{ fd.side === 'target' ? '被测机器' : fd.side === 'ci' ? 'CI' : '平台机器' }}</span>
             <!-- 说明降级成 ⓘ 而不是搬走：这几条讲的是「填错了看不出来」
                  （includes 填宽了覆盖率莫名偏低、objDir 必须绝对路径…），
                  人在<b>填</b>的那一刻看不到就等于没写。raw-content 是因为
@@ -397,6 +431,18 @@ export const Onboard = {
         <pre class="snippet" data-testid="ob-cmd" v-html="cmdHtml"></pre>
       </div>
       <div style="font-size:12px;color:var(--el-text-color-secondary);margin-top:6px">{{ epNote }}</div>
+
+      <!-- 只有 uploaded（容器化部署）项目有这一段：平台不读本机的产物路径，按实例自报的构建去产物仓库取 -->
+      <template v-if="ci">
+        <h3>1b · CI 构建后把产物推给平台</h3>
+        <div class="snip-wrap">
+          <button class="copy" @click="copyCi">{{ ciCopyLabel }}</button>
+          <pre class="snippet" data-testid="ob-ci-cmd" v-html="ciHtml"></pre>
+        </div>
+        <div style="font-size:12px;color:var(--el-text-color-secondary);margin-top:6px">
+          这个项目的产物来源是 uploaded：平台按实例自报的构建版本去产物仓库取产物。CI 路径填在上面的「CI」那一项
+        </div>
+      </template>
 
       <h3>2 · 把这份配置填进项目设置</h3>
       <!-- 「为什么没有注册中心」「为什么只有项目设置能存」这些原理都在帮助页。

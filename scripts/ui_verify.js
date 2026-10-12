@@ -13,7 +13,7 @@
  * 机器相关的两个路径走环境变量，由 run_local.sh 注入，不写死在脚本里。
  */
 const fs = require('fs');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 const os = require('os');
 const path = require('path');
 
@@ -2042,6 +2042,242 @@ async function baselineOptions(page, testid) {
     const delResp = await fetch(`${PLATFORM}/api/projects/${WZ_ID}`, { method: 'DELETE' });
     if (!delResp.ok) fail(`收尾删除向导建的项目失败（HTTP ${delResp.status}）`);
     else pass('向导建的项目已删除，用例可重复跑');
+
+    // ---------- 6e · 页面上建得出、改得动、接得上 uploaded 项目 ----------
+    // 容器化部署时产物由 CI 按构建推给平台。此前这种项目只能手写 JSON 调 API 建：
+    // 向导第 6 步照样要三条本地产物路径，创建按钮永远是灰的。
+    // 这一段要证明的不是「多了个选项」，而是人照着页面能走通的整条路：
+    // 选 CI 推送 → 向导当场给出推产物命令 → 产物没推时拦住并点名缺哪个构建 →
+    // <b>照页面给的命令原样推一次</b> → 自检全过 → 建出来立刻有数据。
+    // 命令只做文本断言的话，引号、续行、$(...) 错了照样过
+    const UP_ID = 'ui-verify-uploaded';
+    const TOKEN = (process.env.COVERAGE_ARTIFACT_TOKEN || '').trim();
+    // 与 6d 同一个取法：由 run_local.sh 拉起时，PATH 里排在前面的是 Git Bash
+    const BASH = process.env.SHELL_BASH || 'bash';
+    const ROOT = path.resolve(__dirname, '..');
+    const authHdr = { Authorization: 'Bearer ' + TOKEN };
+    const head = (await (await fetch(`${PLATFORM}/api/projects/default/coverage/summary`)).json()).buildCommit;
+    // 上一次跑到一半留下的项目与产物先清掉 —— 否则撞「标识已被占用」，或产物早就在仓库里、「没推时拦住」验不到
+    await fetch(`${PLATFORM}/api/projects/${UP_ID}`, { method: 'DELETE' }).catch(() => {});
+    if (head && TOKEN) {
+      await fetch(`${PLATFORM}/api/artifacts/${head}?project=${UP_ID}`, { method: 'DELETE', headers: authHdr })
+        .catch(() => {});
+    }
+    const msgs = () => page.evaluate(() => [...document.querySelectorAll('.el-message')]
+      .map(e => e.innerText.trim()).join(' | '));
+    const clearMsgs = () => page.evaluate(() => document.querySelectorAll('.el-message').forEach(e => e.remove()));
+    // 每个前提只在第一次不成立的地方报一条，依赖它的断言随之跳过 —— 不让一个根因
+    // 连带出一串失败、把人引去查别处（CLAUDE.md §三坑 4：前提不成立就报「判不了」，不照判）
+    let upStopped = false;
+    let upCreated = false;
+
+    if (!head) {
+      fail('判不了：默认项目没给出构建版本，uploaded 项目按构建取产物，这一段无从验证');
+      upStopped = true;
+    } else if (!TOKEN) {
+      // 令牌与平台用的是同一个值（run_local.sh 备好）。没有它，推产物会 401，「产物没推时拦住」也会因为
+      // 「上传接口关着」而不是「缺这个构建」被拦 —— 照判下去全是假失败
+      fail('判不了：没拿到平台令牌（COVERAGE_ARTIFACT_TOKEN，由 run_local.sh 备好），推产物与自检都无从验证');
+      upStopped = true;
+    }
+
+    if (!upStopped) {
+      await page.goto(PLATFORM + '/#/new', { waitUntil: 'networkidle2', timeout: 30000 });
+      await waitFor(page, () => !!document.querySelector('[data-testid="view-wizard"]'), null, 10000);
+      await fill('wz-name', '前端验收建的 uploaded 项目');
+      await fill('wz-id', UP_ID);
+      await page.click('[data-testid="wz-next"]');            // 1 → 2
+      await sleep(600);
+      await fill('wz-repo', seed.repoDir);
+      await sleep(1200);
+      await pickBaseline(page, 'wz-baseline', seed.baseline);
+      await page.click('[data-testid="wz-next"]');            // 2 → 3
+      if (await waitFor(page, () => /第 3 /.test(document.querySelector('.card-head .sub').innerText),
+          null, 30000) < 0) die(`uploaded 向导卡在第 2 步：${await stepText()}`);
+      await fill('wz-inst-host-0', wzHost);
+      await fill('wz-inst-port-0', wzPort);
+      await page.click('[data-testid="wz-next"]');            // 3 → 4
+      if (await waitFor(page, () => /第 4 /.test(document.querySelector('.card-head .sub').innerText),
+          null, 60000) < 0) die(`uploaded 向导卡在第 3 步：${await stepText()}`);
+
+      if (await page.$('[data-testid="wz-src-uploaded"]') === null) {
+        fail('向导第 4 步没有「产物来源」选项 —— uploaded 项目仍然建不出来');
+        upStopped = true;
+      }
+    }
+
+    let cmd = '';
+    if (!upStopped) {
+      await page.click('[data-testid="wz-src-uploaded"]');
+      await sleep(300);
+      const shown = await page.evaluate(() => ({
+        classesDir: !!document.querySelector('[data-testid="wz-classesDir"]'),
+        javaSourceRoot: !!document.querySelector('[data-testid="wz-javaSourceRoot"]'),
+        ci: document.querySelector('[data-testid="wz-ci-java"]')
+          ? document.querySelector('[data-testid="wz-ci-java"]').innerText : ''
+      }));
+      if (shown.classesDir) fail('选了 CI 推送，向导仍要填 Java 产物目录（uploaded 项目按设计根本没有它）');
+      else pass('选了 CI 推送后不再要 Java 产物目录');
+      if (!shown.javaSourceRoot) fail('选了 CI 推送后源码根也不见了 —— 源码来自平台本机的仓库，不跟着产物走');
+
+      cmd = shown.ci;
+      const want = [`project=${UP_ID}`, 'lang=java', '/api/artifacts/$(git rev-parse HEAD)',
+        'Authorization: Bearer $COVERAGE_ARTIFACT_TOKEN', PLATFORM];
+      const miss = want.filter(w => !cmd.includes(w));
+      if (!cmd) {
+        fail('选了 CI 推送，向导没给出推产物的命令');
+        upStopped = true;
+      } else if (miss.length) {
+        fail(`推产物命令缺了：${miss.join('、')}`);
+      } else if (!/"[^"\n]*\/api\/artifacts\/[^"\n]*&lang=java"/.test(cmd)) {
+        fail('推产物的地址没加双引号：& 会把命令拆成一个后台任务，lang 就丢了');
+      } else {
+        pass('向导当场给出推产物命令：项目、语言、构建版本、令牌变量齐全，地址加了引号');
+      }
+    }
+
+    if (!upStopped) {
+      await fill('wz-javaSourceRoot', seed.javaSourceRoot);
+      // 产物还没推：必须拦住，而且要说出缺的是哪个构建
+      await page.click('[data-testid="wz-next"]');
+      await waitFor(page, () => /第 5 /.test(document.querySelector('.card-head .sub').innerText)
+        || document.querySelectorAll('.el-message').length > 0, null, 60000);
+      if (/第 5 /.test(String(await stepText()))) {
+        // 已经到了第 5 步：后面「推完再前进」的断言前提不成立，不往下照判
+        fail('产物还没推，向导第 4 步却放行了 —— 建出来第一轮就是 ANALYZE_ERROR');
+        upStopped = true;
+      } else {
+        const why = await msgs();
+        if (!why.includes(head)) fail(`拦住了，但没点名缺哪个构建：「${why.slice(0, 200)}」`);
+        else pass(`产物没推时第 4 步拦住，并点名缺构建 ${head.slice(0, 8)} 的产物`);
+        await clearMsgs();
+      }
+    }
+
+    if (!upStopped) {
+      // 照页面给的命令原样推一次 —— 工作目录是 demo-service，命令里的示例路径 target/classes 正好就是它的产物
+      const r = spawnSync(BASH, ['-c', cmd], {
+        cwd: path.join(ROOT, 'demo-service'), env: process.env, encoding: 'utf8', timeout: 120000 });
+      // 命令把包打在工作目录里：留在 demo-service 下会把 git status 搅浑
+      fs.rmSync(path.join(ROOT, 'demo-service', 'rtcc-java.zip'), { force: true });
+      if (r.status !== 0) {
+        fail(`照页面给的命令推产物失败（exit ${r.status}）：${String(r.stderr || r.stdout || r.error).slice(0, 240)}`);
+        upStopped = true;
+      } else if (!String(r.stdout).includes(head)) {
+        fail(`命令跑通了，推上去的却不是这次的构建：${String(r.stdout).slice(0, 200)}`);
+        upStopped = true;
+      } else {
+        pass(`照向导给的命令原样执行，Java 产物推上了平台（构建 ${head.slice(0, 8)}）`);
+      }
+    }
+
+    if (!upStopped) {
+      await page.click('[data-testid="wz-next"]');            // 4 → 5
+      if (await waitFor(page, () => /第 5 /.test(document.querySelector('.card-head .sub').innerText),
+          null, 60000) < 0) {
+        fail(`推完产物后向导仍卡在第 4 步：${(await msgs()).slice(0, 200)}`);
+        upStopped = true;
+      }
+    }
+
+    if (!upStopped) {
+      await page.click('[data-testid="wz-next"]');            // 5 → 6
+      await waitFor(page, () => document.querySelectorAll('[data-testid="wz-check-row"]').length > 0, null, 60000);
+      const rows = await page.evaluate(() => [...document.querySelectorAll('[data-testid="wz-check-row"]')]
+        .map(r => ({ name: r.children[0].innerText.trim(), ok: r.children[1].innerText.trim() === '通过',
+          detail: r.children[2].innerText.trim() })));
+      const localRow = rows.find(r => /产物目录/.test(r.name));
+      if (localRow) fail(`uploaded 项目的自检表里还在查本地产物：「${localRow.name}」`);
+      const repoRow = rows.find(r => r.name.includes('产物仓库'));
+      if (!repoRow || !repoRow.ok) fail(`自检没在产物仓库里找到这次构建的产物：${repoRow ? repoRow.detail : '（没有这一项）'}`);
+      else pass('自检按实例自报的构建在产物仓库里找到了 Java 产物');
+      const notOk = rows.filter(r => !r.ok);
+      if (notOk.length) {
+        fail(`uploaded 项目的自检有不通过项：${notOk.map(r => r.name + '：' + r.detail).join('；').slice(0, 300)}`);
+      } else {
+        pass(`uploaded 项目第 6 步自检 ${rows.length} 项全通过`);
+        await page.click('[data-testid="wz-create"]');
+        const got = await waitFor(page, () => !!document.querySelector('[data-testid="view-coloring"]')
+          && document.querySelectorAll('[data-testid="file-item"]').length > 0, null, 60000);
+        // 建没建出来以平台为准：页面没跳过去不等于项目没建，收尾要按它删
+        upCreated = (await fetch(`${PLATFORM}/api/projects/${UP_ID}`)).ok;
+        if (got < 0) fail(`uploaded 项目建完没有数据（hash=${await page.evaluate(() => location.hash)}）`);
+        else pass(`uploaded 项目建完立刻有数据：${await page.evaluate(countOf, '[data-testid="file-item"]')} 个文件`);
+      }
+    }
+
+    if (upCreated) {
+      // ---- 设置页：看得到产物来源，保存其它字段不会把它退回 local ----
+      await page.goto(PLATFORM + '/#/p/' + UP_ID + '/settings', { waitUntil: 'networkidle2', timeout: 30000 });
+      if (await waitFor(page, () => !!document.querySelector('[data-testid="st-inst-row"]'), null, 15000) < 0) {
+        fail('打不开 uploaded 项目的设置页');
+      } else {
+        const st = await page.evaluate(() => {
+          const s = document.querySelector('[data-testid="st-artifactSource"]');
+          return { src: s ? s.getAttribute('data-value') : null,
+            classesDir: !!document.querySelector('[data-testid="st-classesDir"]') };
+        });
+        if (st.src !== 'uploaded') fail(`设置页没显示产物来源（读到的是 ${st.src}）`);
+        else if (st.classesDir) fail('uploaded 项目的设置页仍显示 Java 产物目录');
+        else pass('设置页显示产物来源为 uploaded，且不再显示本地产物路径');
+        await fill('st-timeoutMs', '3100');
+        await page.click('[data-testid="st-save"]');
+        await waitFor(page, () => !document.querySelector('[data-testid="view-settings"]'), null, 30000);
+        const after = await (await fetch(`${PLATFORM}/api/projects/${UP_ID}`)).json();
+        if (after.timeoutMs !== 3100) fail(`设置页改的超时没存住：${after.timeoutMs}`);
+        else if (after.artifactSource !== 'uploaded') fail(`在设置页保存一次，产物来源变成了 ${after.artifactSource}`);
+        else pass('设置页保存其它字段后，产物来源仍是 uploaded');
+      }
+
+      // ---- 接入页：不再要本地产物路径，给出随 CI 路径现算的推产物命令 ----
+      await page.goto(PLATFORM + '/#/p/' + UP_ID + '/onboard', { waitUntil: 'networkidle2', timeout: 30000 });
+      await waitFor(page, () => !!document.querySelector('[data-testid="ob-lang-java"]'), null, 15000);
+      await page.click('[data-testid="ob-lang-java"]');
+      const ciShown = await waitFor(page, () => !!document.querySelector('[data-testid="ob-ci-cmd"]'), null, 10000);
+      const ob = await page.evaluate(() => ({
+        localIn: !!document.querySelector('[data-testid="ob-in-classesDir"]'),
+        ciIn: !!document.querySelector('[data-testid="ob-in-ciClassesDir"]'),
+        cfg: document.querySelector('[data-testid="ob-cfg"]') ? document.querySelector('[data-testid="ob-cfg"]').innerText : ''
+      }));
+      if (ob.localIn) fail('uploaded 项目的接入页仍要求填平台侧的 Java 产物目录');
+      if (!/artifact-source: uploaded/.test(ob.cfg) || /classes-dir/.test(ob.cfg)) {
+        fail(`接入页的配置片段不对：应写 artifact-source: uploaded、不列 classes-dir —— 实际：${ob.cfg.replace(/\n/g, ' ⏎ ')}`);
+      } else {
+        pass('接入页的配置片段写了 artifact-source: uploaded，不再列本地产物路径');
+      }
+      if (ciShown < 0 || !ob.ciIn) {
+        fail('uploaded 项目的接入页没给出 CI 推产物命令或 CI 路径输入框');
+      } else {
+        await fill('ob-in-ciClassesDir', 'build/classes/java/main');
+        const recomputed = await waitFor(page, () => {
+          const t = document.querySelector('[data-testid="ob-ci-cmd"]').innerText;
+          return t.includes('build/classes/java/main') && !t.includes('target/classes');
+        }, null, 5000);
+        const ciCmd = await page.evaluate(() => document.querySelector('[data-testid="ob-ci-cmd"]').innerText);
+        if (recomputed < 0) fail(`填了 CI 路径，推产物命令没跟着重算：${ciCmd.slice(0, 200)}`);
+        else if (!ciCmd.includes(`project=${UP_ID}`)) fail(`接入页的推产物命令没带 project=${UP_ID}`);
+        else pass('接入页的推产物命令随 CI 路径现算，示例路径不再残留');
+      }
+
+      // 删项目之前先回列表、再重载：页面停在这个项目里时 WebSocket 还连着它（理由见 6c 段末尾），
+      // 项目一删，它的轮询全是 404
+      await page.goto(PLATFORM + '/#/projects', { waitUntil: 'networkidle2', timeout: 30000 });
+      await page.reload({ waitUntil: 'networkidle2', timeout: 30000 });
+    }
+
+    // ---- 收尾：用例要能重复跑。产物可能已经推上去了，项目没建出来也要清 ----
+    // 没拿到令牌时删不了产物，那不是这里的失败（前面已经报过「判不了」），不再多报一条
+    if (head && TOKEN) {
+      const del = await fetch(`${PLATFORM}/api/projects/${UP_ID}`, { method: 'DELETE' });
+      const delArt = await fetch(`${PLATFORM}/api/artifacts/${head}?project=${UP_ID}`,
+        { method: 'DELETE', headers: authHdr });
+      // 项目没建出来时 DELETE 回 404 是对的
+      if ((upCreated && !del.ok) || !delArt.ok) {
+        fail(`收尾没清干净：项目 HTTP ${del.status}，产物 HTTP ${delArt.status}`);
+      } else {
+        pass('uploaded 项目与它的产物已清掉，用例可重复跑');
+      }
+    }
 
     // ---------- 6d · 采集事件：真的停一台实例，看它记不记得住 ----------
     // 这一页存在的理由是「事后追溯」：lastError 只挂在当前快照上，下一轮成功就被冲掉。

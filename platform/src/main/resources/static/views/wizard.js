@@ -1,5 +1,6 @@
-import { api, LANG } from '../api.js';
+import { api, LANG, copyText } from '../api.js';
 import { BaselineField } from '../components/baseline-field.js';
+import { CI_UPLOAD, ciUploadLines, ARTIFACT_FIELDS, renderLines, rawLines } from './onboard-data.js';
 
 const { computed, reactive, ref, onMounted } = Vue;
 
@@ -79,6 +80,8 @@ export const Wizard = {
       goSourceRoot: '', goModulePath: '',
       cppSourceRoot: '', cppObjectsDir: '',
       rustSourceRoot: '', rustBinary: '',
+      // local：产物在平台本机，填下面三条路径；uploaded：容器化部署，CI 按构建把产物推给平台
+      artifactSource: 'local',
       // 字段名必须与后端 ProjectConfig.Gate 一致：Spring 默认不报未知字段，
       // 拼错的话用户填的阈值会被静默丢弃，而向导这边还煞有介事地校验了 0~100
       gate: { incrementalThreshold: 80, overallThreshold: 0 },
@@ -98,8 +101,32 @@ export const Wizard = {
 
     /** 第 3 步选到的语言集合，决定第 4 步显示哪些字段 */
     const languages = computed(() => [...new Set(rows.map(r => r.lang))]);
+    const uploaded = computed(() => draft.artifactSource === 'uploaded');
+    // uploaded 项目按设计没有本地产物：三条产物路径不显示（自检也不查它们），源码根照填
     const pathFields = computed(() =>
-      languages.value.flatMap(l => (PATH_FIELDS[l] || []).map(f => [l, ...f])));
+      languages.value.flatMap(l => (PATH_FIELDS[l] || []).map(f => [l, ...f]))
+        .filter(f => !(uploaded.value && ARTIFACT_FIELDS.has(f[1]))));
+
+    // ---- uploaded：当场给出 CI 推产物的命令 ----
+    // 自检要求产物已经在仓库里，而项目还没建出来、进不了服务接入页 —— 命令只能在这一步给。
+    // CI 侧的产物路径这里不设表单（向导已经六步），给默认示例（灰色）；按自己的路径现算在建好后的接入页
+    const uploadLangs = computed(() => uploaded.value ? languages.value.filter(l => CI_UPLOAD[l]) : []);
+    function ciLines(l) {
+      const fd = CI_UPLOAD[l].field;
+      return ciUploadLines(l, { origin: location.origin, project: draft.id }, k => (k === fd.key ? fd.ph : ''));
+    }
+    /** 渲染与接入页共用一份（见 renderLines） */
+    const ciHtml = l => renderLines(ciLines(l));
+    /** 复制结果：{ lang, ok }。失败也要说出来 —— 不说的话，人会去 CI 里粘一段旧内容 */
+    const copied = ref(null);
+    async function copyCi(l) {
+      copied.value = { lang: l, ok: await copyText(rawLines(ciLines(l))) };
+      setTimeout(() => { copied.value = null; }, 1600);
+    }
+    function copyLabel(l) {
+      const c = copied.value;
+      return !c || c.lang !== l ? '复制' : c.ok ? '已复制' : '复制失败，请手动选中';
+    }
 
     function payload(extra) {
       return Object.assign({}, draft, { instances: instances.value }, extra || {});
@@ -173,8 +200,13 @@ export const Wizard = {
         if (!instances.value.length) return '至少要有一个被测实例';
         return failed(['instances', 'versions', ...Object.keys(items.value).filter(n => n.startsWith('instance:'))]);
       }
-      // classesMatchSource：产物目录指向另一个工程时，逐个字段看全是「有效」的
-      if (k === 'paths') return failed([...pathFields.value.map(f => f[1]), 'classesMatchSource']);
+      // classesMatchSource：产物目录指向另一个工程时，逐个字段看全是「有效」的。
+      // artifactUpload / artifacts 是 uploaded 项目的两项（上传接口开着没有、产物在不在仓库里），
+      // artifactSource 只在产物来源填错时出现 —— 漏写一个名字，后端判了不通过，向导照样前进
+      if (k === 'paths') {
+        return failed([...pathFields.value.map(f => f[1]), 'classesMatchSource',
+          'artifactSource', 'artifactUpload', 'artifacts']);
+      }
       if (k === 'gate') return gateError.value;
       return null;
     }
@@ -270,6 +302,7 @@ export const Wizard = {
     const checkItems = computed(() => Object.values(items.value));
 
     return { STEPS, LANG, PORTS, step, busy, draft, rows, instances, languages, pathFields,
+      uploaded, uploadLangs, ciHtml, copyCi, copyLabel,
       items, checkItems, basicError, basicShown, touched, gateError, blocker, checkCurrent, next, prev,
       allOk, create, addRow, removeRow, onLangChange, emit };
   },
@@ -349,6 +382,17 @@ export const Wizard = {
       <template v-else-if="STEPS[step].key === 'paths'">
         <div class="note info">下面这些字段是<b>按上一步选到的语言</b>列出来的（{{ languages.map(l => LANG[l]).join('、') }}）。
           它们错了不会报错，只会让覆盖率莫名其妙偏低 —— 所以这一步一定要验。</div>
+        <div class="fld"><label>产物来源<br><small>平台从哪拿编译产物</small></label>
+          <div class="seg" data-testid="wz-artifact-source">
+            <button type="button" :class="{ on: !uploaded }" data-testid="wz-src-local"
+                    @click="draft.artifactSource = 'local'">产物在平台本机</button>
+            <button type="button" :class="{ on: uploaded }" data-testid="wz-src-uploaded"
+                    @click="draft.artifactSource = 'uploaded'">CI 按构建推送</button>
+          </div>
+        </div>
+        <div v-if="uploaded" class="note info">容器化部署时平台够不着被测服务的文件系统，改由 CI 在构建后把产物按构建版本推上来。
+          <b>先照下面的命令推产物，再点「检查这一步」</b>：自检会按实例自报的构建去产物仓库核对。源码根照填 ——
+          源码来自平台这台机器上的仓库，不跟着产物走。</div>
         <!-- 说明常驻在输入框下面，不做 placeholder：placeholder 一打字就没了，
              而「这个相对路径以谁为基准」恰恰要在填的过程中看得见。
              文案是本文件里的字面量（含 <b>），不是用户输入，所以 v-html 是安全的 -->
@@ -359,6 +403,20 @@ export const Wizard = {
             <div class="fld-hint" :data-testid="'wz-' + f[1] + '-hint'" v-html="f[3]"></div>
           </div>
         </div>
+        <template v-if="uploaded">
+          <!-- 命令走 v-html：拼进去的每一段都过了 esc()，MARK 之间的确定值标蓝（见 ciHtml） -->
+          <div v-for="l in uploadLangs" :key="'ci-' + l" class="fld fld-stacked">
+            <label>{{ LANG[l] }} · CI 推产物</label>
+            <div class="fld-body">
+              <div class="snip-wrap">
+                <button type="button" class="copy" @click="copyCi(l)">{{ copyLabel(l) }}</button>
+                <pre class="snippet" :data-testid="'wz-ci-' + l" v-html="ciHtml(l)"></pre>
+              </div>
+              <div class="fld-hint">灰色的路径是示例，换成你 CI 里的；建好项目后，「服务接入」页可以按你填的路径现算</div>
+            </div>
+          </div>
+          <div v-if="!uploadLangs.length" class="note info">配的实例里只有 Go：Go 的覆盖数据是自包含的，不需要推任何产物。</div>
+        </template>
       </template>
 
       <!-- 5 覆盖门禁 -->

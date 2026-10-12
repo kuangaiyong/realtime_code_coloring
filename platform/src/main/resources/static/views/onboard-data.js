@@ -1,3 +1,5 @@
+import { esc } from '../api.js';
+
 /**
  * 四种语言的接入定义 —— 「服务接入」与「接入帮助」两个视图<b>共用这一份</b>。
  *
@@ -242,6 +244,81 @@ export const OB = {
       'Rust 是三态（无 PARTIAL）：<code>llvm-cov export</code> 不输出 BRDA 分支记录。']
   }
 };
+
+/**
+ * CI 构建后把产物推给平台 —— 只有 uploaded（容器化部署）项目用得上。
+ *
+ * <b>向导第 4 步与服务接入页共用这一份</b>，理由同 OB：两处各写一份，改了一处，
+ * 另一处就成了一条推不上去的命令。每种语言一个 CI 侧的产物路径字段（side: 'ci'）。
+ *
+ * 命令的形状每一处都有讲究：
+ * - Java 用 <code>jar cfM</code>：构建 Java 的地方一定有 JDK，不必另装 zip；<code>-C</code> 让包里的条目从包名开始
+ * - C++ 用 <code>zip -j</code> 压平：平台只看对象目录顶层的 .gcno
+ * - Rust 的包里只放那一个可执行文件
+ * - 上传地址<b>必须加双引号</b>：不加的话 & 会把命令拆成一个后台任务，lang 就丢了，接口回 400
+ * - 构建版本用 <code>git rev-parse HEAD</code>，与接入命令里 BUILD_ID 的取法一致（CI 的工作树是干净的）
+ * - <code>--fail-with-body</code>：4xx 时让 CI 失败，同时把平台给的原因打出来
+ */
+export const CI_UPLOAD = {
+  // 路径一律加引号：含空格的路径不加的话会被拆成几个参数
+  java: {
+    field: { key: 'ciClassesDir', label: 'CI 里的 classes 目录', side: 'ci', ph: 'target/classes',
+      hint: 'CI 构建出来的 .class 所在目录：Maven 是 <code>target/classes</code>，Gradle 是 <code>build/classes/java/main</code>' },
+    pack: f => `jar cfM rtcc-java.zip -C "${f('ciClassesDir')}" .`
+  },
+  cpp: {
+    // 递归找：CMake 之类会把 .gcno 散在 CMakeFiles/<目标>.dir/ 的子目录里，只打顶层会打出空包或残包
+    field: { key: 'ciObjDir', label: 'CI 里的对象目录（.gcno 所在）', side: 'ci', ph: 'build/obj',
+      hint: '编译时 .gcno 落在哪里（会递归找）。打包时压平 —— 平台只看包里顶层的 .gcno，所以子目录之间不能有同名的 .gcno' },
+    pack: f => `find "${f('ciObjDir')}" -name '*.gcno' | zip -qj rtcc-cpp.zip -@`
+  },
+  rust: {
+    field: { key: 'ciBinary', label: 'CI 里的产物路径', side: 'ci', ph: 'target/release/your-service',
+      hint: '带 coverage mapping 的那个可执行文件。包里只能有它一个' },
+    pack: f => `zip -qj rtcc-rust.zip "${f('ciBinary')}"`
+  }
+};
+
+/** 平台侧的三条本地产物路径（OB 字段的 cfgField）。uploaded 项目没有它们。向导、设置页、接入页共用 */
+export const ARTIFACT_FIELDS = new Set(['classesDir', 'cppObjectsDir', 'rustBinary']);
+
+/**
+ * 把 [样式类, 文本] 行渲染成命令块的 HTML：MARK 之间是确定值（蓝色），每一段都过 esc()。
+ * 向导与接入页共用 —— 各写一份的话，改了渲染规则就会一处标蓝、一处不标
+ */
+export function renderLines(lines) {
+  return lines.map(([cls, t]) => {
+    const body = esc(t).split(MARK).map((x, n) => n % 2 ? '<span class="val">' + x + '</span>' : x).join('');
+    return cls ? '<span class="' + cls + '">' + body + '</span>' : body;
+  }).join('\n');
+}
+
+/** 复制出去的是纯命令：剥掉高亮标记，不含任何页面用于渲染的东西 */
+export function rawLines(lines) {
+  return lines.map(([, t]) => t.split(MARK).join('')).join('\n');
+}
+
+/**
+ * 推产物命令的各行，形状与 OB[lang].cmd 一致（[样式类, 文本]）。
+ * ctx.origin 与 ctx.project 是确定值，包上 MARK 标成蓝色；CI 侧路径由 f 给（填了蓝、没填给灰色示例）
+ */
+export function ciUploadLines(lang, ctx, f) {
+  const c = CI_UPLOAD[lang];
+  if (!c) return [];
+  return [
+    ['cm', '# 构建完成后执行。令牌是平台的 COVERAGE_ARTIFACT_TOKEN，在 CI 里配成同名的机密变量；'],
+    ['cm', '# CI 访问平台的地址若与浏览器里的不同，把下面的地址换成它'],
+    // 工具前提写在命令旁边：缺了它们，CI 里报的是「命令不存在 / 不认识的选项」，而平台那边只看得到「缺产物」
+    ['cm', lang === 'java'
+      ? '# --fail-with-body 要 curl 7.76+，更老的换成 --fail（失败时就看不到平台给的原因了）'
+      : '# 打包用 zip（CI 镜像里没有就先装上）；--fail-with-body 要 curl 7.76+，更老的换成 --fail'],
+    ['', c.pack(f)],
+    ['', 'curl -sS --fail-with-body -H "Authorization: Bearer $COVERAGE_ARTIFACT_TOKEN" \\'],
+    ['', '  -F "file=@rtcc-' + lang + '.zip" \\'],
+    ['', '  "' + MARK + ctx.origin + MARK + '/api/artifacts/$(git rev-parse HEAD)?project='
+      + MARK + ctx.project + MARK + '&lang=' + lang + '"']
+  ];
+}
 
 export const OB_HINT = {
   java: '确认启动参数带了 <code>-javaagent:...=output=tcpserver</code> 且端口一致，探针随 JVM 启动、不能事后挂载',

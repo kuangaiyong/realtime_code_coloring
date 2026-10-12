@@ -588,6 +588,7 @@ table.tbl td.na { color: var(--el-text-color-secondary); opacity: .6; }
 .ob-field .side { flex: none; font-size: 10px; font-weight: 500; padding: 1px 6px; border-radius: 20px; }
 .ob-field .side.target { color: var(--el-color-warning); background: var(--el-color-warning-light-9); }
 .ob-field .side.platform { color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
+.ob-field .side.ci { color: var(--el-color-success); background: var(--el-color-success-light-9); }
 
 /* 探针物料。前提说明与下载按钮必须挨着 ——
    不满足前提的人下载完接不上，还不知道为什么 */
