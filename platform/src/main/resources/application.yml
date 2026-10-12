@@ -77,6 +77,10 @@ coverage:
   # 取值参照实测：本仓库最大的一份真实产物是平台自己的 100 个文件 2.8MB，默认值宽 380 倍
   artifact-max-unzipped-bytes: 1073741824
   artifact-max-entries: 100000
+  # 产物上传 / 删除接口的令牌，CI 在请求头带 Authorization: Bearer <令牌>。
+  # 为空时这两个接口是关着的（403），不是放行 —— 它们能往平台磁盘写任意字节。
+  # run_local.sh 没拿到这个变量时会生成一份，存在 .run/artifact-token
+  artifact-token: ${COVERAGE_ARTIFACT_TOKEN:}
   interval-ms: 3000
   timeout-ms: 3000
   # 覆盖率门禁：CI 合并前调 /api/coverage/gate，据 passed 放行或阻断。

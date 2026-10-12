@@ -486,13 +486,15 @@ public class ArtifactStore {
      * <p><b>补救命令必须带上 {@code ?project=}</b>：上传接口的 project 默认是 {@code default}，
      * 非默认项目照着一条不带它的命令做，包会传进 default 项目、接口还回 200，
      * 下一轮采集仍报这同一句话 —— 照提示做了却没用，而且看不出为什么。
+     * <b>令牌同理</b>：上传接口要令牌，提示里不说的话，照着做必然 401。
      */
     private Path require(String projectId, String buildId, ArtifactKind kind) throws IOException {
         return find(projectId, buildId, kind).orElseThrow(() -> new IOException(
                 "缺少构建 " + buildId + " 的 " + kind.dir() + " 产物。请在构建后调 "
                         + "POST /api/artifacts/" + buildId + "?project=" + projectId
                         + "&lang=" + kind.dir()
-                        + " 把它推上来 —— 没有它解不出行号，而跳过这门语言会让界面显示成"
+                        + "（请求头带 Authorization: Bearer <令牌>，令牌即平台的 " + ArtifactAuth.ENV + "）"
+                        + "把它推上来 —— 没有它解不出行号，而跳过这门语言会让界面显示成"
                         + "「这些代码没被调用过」，与真相正相反"));
     }
 

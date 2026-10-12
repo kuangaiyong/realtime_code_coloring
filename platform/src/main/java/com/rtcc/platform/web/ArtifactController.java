@@ -24,6 +24,9 @@ import java.util.Map;
  * <p><b>安全边界</b>：平台此前没有任何文件上传，这是第一处。探针端口只读、
  * 靠「绑回环 + 网络策略」兜着；这个接口能<b>写</b>平台磁盘，风险高一档。
  * 本方案仍假设平台只面向内网 —— 这条假设是显式的，不是默认的。
+ *
+ * <p><b>写接口（上传、删除）要令牌</b>，由 {@link ArtifactAuthFilter} 按路径 {@code /api/artifacts}
+ * 在读请求体之前把关，不在这里判。在别的路径下新增产物写接口时，要一并纳入那个过滤器。
  */
 @RestController
 @RequestMapping("/api/artifacts")

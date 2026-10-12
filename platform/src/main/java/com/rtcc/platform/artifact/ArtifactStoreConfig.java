@@ -1,6 +1,8 @@
 package com.rtcc.platform.artifact;
 
 import com.rtcc.platform.config.CoverageProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -18,6 +20,25 @@ import java.nio.file.Path;
  */
 @Configuration
 public class ArtifactStoreConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(ArtifactStoreConfig.class);
+
+    /**
+     * 产物上传 / 删除的令牌。与 {@link #artifactStore} 同一条理由放在这里：
+     * {@code ArtifactAuthFilter} 是组件、要注入它，缺了这个 bean 平台起不来，而单测发现不了。
+     * 启动时说一句配了没有 —— 不打令牌本身
+     */
+    @Bean
+    public ArtifactAuth artifactAuth(CoverageProperties props) {
+        ArtifactAuth auth = new ArtifactAuth(props.getArtifactToken());
+        if (auth.enabled()) {
+            log.info("产物上传 / 删除接口：已配令牌（COVERAGE_ARTIFACT_TOKEN）");
+        } else {
+            log.info("产物上传 / 删除接口：没配令牌（COVERAGE_ARTIFACT_TOKEN），这两个接口是关着的，"
+                    + "uploaded 项目的 CI 推不进产物");
+        }
+        return auth;
+    }
 
     @Bean
     public ArtifactStore artifactStore(CoverageProperties props) {

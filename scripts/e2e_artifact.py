@@ -48,11 +48,13 @@ PLATFORM = "http://localhost:18090"
 PID = "artifact-e2e"
 # 诱饵：一个不是任何实例自报的构建。内容是垃圾，被取用就一定出错
 DECOY = "0123456789abcdef0123456789abcdef01234567"
+# 产物上传 / 删除要带的令牌。与平台用的是同一个值：run_local.sh 没拿到时会生成一份并导出
+TOKEN = os.environ.get("COVERAGE_ARTIFACT_TOKEN", "").strip()
 
 ok = True
 
 
-def http(url, method="GET", body=None, ctype="application/json"):
+def http(url, method="GET", body=None, ctype="application/json", headers=None):
     data = None
     if body is not None:
         data = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
@@ -61,6 +63,8 @@ def http(url, method="GET", body=None, ctype="application/json"):
     req = urllib.request.Request(url, method=method, data=data)
     if body is not None:
         req.add_header("Content-Type", ctype)
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
     try:
         # 超时按平台最坏情况取，与其余 E2E 一致：一次采集要挨个 dump 8 个实例，
         # 探针挂掉时每个耗尽 timeout-ms，再叠加各语言的外部工具
@@ -108,8 +112,15 @@ def zip_bytes(name, content):
     return buf.getvalue()
 
 
-def upload(build, kind, blob):
-    """multipart/form-data，字段名 file。project 在这个接口上是查询参数，不是路径段"""
+def auth_header(token):
+    return {"Authorization": "Bearer " + token} if token else {}
+
+
+def upload(build, kind, blob, token=TOKEN):
+    """multipart/form-data，字段名 file。project 在这个接口上是查询参数，不是路径段。
+
+    token 传 None 表示不带令牌（「0 ·」一段专门验这种请求会被拒）
+    """
     boundary = "----rtccArtifactE2E"
     head = (
         "--" + boundary + "\r\n"
@@ -119,7 +130,7 @@ def upload(build, kind, blob):
     tail = ("\r\n--" + boundary + "--\r\n").encode("utf-8")
     url = f"{PLATFORM}/api/artifacts/{build}?project={PID}&lang={kind}"
     return http(url, "POST", head + blob + tail,
-                "multipart/form-data; boundary=" + boundary)
+                "multipart/form-data; boundary=" + boundary, auth_header(token))
 
 
 def summary(project):
@@ -147,11 +158,39 @@ def drop_artifact(build):
     """
     status, body = 0, {}
     for i in range(4):
-        status, body = http(f"{PLATFORM}/api/artifacts/{build}?project={PID}", "DELETE")
+        status, body = http(f"{PLATFORM}/api/artifacts/{build}?project={PID}", "DELETE",
+                            headers=auth_header(TOKEN))
         if status == 200:
             return status, body
         time.sleep(0.5 * (i + 1))
     return status, body
+
+
+def auth_gate(build):
+    """产物的上传 / 删除要带令牌，列表不要。
+
+    这两个接口是平台上唯一能往磁盘写任意字节、能删任意构建产物的入口。
+    被拒的上传必须一个字节都没存下 —— 只看状态码的话，「先存下再报 401」也能过。
+    """
+    print("\n>> 0. 产物的上传 / 删除要带令牌，列表不要")
+    if not check(bool(TOKEN), "拿到了平台的产物令牌（COVERAGE_ARTIFACT_TOKEN，由 run_local.sh 备好）"):
+        return False
+    blob = zip_bytes("Probe.class", b"x")
+    status, body = upload(build, "java", blob, token=None)
+    check(status == 401, f"不带令牌上传回 {status}（要 401）")
+    check("Authorization: Bearer" in str(body.get("error", "")),
+          f"401 说清了令牌放哪：{str(body.get('error', ''))[:90]}")
+    status, body = upload(build, "java", blob, token="not-the-token")
+    check(status == 401, f"带错令牌上传回 {status}（要 401）")
+    # 紧接着看列表，必须排在下面那次删除之前：不设防的平台上那次删除会成功，
+    # 把刚才存进去的东西又删掉，这条就验不出「被拒的上传什么都没存下」（先红过一次才发现）
+    status, body = http(f"{PLATFORM}/api/artifacts?project={PID}")
+    check(status == 200, f"列表不要令牌：回 {status}")
+    kept = [a.get("buildId") for a in (body.get("artifacts") or [])]
+    check(build not in kept, f"被拒的上传什么都没存下（列表里是 {kept or '空的'}）")
+    status, _ = http(f"{PLATFORM}/api/artifacts/{build}?project={PID}", "DELETE")
+    check(status == 401, f"不带令牌删除回 {status}（要 401）")
+    return True
 
 
 def connected(project, tries=4):
@@ -250,6 +289,13 @@ def main():
     print(f"默认项目的实例：{len(instances)} 个")
 
     cleanup(build)   # 上一次没删干净也不影响这一次
+    # 没拿到令牌就到此为止：往下每次上传都是 401 / 403，会连带出一串「ANALYZE_ERROR」「行号对不上」，
+    # 把人引去查产物和行号，而根因只有一个
+    if not auth_gate(build):
+        print("\n  [FAIL] 没有令牌，产物仓库的其余部分无法验证（不是功能坏了）：先确认是经 run_local.sh 跑的")
+        print("\n" + "-" * 78)
+        print("  验收结论：存在失败项")
+        sys.exit(1)
 
     try:
         run(build, instances)
