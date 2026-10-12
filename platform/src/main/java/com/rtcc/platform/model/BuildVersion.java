@@ -39,6 +39,22 @@ public record BuildVersion(String commit, boolean dirty) {
         return m.matches() ? new BuildVersion(m.group(1), m.group(2) != null) : null;
     }
 
+    /**
+     * 全部实例都报同一个版本（commit 与 dirty 都相同），才算这批数据有统一版本；
+     * 只要有一台没报（null）或报得不一样，就拿不出可信的版本，返回 null。
+     *
+     * <p>采集（{@code ProjectRuntime}）与项目自检（{@code ProjectChecker}）共用这一条规则 ——
+     * 两边各判各的，就会出现「自检说版本不统一、采集却照常出报告」这种互相矛盾的结论。
+     */
+    public static BuildVersion unified(List<BuildVersion> reported) {
+        if (reported.isEmpty() || reported.contains(null)) {
+            return null;
+        }
+        BuildVersion first = reported.get(0);
+        return reported.stream().allMatch(v -> v.commit().equals(first.commit()) && v.dirty() == first.dirty())
+                ? first : null;
+    }
+
     public String shortCommit() {
         return commit.substring(0, 8);
     }

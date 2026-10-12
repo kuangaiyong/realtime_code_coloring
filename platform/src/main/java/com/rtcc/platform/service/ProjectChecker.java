@@ -1,5 +1,8 @@
 package com.rtcc.platform.service;
 
+import com.rtcc.platform.artifact.ArtifactAuth;
+import com.rtcc.platform.artifact.ArtifactKind;
+import com.rtcc.platform.artifact.ArtifactStore;
 import com.rtcc.platform.collector.CppProbeClient;
 import com.rtcc.platform.collector.GitService;
 import com.rtcc.platform.collector.GoProbeClient;
@@ -13,14 +16,18 @@ import org.springframework.stereotype.Component;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Deque;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 拿一份项目配置去碰真实环境，逐项回答「这么填能不能跑起来」。
@@ -37,9 +44,13 @@ import java.util.Set;
 public class ProjectChecker {
 
     private final ProbeClient javaProbe;
+    private final ArtifactStore artifacts;
+    private final ArtifactAuth artifactAuth;
 
-    public ProjectChecker(ProbeClient javaProbe) {
+    public ProjectChecker(ProbeClient javaProbe, ArtifactStore artifacts, ArtifactAuth artifactAuth) {
         this.javaProbe = javaProbe;
+        this.artifacts = artifacts;
+        this.artifactAuth = artifactAuth;
     }
 
     /** 一项检查的结果。name 供页面定位到具体表单项，detail 是给人看的那句话 */
@@ -67,7 +78,10 @@ public class ProjectChecker {
                     "必须大于 0，当前是 " + cfg.getTimeoutMs()
                             + "；0 在 socket 层的语义是「无限等待」，探针不可达时这次检查永远不会返回"));
         } else {
-            checkInstances(cfg, items);
+            Probed probed = checkInstances(cfg, items);
+            if (cfg.usesUploadedArtifacts()) {
+                checkUploaded(cfg, probed.buildIds(), probed.allConnected(), items);
+            }
         }
 
         Map<String, Object> res = new LinkedHashMap<>();
@@ -127,10 +141,32 @@ public class ProjectChecker {
                 // 地址本身填错了，checkInstances 那里会点名，这里不重复报
             }
         }
+        String source = cfg.getArtifactSource();
+        if (!"local".equalsIgnoreCase(source) && !"uploaded".equalsIgnoreCase(source)) {
+            // 创建时 validate 会回 400；这里不说的话，向导会一路绿灯走到「创建」才撞墙
+            items.add(new CheckItem("artifactSource", "产物来源", false,
+                    "只能是 local（产物在平台本机，填下面的产物路径）或 uploaded（CI 按构建推给平台），实际为："
+                            + source));
+        }
+        // uploaded 项目按设计没有本地产物：三条产物路径不查，「同一个工程」改在取回仓库里的产物之后做
+        // （见 checkUploaded）。源码根照查 —— 源码来自平台本机的 git 工作树，不跟着产物走
+        boolean uploaded = cfg.usesUploadedArtifacts();
+        if (uploaded && !neededKinds(cfg).isEmpty()) {
+            items.add(artifactAuth.enabled()
+                    ? new CheckItem("artifactUpload", "产物上传接口", true,
+                            "平台配了产物令牌（COVERAGE_ARTIFACT_TOKEN），CI 推产物时带上它")
+                    : new CheckItem("artifactUpload", "产物上传接口", false,
+                            "平台没有配置产物令牌（COVERAGE_ARTIFACT_TOKEN），上传接口是关着的 —— "
+                                    + "CI 推不进产物，下一个构建就会因为缺产物而出不来报告。请给平台配上这个环境变量"));
+        }
         if (languages.contains(ProbeEndpoint.JAVA)) {
-            dir(items, cfg, "classesDir", "Java 产物目录（classes-dir）", cfg.getClassesDir());
+            if (!uploaded) {
+                dir(items, cfg, "classesDir", "Java 产物目录（classes-dir）", cfg.getClassesDir());
+            }
             sourceRoot(items, cfg, "javaSourceRoot", "Java 源码根", cfg.getJavaSourceRoot());
-            classesMatchSource(items, cfg);
+            if (!uploaded) {
+                classesMatchSource(items, cfg, false);
+            }
         }
         if (languages.contains(ProbeEndpoint.GO)) {
             sourceRoot(items, cfg, "goSourceRoot", "Go 源码根", cfg.getGoSourceRoot());
@@ -143,11 +179,88 @@ public class ProjectChecker {
         }
         if (languages.contains(ProbeEndpoint.CPP)) {
             sourceRoot(items, cfg, "cppSourceRoot", "C++ 源码根", cfg.getCppSourceRoot());
-            dir(items, cfg, "cppObjectsDir", "C++ 对象目录（.gcno 所在）", cfg.getCppObjectsDir());
+            if (!uploaded) {
+                dir(items, cfg, "cppObjectsDir", "C++ 对象目录（.gcno 所在）", cfg.getCppObjectsDir());
+            }
         }
         if (languages.contains(ProbeEndpoint.RUST)) {
             sourceRoot(items, cfg, "rustSourceRoot", "Rust 源码根", cfg.getRustSourceRoot());
-            file(items, cfg, "rustBinary", "Rust 产物（行号信息在它里面）", cfg.getRustBinary());
+            if (!uploaded) {
+                file(items, cfg, "rustBinary", "Rust 产物（行号信息在它里面）", cfg.getRustBinary());
+            }
+        }
+    }
+
+    /** 这个项目有实例的语言里，哪些要产物。Go 永远不在里面：它的覆盖数据是自包含的 */
+    private static Set<ArtifactKind> neededKinds(ProjectConfig cfg) {
+        Set<ArtifactKind> kinds = EnumSet.noneOf(ArtifactKind.class);
+        for (String spec : instances(cfg)) {
+            try {
+                switch (ProbeEndpoint.parse(spec).language()) {
+                    case ProbeEndpoint.JAVA -> kinds.add(ArtifactKind.JAVA);
+                    case ProbeEndpoint.CPP -> kinds.add(ArtifactKind.CPP);
+                    case ProbeEndpoint.RUST -> kinds.add(ArtifactKind.RUST);
+                    default -> { }
+                }
+            } catch (IllegalArgumentException ignored) {
+                // 地址本身填错了，checkInstances 那里会点名
+            }
+        }
+        return kinds;
+    }
+
+    /**
+     * uploaded 项目：全部实例连上之后，按它们自报的构建去产物仓库取这个项目用得上的产物。
+     *
+     * <p><b>与采集走同一个 {@link ArtifactStore#resolveInto}</b>，不另写一套「产物在不在」：
+     * 向导的承诺是「自检全过，建出来就有数据」，两套判法迟早出现「自检说行、采集说缺产物」。
+     * 取不到、版本不统一、构建是脏的，一律按它的原话报 —— 那句话已经带着 buildId、语言与补救命令。
+     *
+     * <p>没全连上时不出这一项：连不上的实例根本没报版本，拿一个不完整的版本集合下结论，
+     * 结论是假的（与 checkInstances 里「版本是否一致」同一条理由）。
+     *
+     * <p>包级可见是为了让单测直接喂「探到的版本」：本类其余用例的约定是实例一律连不上。
+     *
+     * @param instanceBuildIds 各实例自报的构建版本，按配置顺序；没报的为 null
+     */
+    void checkUploaded(ProjectConfig cfg, List<String> instanceBuildIds, boolean allConnected,
+                       List<CheckItem> items) {
+        Set<ArtifactKind> needed = neededKinds(cfg);
+        if (!cfg.usesUploadedArtifacts() || needed.isEmpty() || !allConnected) {
+            return;
+        }
+        String name = "artifacts";
+        String label = "产物仓库";
+        // 与采集同一套判法：逐个 parseId（会去掉两端空白），再按 commit 与 dirty 判统一。
+        // 按原始字符串比的话，一台带换行一台不带就成了「版本不统一」，而采集照常出报告
+        List<BuildVersion> reported = new ArrayList<>();
+        for (String id : instanceBuildIds) {
+            BuildVersion v = id == null ? null : BuildVersion.parseId(id);
+            if (id != null && v == null) {
+                // 报了却解不出：交给 resolveInto 会落到「没上报或不一致」那句话，把人引去查一个不存在的版本不一致
+                items.add(new CheckItem(name, label, false,
+                        "实例自报的构建版本「" + id.strip() + "」不是 40 位 commit sha（可带 -dirty）：产物仓库按 commit 索引，"
+                                + "CI 推产物时用的是 git rev-parse HEAD，两边对不上。"
+                                + "让实例的 sessionid / COVERAGE_BUILD_ID 取 commit"));
+                return;
+            }
+            reported.add(v);
+        }
+        // 有实例没报、或各报各的：version 为 null，resolveInto 会给出「拿不到统一的构建版本」那句话
+        BuildVersion version = BuildVersion.unified(reported);
+        try {
+            ProjectConfig resolved = artifacts.resolveInto(cfg, version, needed);
+            items.add(new CheckItem(name, label, true,
+                    "构建 " + version.shortCommit() + " 的 "
+                            + needed.stream().map(ArtifactKind::dir).collect(Collectors.joining("、"))
+                            + " 产物都在产物仓库里"));
+            if (needed.contains(ArtifactKind.JAVA)) {
+                classesMatchSource(items, resolved, true);
+            }
+        } catch (IOException | UncheckedIOException | IllegalArgumentException e) {
+            // UncheckedIOException：Rust 产物要递归找唯一那个文件（Files.walk），目录在遍历中途被并发上传换掉时会抛它。
+            // 不接住的话这个接口回 500，向导会把它读成平台故障
+            items.add(new CheckItem(name, label, false, describe(e)));
         }
     }
 
@@ -279,7 +392,7 @@ public class ProjectChecker {
      * <p>判据是<b>一个都对不上</b>而不是「有对不上的」：产物里混着少量没有源码的类是常态
      * （生成代码、依赖被打进来、模块拆分），按后者判会把好配置拦下来。
      */
-    private void classesMatchSource(List<CheckItem> items, ProjectConfig cfg) {
+    private void classesMatchSource(List<CheckItem> items, ProjectConfig cfg, boolean fromRepository) {
         String name = "classesMatchSource";
         String label = "产物与源码是否同一个工程";
         File classes = cfg.getClassesDir() == null ? null : new File(cfg.getClassesDir());
@@ -296,23 +409,27 @@ public class ProjectChecker {
         List<String> sampled = new ArrayList<>();
         collectClasses(classes, sampled);
         if (sampled.isEmpty()) {
-            items.add(new CheckItem(name, label, false,
-                    "产物目录里一个 .class 都没有：" + classes.getAbsolutePath()
+            items.add(new CheckItem(name, label, false, fromRepository
+                    ? "CI 推上来的 Java 产物里一个 .class 都没有（取自产物仓库：" + classes.getAbsolutePath()
+                            + "）。打包时多半没进到 classes 目录里"
+                    : "产物目录里一个 .class 都没有：" + classes.getAbsolutePath()
                             + "。被测服务多半还没编译，或这个目录指错了"));
             return;
         }
         String example = null;
         for (String rel : sampled) {
-            // Kotlin 把 Foo.kt 里的顶层函数编成 FooKt.class —— 源码文件名里没有那个 Kt。
-            // 不脱掉它，一个全是顶层函数的 Kotlin 工程会一个都对不上
-            List<String> bases = rel.endsWith("Kt")
-                    ? List.of(rel, rel.substring(0, rel.length() - 2)) : List.of(rel);
-            for (String base : bases) {
-                for (String ext : SOURCE_EXT) {
-                    if (new File(src, base + ext).isFile()) {
-                        items.add(new CheckItem(name, label, true,
-                                "产物里的类能在源码根下找到，例如 " + base + ext));
-                        return;
+            for (String path : fromRepository ? withoutPrefixDirs(rel) : List.of(rel)) {
+                // Kotlin 把 Foo.kt 里的顶层函数编成 FooKt.class —— 源码文件名里没有那个 Kt。
+                // 不脱掉它，一个全是顶层函数的 Kotlin 工程会一个都对不上
+                List<String> bases = path.endsWith("Kt")
+                        ? List.of(path, path.substring(0, path.length() - 2)) : List.of(path);
+                for (String base : bases) {
+                    for (String ext : SOURCE_EXT) {
+                        if (new File(src, base + ext).isFile()) {
+                            items.add(new CheckItem(name, label, true,
+                                    "产物里的类能在源码根下找到，例如 " + base + ext));
+                            return;
+                        }
                     }
                 }
             }
@@ -322,12 +439,37 @@ public class ProjectChecker {
         }
         // 纯文本：这段话会被前端按文本插值渲染（自检表 {{ it.detail }}、
         // 拦截提示走 ElMessage），带上 <b> 只会把标签本身显示出来
+        if (fromRepository) {
+            // 产物来自仓库：再叫人「把 classes-dir 改成绝对路径」就指错了方向
+            items.add(new CheckItem(name, label, false,
+                    "抽查了 " + sampled.size() + " 个类，在源码根下一个都找不到：CI 推上来的产物与源码根"
+                            + "多半不是同一个工程（推错了模块，或源码根填错了）。产物取自产物仓库："
+                            + classes.getAbsolutePath() + "，源码根解析到 " + src.getAbsolutePath()
+                            + "。例如产物里有 " + example + "，而源码根下没有它"));
+            return;
+        }
         items.add(new CheckItem(name, label, false,
                 "抽查了 " + sampled.size() + " 个类，在源码根下一个都找不到，"
                         + "这两个路径多半指向了不同的工程。产物目录解析到 " + classes.getAbsolutePath()
                         + "（相对路径以平台安装目录为基准，不是上面填的仓库目录），源码根解析到 "
                         + src.getAbsolutePath() + "。例如产物里有 " + example + "，而源码根下没有它。"
                         + "建议 classes-dir 填绝对路径"));
+    }
+
+    /**
+     * 推上来的包可能带着前缀目录：在仓库根 {@code zip -r target/classes} 打的包，条目是
+     * {@code target/classes/com/x/Foo.class}。采集不在乎这一层（JaCoCo 按字节码里的类名认），
+     * 自检也不该在乎 —— 否则就是「自检说不行、采集却取得到」。依次去掉开头的目录再找，
+     * 但<b>至少留两段</b>（包 + 类名）：只剩类名的话，推错了模块也可能撞上一个同名文件。
+     */
+    private static List<String> withoutPrefixDirs(String rel) {
+        String[] segs = rel.split("/");
+        List<String> out = new ArrayList<>();
+        out.add(rel);
+        for (int i = 1; i <= segs.length - 2; i++) {
+            out.add(String.join("/", Arrays.copyOfRange(segs, i, segs.length)));
+        }
+        return out;
     }
 
     /**
@@ -377,15 +519,18 @@ public class ProjectChecker {
      * <p>版本一致性单列一项：commit 相同但一台带 -dirty，加载的是两份不同的字节码，
      * 增量口径会被平台拒绝。这个错误在别处只会表现为「增量报告用不了」，
      * 在这里才说得清是哪两台对不上。
+     *
+     * @return 各实例自报的版本与是否全连上 —— uploaded 项目要拿它去产物仓库取产物
      */
-    private void checkInstances(ProjectConfig cfg, List<CheckItem> items) {
+    private Probed checkInstances(ProjectConfig cfg, List<CheckItem> items) {
         Set<String> versions = new LinkedHashSet<>();
+        List<String> buildIds = new ArrayList<>();
         boolean allConnected = true;
         List<String> specs = instances(cfg);
         if (specs.isEmpty()) {
             items.add(new CheckItem("instances", "被测实例", false,
                     "一个都没配，这个项目采不到任何数据"));
-            return;
+            return new Probed(List.of(), false);
         }
         for (String spec : specs) {
             ProbeEndpoint ep;
@@ -394,15 +539,18 @@ public class ProjectChecker {
             } catch (IllegalArgumentException e) {
                 items.add(new CheckItem("instance:" + spec, "被测实例 " + spec, false, e.getMessage()));
                 allConnected = false;
+                buildIds.add(null);
                 continue;
             }
             try {
                 String id = buildId(ep, cfg);
                 versions.add(id == null ? "(未配置构建版本)" : id);
+                buildIds.add(id);
                 items.add(new CheckItem("instance:" + ep, "被测实例 " + ep, true,
                         "已连接，构建版本 " + (id == null ? "未配置（增量口径将不可用）" : id)));
             } catch (Exception e) {
                 allConnected = false;
+                buildIds.add(null);
                 items.add(new CheckItem("instance:" + ep, "被测实例 " + ep, false, describe(e)));
             }
         }
@@ -412,7 +560,11 @@ public class ProjectChecker {
                     versions.size() == 1 ? "全部为 " + versions.iterator().next()
                             : "各实例报的版本不一致：" + versions + "，增量口径会被拒绝"));
         }
+        return new Probed(buildIds, allConnected);
     }
+
+    /** 连实例这一步交出来的：各实例自报的版本（按配置顺序，没报为 null）与是否全连上 */
+    private record Probed(List<String> buildIds, boolean allConnected) {}
 
     private static List<String> instances(ProjectConfig cfg) {
         return cfg.getInstances() == null ? List.of() : cfg.getInstances();

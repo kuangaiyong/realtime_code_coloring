@@ -217,6 +217,24 @@ def connected(project, tries=4):
     return None
 
 
+def project_check(cfg, tries=4):
+    """跑一次自检，要求全部实例都连上；没连上就重试取数，重试完仍不齐返回 None。
+
+    「产物仓库」一项只在全部实例连上之后才出现。JaCoCo tcpserver 的 accept backlog 只有 1，
+    两个活项目在采同一批端口时，自检那一下 dump 可能被 RST —— 拿这种结果去断言
+    「没有这一项」，会把一次瞬时抖动报成功能缺失（CLAUDE.md §三坑 4）
+    """
+    for attempt in range(1, tries + 1):
+        status, res = http(f"{PLATFORM}/api/projects/check", "POST", cfg)
+        items = {i["name"]: i for i in (res.get("items") or [])}
+        down = [n for n, i in items.items() if n.startswith("instance:") and not i["ok"]]
+        if status == 200 and not down:
+            return items, res
+        print(f"         第 {attempt} 次自检：HTTP {status}，没连上的实例 {down or '—'}")
+        time.sleep(1)
+    return None, None
+
+
 def cleanup(build):
     """删项目与产物，使用例可重复跑。
 
@@ -335,6 +353,20 @@ def run(build, instances):
         print(f"         {body}")
         return
 
+    print("\n>> 1b. 自检：不要本地产物路径，按实例自报的构建核对产物仓库")
+    items, _ = project_check(cfg)
+    if items is None:
+        check(False, "判不了：重试后仍有实例没连上，「产物仓库」一项要全连上才出现")
+    else:
+        local = {"classesDir", "cppObjectsDir", "rustBinary"} & items.keys()
+        check(not local, f"不再要求本地产物路径（这个项目里它们全指向不存在的位置）：{sorted(local) or '—'}")
+        up = items.get("artifactUpload")
+        check(bool(up and up["ok"]), f"「产物上传接口」通过：{(up or {}).get('detail', '（没有这一项）')}")
+        art = items.get("artifacts") or {}
+        check(bool(art) and not art.get("ok") and build in art.get("detail", "")
+              and f"project={PID}" in art.get("detail", ""),
+              f"还没推产物时「产物仓库」不通过并点名构建与补救命令：{art.get('detail', '（没有这一项）')[:200]}")
+
     # ---- 2. 还没传产物：必须拒绝出报告并点名 ----
     print("\n>> 2. 还没传产物时必须拒绝出报告并点名缺哪个构建的哪种产物")
     collect(PID)
@@ -373,6 +405,18 @@ def run(build, instances):
     # 仓库里只有一份产物的话，「按 buildId 精确取」与「取现有的那一份」长得一模一样
     status, _ = upload(DECOY, "java", zip_bytes("Decoy.class", b"not a class file"))
     check(status == 200, f"上传诱饵构建 {DECOY[:8]} 的 java 产物返回 {status}")
+
+    print("\n>> 3b. 推完产物再自检：产物仓库通过，取回的 classes 核对了源码")
+    items, res = project_check(cfg)
+    if items is None:
+        check(False, "判不了：重试后仍有实例没连上")
+    else:
+        art = items.get("artifacts") or {}
+        check(bool(art.get("ok")), f"「产物仓库」通过：{art.get('detail', '（没有这一项）')}")
+        cm = items.get("classesMatchSource") or {}
+        check(bool(cm.get("ok")), f"对取回的 classes 核对了源码：{cm.get('detail', '（没有这一项）')}")
+        bad = [i["name"] for i in res.get("items", []) if not i["ok"]]
+        check(res.get("ok") is True, f"整份自检全过（向导第 6 步据此放行创建）：{bad or '—'}")
 
     # ---- 4. 三种语言都要出数 ----
     print("\n>> 4. 采一轮：三种语言都出数（本地路径全是假的，出得来就只能是走了产物仓库）")
