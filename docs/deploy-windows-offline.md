@@ -692,9 +692,15 @@ java -jar target/platform-0.11.1.jar
 ### 8.5 容器化部署（产物仓库）
 
 被测服务跑在容器里、平台够不着它的文件系统时，由 CI 在构建后把编译产物推给平台：
-`POST /api/artifacts/<buildId>?project=<项目>&lang=<java|cpp|rust>`。
-目前这种项目**只能通过 API 创建**，页面上的新建向导建不出来。上传接口**没有鉴权**，
-只能在内网使用（见第 11 节）。
+`POST /api/artifacts/<buildId>?project=<项目>&lang=<java|cpp|rust>`，请求头带 `Authorization: Bearer <令牌>`。
+
+- **建项目**：新建向导第 4 步的「产物来源」选「CI 按构建推送」。这一步会当场给出各语言推产物的命令；
+  **先让 CI（或照命令手动）推一次产物，再点「检查这一步」** —— 自检会按实例自报的构建去产物仓库核对，
+  产物不在就拦住并点名缺的是哪个构建。建好之后，「服务接入」页能按你 CI 里的实际路径现算这条命令。
+- **令牌**：平台读环境变量 `COVERAGE_ARTIFACT_TOKEN`。**没配时上传 / 删除接口是关着的（403），不是放行。**
+  `run_local.sh` 没拿到这个变量时会生成一份，存在 `.run/artifact-token`；要固定下来，就把它写进
+  `.env.local`（`COVERAGE_ARTIFACT_TOKEN='...'`，与数据库凭据同一个文件）。CI 里把同一个值配成同名的机密变量。
+- 页面与其余接口仍然没有登录鉴权，平台只能在内网使用（见第 11 节）。
 
 ---
 
@@ -750,9 +756,9 @@ java -jar target/platform-0.11.1.jar
 ## 11. 安全边界
 
 - **探针只绑本机地址**，任何时候都不要改成绑所有网卡（原因见 8.1）。
-- **平台在 18090 端口上监听所有网卡**，而且**没有登录鉴权**。产物上传接口（`/api/artifacts`）
-  能往平台的磁盘上写文件。所以平台只能部署在内网；需要让别的电脑访问时，
-  用 Windows 防火墙把 18090 只放行给可信的机器。
+- **平台在 18090 端口上监听所有网卡**，而且**页面与大多数接口没有登录鉴权**。只有产物的上传 / 删除接口
+  （`/api/artifacts`，能往平台的磁盘上写文件）要带令牌（`COVERAGE_ARTIFACT_TOKEN`，见 8.5）。
+  所以平台只能部署在内网；需要让别的电脑访问时，用 Windows 防火墙把 18090 只放行给可信的机器。
 - **`.env.local` 里是数据库密码**，已被 gitignore，不要提交。本仓库在 GitHub 上是公开的。
 - **MySQL 账号只绑 `127.0.0.1`**，不要把 3306 端口开放到网络上。
 
@@ -784,6 +790,7 @@ java -jar target/platform-0.11.1.jar
 | `PY` | `~/.bashrc`（可选） | 指定 Python 解释器，跳过自动查找 |
 | `COVERAGE_DB_URL` / `COVERAGE_DB_USER` / `COVERAGE_DB_PASSWORD` | 仓库根目录的 `.env.local`（值要加单引号） | 数据库连接 |
 | `COVERAGE_ARTIFACT_ROOT` | 可选 | 产物仓库的根目录，默认是 `platform/.artifacts` |
+| `COVERAGE_ARTIFACT_TOKEN` | `.env.local`（可选） | 产物上传 / 删除接口的令牌。没设时 `run_local.sh` 生成一份存在 `.run/artifact-token`；平台拿不到令牌时这两个接口关闭 |
 
 ## 附录 C：部署完成后的目录结构
 
