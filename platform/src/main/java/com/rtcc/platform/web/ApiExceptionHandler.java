@@ -91,7 +91,8 @@ public class ApiExceptionHandler {
         return error(e.getMessage());
     }
 
-    private Map<String, Object> error(String message) {
+    /** 全站报错体的唯一构造处。包级可见：ArtifactAuthFilter 在 MVC 之前就要回同一个形状 */
+    static Map<String, Object> error(String message) {
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("ok", false);
         res.put("error", message);

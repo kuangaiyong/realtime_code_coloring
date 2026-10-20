@@ -1,6 +1,5 @@
 package com.rtcc.platform.service;
 
-import com.rtcc.platform.collector.ProbeClient;
 import com.rtcc.platform.config.ProjectConfig;
 import org.junit.jupiter.api.Test;
 
@@ -19,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class ProjectCheckerProbeOneTest {
 
-    private final ProjectChecker checker = new ProjectChecker(new ProbeClient());
+    private final ProjectChecker checker = ProjectCheckers.local();
 
     private static ProjectConfig cfg(int timeoutMs, String... instances) {
         ProjectConfig c = new ProjectConfig();

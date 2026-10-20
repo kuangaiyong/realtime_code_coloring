@@ -421,6 +421,10 @@ public class ArtifactStore {
      * 而平台的既定行为是少几台就降级成 PARTIAL、照常出报告。Go 永远不在这个集合里，
      * 它的覆盖数据是自包含的（见 {@link ArtifactKind}）。
      *
+     * <p><b>项目自检也调它</b>（{@code ProjectChecker.checkUploaded}），好让「自检说行」与「采集取得到」
+     * 是同一个判断。所以这里<b>不许加只该在采集时发生的副作用</b>（记事件、清旧产物之类）——
+     * 向导每点一次「检查这一步」都会触发一次。
+     *
      * @throws IOException 取不到产物、没有构建版本、或构建是脏的。<b>一律拒绝，不降级不跳过</b>：
      *                     跳过那门语言的话界面上表现为「这些代码没被调用过」，与真相正相反，
      *                     而且看不出是缺产物
@@ -453,7 +457,7 @@ public class ArtifactStore {
         }
         if (version == null) {
             // 不是边界情况：实例没配 sessionid 是平台明确支持的降级态（只是增量不可用），
-            // 实例之间版本不一致时 unifiedVersion 同样给 null。
+            // 实例之间版本不一致时 BuildVersion.unified 同样给 null。
             // 这两种情况下「该取哪一份产物」这个前提不成立，只能拒绝，不能挑一个默认的
             throw new IOException("产物按构建版本索引，但拿不到统一的构建版本："
                     + "要么这些实例没上报（Java 的 sessionid / 其余语言的 COVERAGE_BUILD_ID），"
@@ -486,13 +490,15 @@ public class ArtifactStore {
      * <p><b>补救命令必须带上 {@code ?project=}</b>：上传接口的 project 默认是 {@code default}，
      * 非默认项目照着一条不带它的命令做，包会传进 default 项目、接口还回 200，
      * 下一轮采集仍报这同一句话 —— 照提示做了却没用，而且看不出为什么。
+     * <b>令牌同理</b>：上传接口要令牌，提示里不说的话，照着做必然 401。
      */
     private Path require(String projectId, String buildId, ArtifactKind kind) throws IOException {
         return find(projectId, buildId, kind).orElseThrow(() -> new IOException(
                 "缺少构建 " + buildId + " 的 " + kind.dir() + " 产物。请在构建后调 "
                         + "POST /api/artifacts/" + buildId + "?project=" + projectId
                         + "&lang=" + kind.dir()
-                        + " 把它推上来 —— 没有它解不出行号，而跳过这门语言会让界面显示成"
+                        + "（请求头带 Authorization: Bearer <令牌>，令牌即平台的 " + ArtifactAuth.ENV + "）"
+                        + "把它推上来 —— 没有它解不出行号，而跳过这门语言会让界面显示成"
                         + "「这些代码没被调用过」，与真相正相反"));
     }
 

@@ -1,6 +1,5 @@
 package com.rtcc.platform.service;
 
-import com.rtcc.platform.collector.ProbeClient;
 import com.rtcc.platform.config.ProjectConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -75,7 +74,7 @@ class ProjectCheckerClassesMatchTest {
         clazz(wrong, "com/rtcc/platform/service/ProjectOperationException.class");
         clazz(wrong, "com/rtcc/platform/web/ProjectController.class");
 
-        Map<String, Object> res = new ProjectChecker(new ProbeClient())
+        Map<String, Object> res = ProjectCheckers.local()
                 .check(cfg(repo, wrong.toString(), "src/main/java"));
 
         // 「目录存在」这一项照旧通过 —— 这正是它单独用不住的原因
@@ -98,7 +97,7 @@ class ProjectCheckerClassesMatchTest {
         Path classes = Files.createDirectories(repo.resolve("target/classes"));
         clazz(classes, "com/shop/order/OrderService.class");
 
-        Map<String, Object> res = new ProjectChecker(new ProbeClient())
+        Map<String, Object> res = ProjectCheckers.local()
                 .check(cfg(repo, classes.toString(), "src/main/java"));
 
         assertTrue((Boolean) item(res, "classesMatchSource").get("ok"),
@@ -118,7 +117,7 @@ class ProjectCheckerClassesMatchTest {
         clazz(classes, "com/shop/generated/QOrderEntity.class");   // 生成代码，没有源码
         clazz(classes, "com/vendor/Bundled.class");                // 被打进来的依赖
 
-        Map<String, Object> res = new ProjectChecker(new ProbeClient())
+        Map<String, Object> res = ProjectCheckers.local()
                 .check(cfg(repo, classes.toString(), "src/main/java"));
 
         assertTrue((Boolean) item(res, "classesMatchSource").get("ok"),
@@ -137,7 +136,7 @@ class ProjectCheckerClassesMatchTest {
         clazz(classes, "com/shop/order/OrderService.class");
         clazz(classes, "com/shop/order/OrderService$Inner.class");
 
-        Map<String, Object> res = new ProjectChecker(new ProbeClient())
+        Map<String, Object> res = ProjectCheckers.local()
                 .check(cfg(repo, classes.toString(), "src/main/java"));
         assertTrue((Boolean) item(res, "classesMatchSource").get("ok"));
     }
@@ -155,7 +154,7 @@ class ProjectCheckerClassesMatchTest {
         Path classes = Files.createDirectories(repo.resolve("target/classes"));
         clazz(classes, "com/shop/order/RoutesKt.class");
 
-        Map<String, Object> res = new ProjectChecker(new ProbeClient())
+        Map<String, Object> res = ProjectCheckers.local()
                 .check(cfg(repo, classes.toString(), "src/main/kotlin"));
 
         assertTrue((Boolean) item(res, "classesMatchSource").get("ok"),
@@ -169,7 +168,7 @@ class ProjectCheckerClassesMatchTest {
         source(repo.resolve("src/main/java"), "com/shop/order/OrderService.java");
         Path empty = Files.createDirectories(repo.resolve("target/classes"));
 
-        Map<String, Object> res = new ProjectChecker(new ProbeClient())
+        Map<String, Object> res = ProjectCheckers.local()
                 .check(cfg(repo, empty.toString(), "src/main/java"));
 
         Map<String, Object> m = item(res, "classesMatchSource");
@@ -201,13 +200,13 @@ class ProjectCheckerClassesMatchTest {
         git(repoRoot, "commit", "-qm", "one");
 
         // 仓库根本身：应当通过
-        Map<String, Object> ok = new ProjectChecker(new ProbeClient())
+        Map<String, Object> ok = ProjectCheckers.local()
                 .check(cfg(repoRoot, sub.resolve("target/classes").toString(), "demo-service/src/main/java"));
         assertEquals(null, item(ok, "repoIsTopLevel"),
                 "填的就是仓库根，不该报这一项：" + item(ok, "repoIsTopLevel"));
 
         // 子目录：必须点名，并说清该改成什么
-        Map<String, Object> bad = new ProjectChecker(new ProbeClient())
+        Map<String, Object> bad = ProjectCheckers.local()
                 .check(cfg(sub, sub.resolve("target/classes").toString(), "src/main/java"));
         assertEquals(true, item(bad, "repoDir").get("ok"),
                 "git 在子目录里照常工作，这一项本就该过 —— 这正是它单独用不住的原因");
@@ -240,7 +239,7 @@ class ProjectCheckerClassesMatchTest {
         String rel = "nowhere-" + UUID.randomUUID() + "/target/classes";
         Path real = Files.createDirectories(repo.resolve(rel));
 
-        Map<String, Object> res = new ProjectChecker(new ProbeClient())
+        Map<String, Object> res = ProjectCheckers.local()
                 .check(cfg(repo, rel, "demo-service/src/main/java"));
 
         Map<String, Object> m = item(res, "classesDir");
@@ -256,7 +255,7 @@ class ProjectCheckerClassesMatchTest {
         Path repo = Files.createDirectories(tmp.resolve("myrepo"));
         source(repo.resolve("demo-service/src/main/java"), "com/shop/order/OrderService.java");
 
-        Map<String, Object> res = new ProjectChecker(new ProbeClient())
+        Map<String, Object> res = ProjectCheckers.local()
                 .check(cfg(repo, "nowhere-" + UUID.randomUUID() + "/target/classes",
                         "demo-service/src/main/java"));
 
@@ -286,7 +285,7 @@ class ProjectCheckerClassesMatchTest {
         Path repo = Files.createDirectories(tmp.resolve("demo-service"));
         source(repo.resolve("src/main/java"), "com/shop/order/OrderService.java");
 
-        Map<String, Object> res = new ProjectChecker(new ProbeClient())
+        Map<String, Object> res = ProjectCheckers.local()
                 .check(cfg(repo, tmp.resolve("nope").toString(), "src/main/java"));
 
         assertFalse((Boolean) item(res, "classesDir").get("ok"));

@@ -99,3 +99,24 @@
 - **WHEN** 用户填完全部接入参数
 - **THEN** 「重启被测服务」一步不显示为已完成
 - **AND** 「探针连上没有」一步的状态取自平台的实际探测结果
+
+### Requirement: uploaded 项目的接入页给出 CI 推产物命令
+
+当前项目的产物来源为 uploaded 时，服务接入页 SHALL NOT 要求平台侧的本地产物路径（Java 产物目录、C++ .gcno 所在目录、Rust 平台侧产物路径）：这些项不显示，不计入「参数填齐了没有」，也不出现在平台侧配置片段里。配置片段 SHALL 写明 `artifact-source: uploaded`。对 Java、C++、Rust，页面 SHALL 额外给出「CI 构建后把产物推给平台」的命令，其中 CI 侧的产物路径是一个表单项，命令随它现算，规则与本页其余命令相同（填了用填的值，没填给示例值）。
+
+#### Scenario: 本地产物路径不再出现
+
+- **WHEN** 打开一个 uploaded 项目的服务接入页并选择 Java
+- **THEN** 页面没有「Java 产物目录」输入框，配置片段里没有 `classes-dir`
+- **AND** 配置片段里有 `artifact-source: uploaded`
+
+#### Scenario: 推产物命令随 CI 路径现算
+
+- **WHEN** 用户在「CI 里的 classes 目录」填入 `build/classes/java/main`
+- **THEN** 推产物命令里打包的是 `build/classes/java/main`，不再出现示例值 `target/classes`
+- **AND** 命令包含 `project=<项目标识>` 与 `lang=java`
+
+#### Scenario: local 项目的接入页不变
+
+- **WHEN** 打开一个 local 项目的服务接入页
+- **THEN** 页面照旧要求平台侧的本地产物路径，且不显示推产物命令

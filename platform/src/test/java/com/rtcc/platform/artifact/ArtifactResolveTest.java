@@ -176,11 +176,12 @@ class ArtifactResolveTest {
     }
 
     /**
-     * 缺产物的补救命令必须带上 {@code ?project=}。
+     * 缺产物的补救命令必须带上 {@code ?project=}，并说清要带令牌。
      *
      * <p>上传接口的 project 默认是 default，非默认项目照着一条不带它的命令做，
      * 包会传进 default 项目、接口还回 200，下一轮采集仍报这同一句话 ——
-     * 照提示做了却没用，而且看不出为什么。
+     * 照提示做了却没用，而且看不出为什么。令牌同理：上传接口要令牌，
+     * 提示里不说的话，照着做必然 401。
      */
     @Test
     void 补救命令点名是哪个项目(@TempDir Path root) {
@@ -190,6 +191,7 @@ class ArtifactResolveTest {
                 () -> store.resolveInto(cfg("uploaded"), CLEAN, EnumSet.of(ArtifactKind.JAVA)));
 
         assertTrue(e.getMessage().contains("project=demo"), e.getMessage());
+        assertTrue(e.getMessage().contains("Authorization: Bearer"), e.getMessage());
     }
 
     /**

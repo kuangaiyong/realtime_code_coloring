@@ -328,7 +328,7 @@ public class ProjectRuntime {
             if (ProbeEndpoint.GO.equals(ep.language())) {
                 // 版本先取、数据后收，且三次抓取全部成功才入列。
                 // 反过来的话，buildId 失败时这台已被标成 DISCONNECTED，
-                // 它的覆盖却已经并进了聚合结果，而版本又没进 unifiedVersion 的校验
+                // 它的覆盖却已经并进了聚合结果，而版本又没进 BuildVersion.unified 的校验
                 // —— 实例间版本不一致会被这条缝绕过去
                 BuildVersion v = BuildVersion.parseId(goProbe.buildId(ep));
                 // meta 与 counters 要一并取：counters 单独存在没有意义，
@@ -463,7 +463,7 @@ public class ProjectRuntime {
             // 只解析这一轮<b>真有实例</b>的那几种语言，而不是「配置里填了路径」的那几种：
             // C++ 两台都掉线时 cppDumps 为空、C++ 归一化根本不跑，若仍要求它的产物，
             // 就会把「少两台降级成 PARTIAL、照常出报告」变成「整轮 ANALYZE_ERROR、什么都没有」
-            BuildVersion unified = unifiedVersion(reported);
+            BuildVersion unified = BuildVersion.unified(reported);
             EnumSet<ArtifactKind> needed = EnumSet.noneOf(ArtifactKind.class);
             if (anyJava) {
                 needed.add(ArtifactKind.JAVA);
@@ -789,19 +789,6 @@ public class ProjectRuntime {
 
     private List<ProbeEndpoint> endpoints() {
         return props.getInstances().stream().map(ProbeEndpoint::parse).toList();
-    }
-
-    /**
-     * 全部连上的实例都报同一个版本，才算这批数据有统一版本。
-     * 只要有一台没报或报得不一样，就拿不出可信的版本，增量口径必须停下。
-     */
-    private BuildVersion unifiedVersion(List<BuildVersion> reported) {
-        if (reported.isEmpty() || reported.contains(null)) {
-            return null;
-        }
-        BuildVersion first = reported.get(0);
-        return reported.stream().allMatch(v -> v.commit().equals(first.commit()) && v.dirty() == first.dirty())
-                ? first : null;
     }
 
     /**

@@ -1,9 +1,12 @@
 # Windows 离线部署手册
 
-> **适用版本**：v0.11.1。部署步骤是 2026-09-23 在 v0.9.2（`ec30c61`）上逐条演练过的；
-> v0.10.0 改了前端页面与推送内容，v0.10.1 改了 C++ 覆盖数据的解析方式，v0.11.0 改了 C++ 共享代码的计数口径，v0.11.1 修了删项目不清趋势等两处问题，步骤都不变，版本号与验收数字已随版本更新，
+> **适用版本**：v0.12.0。部署步骤是 2026-09-23 在 v0.9.2（`ec30c61`）上逐条演练过的；
+> v0.10.0 改了前端页面与推送内容，v0.10.1 改了 C++ 覆盖数据的解析方式，v0.11.0 改了 C++ 共享代码的计数口径，v0.11.1 修了删项目不清趋势等两处问题，v0.12.0 给产物的上传 / 删除加了令牌、页面上能建 uploaded 项目（容器化部署才用得上，见 8.5），步骤都不变，版本号与验收数字已随版本更新，
 > 目录大小、端口、耗时仍取自那次实测。换了版本之后，请对照 `scripts/run_local.sh`
 > 顶部和 `pom.xml` 重新核对。
+> 2026-10-20 在 dev 的 `1cbe1a9`（产物上传加令牌、页面上能建 uploaded 项目之后）上，用全新克隆重走了
+> 2.1、4.6、5、6、7 节：结果与本手册一致（11 套全部通过、345 PASS / 0 FAIL）。那次是在开发机上走的，
+> 工具链与 MySQL 本来就在，第 3、4.1 节的安装与解包没有重走。
 >
 > **前提**：目标机是 64 位 Windows（10 / 11 / Server），**不能访问外网**，
 > 但能从内网镜像安装 Python / Java / npm 的依赖。
@@ -21,7 +24,7 @@
 | **A. 完整复刻（本手册主线）** | 平台 + 8 个演示被测服务（Java / Go / C++ / Rust 各 2 台）+ 一键验收 | 第一次部署，用来证明这台机器的环境装对了 |
 | **B. 只用平台接你自己的服务** | 平台 + 所接语言对应的工具链 | A 跑通之后，接真实业务（见第 8 节） |
 
-**建议先走通 A，再做 B。** A 最后的验收结果（320 PASS / 0 FAIL，11 套全部通过）
+**建议先走通 A，再做 B。** A 最后的验收结果（345 PASS / 0 FAIL，11 套全部通过）
 是「工具链版本对、路径对、数据库通」唯一可靠的证据。跳过它直接接业务服务，
 出了问题会分不清是环境没装对，还是接入方式不对。
 
@@ -55,7 +58,7 @@
 3. 下载几个安装包              ──拷贝──▶   6. 取出仓库、建库、写 .env.local
                                            7. bash scripts/run_local.sh start
                                            8. bash scripts/run_local.sh verify
-                                              → 320 PASS / 0 FAIL，11 套全部通过
+                                              → 345 PASS / 0 FAIL，11 套全部通过
 ```
 
 ### 0.4 硬件与耗时
@@ -489,7 +492,7 @@ cd /c/rtcc
 git clone /c/rtcc-offline/realtime_code_coloring.bundle realtime_code_coloring
 cd realtime_code_coloring
 git checkout main
-git log -1 --oneline     # <提交号> 合并 dev：v0.11.1 —— ……
+git log -1 --oneline     # <提交号> 合并 dev：v0.12.0 —— ……
 git status --short       # 没有输出 = 工作树干净
 ```
 
@@ -533,7 +536,7 @@ bash scripts/run_local.sh start
 
 它会依次做这几件事：
 
-1. `mvn clean package`：构建平台和 Java 演示服务，并跑完 269 条单测（第一次会下载 Maven 依赖）；
+1. `mvn clean package`：构建平台和 Java 演示服务，并跑完 294 条单测（第一次会下载 Maven 依赖）；
 2. 带覆盖率插桩构建 Go 演示服务（`-cover -covermode=atomic -tags=goverage`）；
 3. 带覆盖率插桩构建 C++ 演示服务（`--coverage`）；
 4. 带覆盖率插桩构建 Rust 演示服务（msvc 目标 + `-C instrument-coverage`）；
@@ -547,9 +550,10 @@ bash scripts/run_local.sh start
     ……（8 个实例）
 ==> 启动染色平台
     platform      http://localhost:18090   ← 打开这个看染色
+    产物上传令牌：环境变量 COVERAGE_ARTIFACT_TOKEN（没设时取自 …/.run/artifact-token），CI 推产物时带上
 ```
 
-日志都在 `.run/` 下：平台是 `.run/platform.log`，各实例是 `.run/demo*.log`。
+最后那行只是告诉你令牌在哪：形态 A 用不上它，容器化部署才要（见 8.5）。日志都在 `.run/` 下：平台是 `.run/platform.log`，各实例是 `.run/demo*.log`。
 
 > 第一次运行时，Windows 防火墙可能会就 `java.exe`、`demo-go.exe` 等程序弹出询问。
 > 只在本机访问的话，允许不允许都不影响：探针和平台都经由本机地址访问。
@@ -587,7 +591,7 @@ tail -3 .run/verify.log
 grep -c '验收结论：全部通过'     .run/verify.log   # 期望 9
 grep -c '推送链路验证：全部通过' .run/verify.log   # 期望 1
 grep -c '前端验收：全部通过'     .run/verify.log   # 期望 1
-grep -c '\[PASS\]' .run/verify.log                # 期望 320
+grep -c '\[PASS\]' .run/verify.log                # 期望 345
 grep -c '\[FAIL\]' .run/verify.log                # 期望 0
 ```
 
@@ -606,7 +610,7 @@ grep -c '\[FAIL\]' .run/verify.log                # 期望 0
   不要直接跑 `verify`：它会先把 8 个实例拉起来，这时 Java 实例已经占住了
   `platform/target/classes/probe/jacocoagent.jar`，接着再跑 `start` 时，`mvn clean` 会因为删不掉这个文件而失败。
 
-**得到「11 套全部通过、320 PASS / 0 FAIL」，形态 A 的部署就完成了。**
+**得到「11 套全部通过、345 PASS / 0 FAIL」，形态 A 的部署就完成了。**
 
 ---
 
@@ -629,14 +633,14 @@ grep -c '\[FAIL\]' .run/verify.log                # 期望 0
 ```bash
 cd /c/rtcc/realtime_code_coloring/platform
 set -a; . ../.env.local; set +a
-java -jar target/platform-0.11.1.jar
+java -jar target/platform-0.12.0.jar
 ```
 
 平台运行时需要：
 
 - JDK 17；
 - `git` 在 PATH 里（算增量覆盖率时用）；
-- 采集哪种语言，就要让对应的工具在 PATH 里：Go 要 `go`；C++ 要 `gcov` 和 `gcov-tool`（至少 GCC 9 的）；
+- 采集哪种语言，就要让对应的工具在 PATH 里：Go 要 `go`；C++ 要 `gcov` 和 `gcov-tool`（只实测过本手册附带的 GCC 16.2；按 gcov 手册最低要 GCC 9，9 到 15 都没有实测过）；
   Rust 要 `llvm-profdata` 和 `llvm-cov`，而且必须与编译被测服务的 rustc 同版本。
   4.2 配好的 PATH 已经全部包含。也可以用启动参数指定绝对路径，比如
   `--coverage.go-tool=<go.exe 路径>`（同类的还有 `--coverage.gcov-tool`、`--coverage.gcov-merge-tool`、
@@ -692,9 +696,15 @@ java -jar target/platform-0.11.1.jar
 ### 8.5 容器化部署（产物仓库）
 
 被测服务跑在容器里、平台够不着它的文件系统时，由 CI 在构建后把编译产物推给平台：
-`POST /api/artifacts/<buildId>?project=<项目>&lang=<java|cpp|rust>`。
-目前这种项目**只能通过 API 创建**，页面上的新建向导建不出来。上传接口**没有鉴权**，
-只能在内网使用（见第 11 节）。
+`POST /api/artifacts/<buildId>?project=<项目>&lang=<java|cpp|rust>`，请求头带 `Authorization: Bearer <令牌>`。
+
+- **建项目**：新建向导第 4 步的「产物来源」选「CI 按构建推送」。这一步会当场给出各语言推产物的命令；
+  **先让 CI（或照命令手动）推一次产物，再点「检查这一步」** —— 自检会按实例自报的构建去产物仓库核对，
+  产物不在就拦住并点名缺的是哪个构建。建好之后，「服务接入」页能按你 CI 里的实际路径现算这条命令。
+- **令牌**：平台读环境变量 `COVERAGE_ARTIFACT_TOKEN`。**没配时上传 / 删除接口是关着的（403），不是放行。**
+  `run_local.sh` 没拿到这个变量时会生成一份，存在 `.run/artifact-token`；要固定下来，就把它写进
+  `.env.local`（`COVERAGE_ARTIFACT_TOKEN='...'`，与数据库凭据同一个文件）。CI 里把同一个值配成同名的机密变量。
+- 页面与其余接口仍然没有登录鉴权，平台只能在内网使用（见第 11 节）。
 
 ---
 
@@ -750,9 +760,9 @@ java -jar target/platform-0.11.1.jar
 ## 11. 安全边界
 
 - **探针只绑本机地址**，任何时候都不要改成绑所有网卡（原因见 8.1）。
-- **平台在 18090 端口上监听所有网卡**，而且**没有登录鉴权**。产物上传接口（`/api/artifacts`）
-  能往平台的磁盘上写文件。所以平台只能部署在内网；需要让别的电脑访问时，
-  用 Windows 防火墙把 18090 只放行给可信的机器。
+- **平台在 18090 端口上监听所有网卡**，而且**页面与大多数接口没有登录鉴权**。只有产物的上传 / 删除接口
+  （`/api/artifacts`，能往平台的磁盘上写文件）要带令牌（`COVERAGE_ARTIFACT_TOKEN`，见 8.5）。
+  所以平台只能部署在内网；需要让别的电脑访问时，用 Windows 防火墙把 18090 只放行给可信的机器。
 - **`.env.local` 里是数据库密码**，已被 gitignore，不要提交。本仓库在 GitHub 上是公开的。
 - **MySQL 账号只绑 `127.0.0.1`**，不要把 3306 端口开放到网络上。
 
@@ -784,6 +794,7 @@ java -jar target/platform-0.11.1.jar
 | `PY` | `~/.bashrc`（可选） | 指定 Python 解释器，跳过自动查找 |
 | `COVERAGE_DB_URL` / `COVERAGE_DB_USER` / `COVERAGE_DB_PASSWORD` | 仓库根目录的 `.env.local`（值要加单引号） | 数据库连接 |
 | `COVERAGE_ARTIFACT_ROOT` | 可选 | 产物仓库的根目录，默认是 `platform/.artifacts` |
+| `COVERAGE_ARTIFACT_TOKEN` | `.env.local`（可选） | 产物上传 / 删除接口的令牌。没设时 `run_local.sh` 生成一份存在 `.run/artifact-token`；平台拿不到令牌时这两个接口关闭 |
 
 ## 附录 C：部署完成后的目录结构
 
@@ -801,7 +812,7 @@ C:\rtcc\
 └── realtime_code_coloring\      仓库（从 bundle 克隆）
     ├── .env.local               数据库连接（不进 git）
     ├── .run\                    运行日志、C++/Rust 的覆盖数据、验收日志（不进 git）
-    ├── platform\target\platform-0.11.1.jar
+    ├── platform\target\platform-0.12.0.jar
     ├── demo-service\  demo-service-go\  demo-service-cpp\  demo-service-rust\
     ├── scripts\run_local.sh     启动 / 停止 / 验收的唯一入口
     └── docs\deploy-windows-offline.md   本手册

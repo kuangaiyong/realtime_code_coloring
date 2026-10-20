@@ -85,6 +85,12 @@ public class CoverageProperties {
      */
     private int artifactMaxEntries = 100_000;
 
+    /**
+     * 产物上传 / 删除接口的令牌（环境变量 {@code COVERAGE_ARTIFACT_TOKEN}）。平台级：它守的是这台机器的磁盘。
+     * <b>为空时这两个接口关闭</b>，不是放行 —— 见 {@code ArtifactAuth}
+     */
+    private String artifactToken = "";
+
     /** 覆盖率门禁的阈值。CI 在合并前调 /api/coverage/gate，据此决定放行还是阻断 */
     private Gate gate = new Gate();
 
@@ -202,6 +208,9 @@ public class CoverageProperties {
 
     public int getArtifactMaxEntries() { return artifactMaxEntries; }
     public void setArtifactMaxEntries(int v) { this.artifactMaxEntries = v; }
+
+    public String getArtifactToken() { return artifactToken; }
+    public void setArtifactToken(String artifactToken) { this.artifactToken = artifactToken; }
 
     public String getLlvmProfdataTool() { return llvmProfdataTool; }
     public void setLlvmProfdataTool(String llvmProfdataTool) { this.llvmProfdataTool = llvmProfdataTool; }

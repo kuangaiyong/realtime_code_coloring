@@ -41,7 +41,7 @@ class ProjectCheckerTimeoutTest {
 
     @Test
     void 超时为零时当场点名而不是挂住() {
-        ProjectChecker checker = new ProjectChecker(new ProbeClient());
+        ProjectChecker checker = ProjectCheckers.local();
         // 挂死的表现就是「这个调用永远不返回」，所以断言必须带抢占式超时；
         // 少了它，回归失败的样子是测试卡住而不是报错
         Map<String, Object> res = assertTimeoutPreemptively(Duration.ofSeconds(5),
@@ -56,7 +56,7 @@ class ProjectCheckerTimeoutTest {
 
     @Test
     void 超时为负同样挡住() {
-        ProjectChecker checker = new ProjectChecker(new ProbeClient());
+        ProjectChecker checker = ProjectCheckers.local();
         Map<String, Object> res = assertTimeoutPreemptively(Duration.ofSeconds(5),
                 () -> checker.check(cfg(-1)));
         assertTrue(items(res).stream().anyMatch(i -> "timeoutMs".equals(i.get("name"))

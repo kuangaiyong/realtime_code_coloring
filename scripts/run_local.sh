@@ -12,7 +12,7 @@ ROOT=$(pwd)
 
 # 版本号在本脚本里只出现这一处。原先两处 jar 路径各写一遍，改 pom 版本号漏改一处
 # 只会报「文件不存在」，看不出根因是版本没跟上（CLAUDE.md 第二个坑）
-VERSION=0.11.1
+VERSION=0.12.0
 
 JAVA_HOME="${JAVA_HOME:-/c/Users/Administrator/devtools/jdk-17.0.20+8}"
 MVN_HOME="${MVN_HOME:-/c/Users/Administrator/devtools/apache-maven-3.9.16}"
@@ -43,6 +43,17 @@ fi
 
 LOG_DIR="$ROOT/.run"
 mkdir -p "$LOG_DIR"
+
+# 产物上传 / 删除接口的令牌。平台没配令牌时这两个接口是关着的（不是放行）。
+# 环境里没给就用 .run/artifact-token，没有就生成一份：平台（start / platform-restart）
+# 与各套验收由不同的进程拉起，必须拿到同一个值。只认文件位置，令牌本身不往终端打
+if [ -z "${COVERAGE_ARTIFACT_TOKEN:-}" ]; then
+  if [ ! -s "$LOG_DIR/artifact-token" ]; then
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$LOG_DIR/artifact-token"
+  fi
+  COVERAGE_ARTIFACT_TOKEN=$(cat "$LOG_DIR/artifact-token")
+fi
+export COVERAGE_ARTIFACT_TOKEN
 
 # 脏标记必须按「全部被测源码根」判定，两种语言用同一个范围。
 # 各算各的话，只改了 Go 源码时 Java 实例报 <sha>、Go 实例报 <sha>-dirty，
@@ -241,6 +252,7 @@ start() {
   echo "==> 启动染色平台"
   start_platform
   echo "    platform      http://localhost:18090   ← 打开这个看染色"
+  echo "    产物上传令牌：环境变量 COVERAGE_ARTIFACT_TOKEN（没设时取自 $LOG_DIR/artifact-token），CI 推产物时带上"
 }
 
 # 起平台。数据库地址取当前环境里的 COVERAGE_DB_URL，
