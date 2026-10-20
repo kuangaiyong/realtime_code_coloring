@@ -166,7 +166,7 @@ export PATH="$JAVA_HOME/bin:/c/Users/Administrator/devtools/apache-maven-3.9.16/
 | 语言 | 平台调用的工具 | 配置项（默认取 PATH） |
 |---|---|---|
 | Go | `go tool covdata textfmt`（行）、`covdata func`（方法） | `coverage.go-tool` |
-| C++ | `gcov --json-format -t -r -b -c`（JSON，不读源码；GCC ≥ 9。必须用长选项：9、10 里短选项 `-j` 是 human-readable）、`gcov-tool merge` | `coverage.gcov-tool`、`coverage.gcov-merge-tool` |
+| C++ | `gcov --json-format -t -r -b -c`（JSON，不读源码；**只实测过 GCC 16.2**，按 gcov 手册最低要 GCC 9。必须用长选项 —— 按手册，9、10 里短选项 `-j` 是 human-readable）、`gcov-tool merge` | `coverage.gcov-tool`、`coverage.gcov-merge-tool` |
 | Rust | `llvm-profdata merge -sparse`、`llvm-cov export --format=lcov` | `coverage.llvm-profdata-tool`、`coverage.llvm-cov-tool` |
 
 **Rust 的两个工具版本必须与 rustc 匹配**，系统上随便一个 LLVM 往往对不上，

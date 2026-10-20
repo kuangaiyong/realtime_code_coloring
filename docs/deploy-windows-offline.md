@@ -640,7 +640,7 @@ java -jar target/platform-0.11.1.jar
 
 - JDK 17；
 - `git` 在 PATH 里（算增量覆盖率时用）；
-- 采集哪种语言，就要让对应的工具在 PATH 里：Go 要 `go`；C++ 要 `gcov` 和 `gcov-tool`（至少 GCC 9 的）；
+- 采集哪种语言，就要让对应的工具在 PATH 里：Go 要 `go`；C++ 要 `gcov` 和 `gcov-tool`（只实测过本手册附带的 GCC 16.2；按 gcov 手册最低要 GCC 9，9 到 15 都没有实测过）；
   Rust 要 `llvm-profdata` 和 `llvm-cov`，而且必须与编译被测服务的 rustc 同版本。
   4.2 配好的 PATH 已经全部包含。也可以用启动参数指定绝对路径，比如
   `--coverage.go-tool=<go.exe 路径>`（同类的还有 `--coverage.gcov-tool`、`--coverage.gcov-merge-tool`、

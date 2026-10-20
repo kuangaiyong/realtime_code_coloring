@@ -128,7 +128,8 @@ public class CppCoverageAnalyzer {
      * 而 gcov 照样退出 0：报告静默少一个文件，或少一截行。2026-10-01 发版前的全量验收撞上过一次
      * （拿 demo 的真实数据对照过，两种格式解出的结果逐字段相同）。
      * 用长选项是因为短选项 {@code -j} 在 GCC 9、10 里是 --human-readable（那两版的 JSON 是 {@code -i}），
-     * 照样退出 0、出的却是文本；长选项从 GCC 9 起一直是 JSON，与 {@code -t} 同版出现，最低版本没有因此抬高。
+     * 照样退出 0、出的却是文本；长选项从 GCC 9 起一直是 JSON，与 {@code -t} 同版出现，最低版本没有因此抬高
+     * （以上各版本的说法取自 gcov 手册，平台只在 GCC 16.2 上实测过）。
      * {@code -t} 让结果走标准输出，不在源码树里留下文件；{@code -r} 只出相对路径的源码，把系统头文件挡在外面。
      */
     private String runGcov(Path profileDir, List<Path> gcno) throws IOException {
@@ -440,7 +441,7 @@ public class CppCoverageAnalyzer {
 
     /**
      * 这一行归哪个函数。先信 gcov 标的 {@code function_name}，但要那个函数的范围真包含这一行 ——
-     * GCC 9、10 标的是「最后一个开始的函数」，lambda 结束后的行也标成 lambda；GCC 11 起按结束行维护嵌套栈，
+     * 据 GCC 源码，9、10 标的是「最后一个开始的函数」（没有实测过），lambda 结束后的行也标成 lambda；GCC 11 起按结束行维护嵌套栈，
      * 可两层在同一行结束时也只弹一层。不包含就归给包含这一行的最内层函数（范围最小的那个）；
      * 一个都不包含时返回 ""，这一行不进任何方法
      */
