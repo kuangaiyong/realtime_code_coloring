@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 归一化层（Rust）：.profraw → 行级覆盖模型。
@@ -92,7 +93,7 @@ public class RustCoverageAnalyzer {
         // 泛型单态化会让同一个函数出现多条 FN 记录，逐条累加会把分母放大
         Map<String, int[]> fnByFile = new LinkedHashMap<>();
         // 方法明细：FN 给「行号,符号」，FNDA 给「执行次数,符号」，两者按符号配对。
-        // 按符号去重（LinkedHashMap 天然去重）—— 泛型单态化会让同一个函数出现多条 FN
+        // 泛型单态化出的几个实例符号各不相同，按符号去不了重 —— 合并在 methodsOf 里按源码定义做
         Map<String, Map<String, int[]>> fnDetail = new LinkedHashMap<>();
         String currentPath = null;
         List<FileCoverage.LineCoverage> current = null;
@@ -233,20 +234,91 @@ public class RustCoverageAnalyzer {
             throw new IOException("Rust 覆盖数据里 " + badCount
                     + " 行的执行次数全部算不出来，没有一行可用（首例：" + badSample + "）");
         }
+        String mismatch = methodCountMismatch(result.values());
+        if (mismatch != null && WARNED_MISMATCHES.add(mismatch)) {
+            log.warn(mismatch);
+            if (WARNED_MISMATCHES.size() > 1000) {
+                WARNED_MISMATCHES.clear();
+            }
+        }
         return result;
     }
 
-    /** 把一个文件的 FN/FNDA 配对结果转成方法明细。没有记录时给空列表而不是 null */
+    /**
+     * 已经记过的「对不上」。它是持续状态（某个符号一直认不出），不像 DA 下溢那样时有时无 ——
+     * 每轮都记的话 3 秒一条、一天近三万条，把真正的新告警淹掉。所以同一句话只记一次；
+     * 数字变了（又有方法被调用、换了一份产物）就是新的一句，照记。上限只为长跑下不无限增长
+     */
+    private static final Set<String> WARNED_MISMATCHES = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 方法明细与文件级方法数对得上时返回 null；对不上时返回一句点名首个文件与两边数字的话（只进日志）。
+     *
+     * <p>文件级方法数是 llvm-cov 自己的汇总（FNF / FNH），方法明细是平台按源码定义合并出来的 ——
+     * 合并认错了，两者就对不上，页面上表现为文件那一行写 N 个方法、点进去条数不同。
+     * 不为它拒绝出报告：方法明细不进覆盖率数字、不进门禁，此时行覆盖与文件级方法数仍然是对的；但原因必须看得到。
+     * 只看得出条数上的不一致：一处多并、一处少并恰好抵消时看不出来 —— lcov 里没有列号，拿不到能逐条比对的真值
+     */
+    static String methodCountMismatch(Collection<FileCoverage> files) {
+        List<String> bad = new ArrayList<>();
+        for (FileCoverage f : files) {
+            if (f.methods() == null || f.coveredMethods() == null || f.missedMethods() == null) {
+                continue;
+            }
+            long called = f.methods().stream().filter(m -> m.coveredLines() > 0).count();
+            int total = f.coveredMethods() + f.missedMethods();
+            if (f.methods().size() != total || called != f.coveredMethods()) {
+                bad.add(f.path() + " 明细 " + f.methods().size() + " 条（已调用 " + called + "），FNF "
+                        + total + " / FNH " + f.coveredMethods());
+            }
+        }
+        if (bad.isEmpty()) {
+            return null;
+        }
+        return "Rust 方法明细与文件级方法数对不上的文件有 " + bad.size() + " 个，首例：" + bad.get(0)
+                + "（明细是平台按源码定义合并的，FNF / FNH 是 llvm-cov 的汇总）";
+    }
+
+    /** 合并进同一条方法明细的那几个实例 */
+    private static final class Instances {
+        final int firstLine;
+        boolean called;
+        final List<List<String>> names = new ArrayList<>();
+
+        Instances(int firstLine) {
+            this.firstLine = firstLine;
+        }
+    }
+
+    /**
+     * 把一个文件的 FN/FNDA 配对结果转成方法明细。没有记录时给空列表而不是 null。
+     *
+     * <p>按「FN 行号 + 源码定义」合并：泛型单态化出的几个实例各有一条 FN 记录，而 llvm-cov 的 FNF 按源码只算一个 ——
+     * 逐条出的话，报表上文件那一行写 5 个方法、点进去列出 6 条，其中两条同名同行号。
+     * 只比「行号 + 名字」不行：同一行的两个闭包名字也相同（RustSymbol 里有实测）。
+     * 认不出结构的符号以原符号为键单独成一条：宁可多一条，也不把认不出的东西硬并成一个
+     */
     private static List<FileCoverage.MethodCoverage> methodsOf(Map<String, int[]> fns) {
         if (fns == null) {
             return List.of();
         }
+        Map<String, Instances> groups = new LinkedHashMap<>();
+        fns.forEach((sym, v) -> {
+            RustSymbol rs = RustSymbol.parse(sym);
+            // 定义键都以路径标签（大写字母）开头，加个 ? 前缀的原符号撞不上任何一个
+            String def = rs != null ? rs.definition() : "?" + sym;
+            Instances g = groups.computeIfAbsent(v[0] + " " + def, k -> new Instances(v[0]));
+            // 任一实例跑过即为已调用：与 llvm-cov 的 FNH 同一口径（一组里各实例的次数相加大于 0）
+            g.called |= v[1] > 0;
+            // 退回扫描法时也拆成段，与按结构取的名字同一种表示，commonName 才能逐段比
+            g.names.add(rs != null && !rs.nameParts().isEmpty() ? rs.nameParts() : List.of(readableName(sym).split("::")));
+        });
         List<FileCoverage.MethodCoverage> out = new ArrayList<>();
-        fns.forEach((sym, v) -> out.add(new FileCoverage.MethodCoverage(
-                readableName(sym), v[0],
+        groups.values().forEach(g -> out.add(new FileCoverage.MethodCoverage(
+                String.join("::", RustSymbol.commonName(g.names)), g.firstLine,
                 // 行覆盖按「这个函数跑没跑过」记：lcov 的 FNDA 只给调用次数，
                 // 拿不到函数的行范围。1/1 或 0/1 至少是真的，编一个行数才是错的
-                v[1], 1 - v[1],
+                g.called ? 1 : 0, g.called ? 0 : 1,
                 // 分支恒为 null，理由同文件级：rustc stable 不生成分支数据
                 null, null)));
         return out;
@@ -254,6 +326,9 @@ public class RustCoverageAnalyzer {
 
     /**
      * 从 Rust 的 <b>v0 mangled</b> 符号里抽出可读的名字。
+     *
+     * <b>方法明细的名字由 {@link RustSymbol} 按结构给出，这里只是它认不出结构时的退路</b>：
+     * 扫描法分不出哪段是类型实参、哪段是 const 值，会把它们也扫进名字（{@code pick::Order}、{@code flag::_}）。
      *
      * 实测本项目的符号是 v0（{@code _R} 开头），不是 legacy 的 {@code _ZN...E} ——
      * 两者是完全不同的两套编码，别照着 legacy 的规则去解。

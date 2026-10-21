@@ -4,6 +4,7 @@
 //! 构建时用 -C link-arg 注入，靠 .CRT$XCU 段的函数指针在 main 之前自动执行。
 //! 本文件不 mod 它、不 use 它、不调用它任何东西，Cargo.toml 里也没有它。
 mod order;
+mod pricing;
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -88,6 +89,10 @@ fn handle(stream: &mut TcpStream, target: &str, store: &Store) {
         };
         let r = store.refund(&biz_no, amount);
         send_json(stream, format!(r#"{{"ok":true,"data":"{}"}}"#, json_escape(&r)));
+    } else if path == "/api/order/fee" {
+        let amount = query_param(target, "amount").parse::<i64>().unwrap_or(0);
+        let fee = pricing::fee(amount, query_param(target, "unit") == "cents");
+        send_json(stream, format!(r#"{{"ok":true,"data":{}}}"#, fee));
     } else {
         send_json(stream, r#"{"ok":false,"data":"NO_ROUTE"}"#.to_string());
     }

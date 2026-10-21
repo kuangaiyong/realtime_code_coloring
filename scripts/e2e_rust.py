@@ -12,7 +12,9 @@ P4 端到端验收：Rust 接入。真实 Rust 服务、真实 LLVM 插桩、真
   4. 多个 Rust 实例聚合成并集 —— 走的是第四条合并路径（llvm-profdata merge，
      在 .profraw 原生层面合并），合错了就是静默少算；
   5. 场景归因对 Rust 同样成立 —— 只在 Rust 上跑的场景不该染到其他语言的代码；
-  6. 版本一致性校验覆盖 Rust —— Rust 源码相对产物漂移时，增量口径拒绝出报告并点名 Rust 文件。
+  6. 版本一致性校验覆盖 Rust —— Rust 源码相对产物漂移时，增量口径拒绝出报告并点名 Rust 文件；
+  7. 同一个泛型被单态化成好几个实例时，方法明细按源码合并 —— 一个定义一条、任一实例跑过即为已调用、
+     条数与文件级方法数相等；行也按源码合并，与 C++ 模板按实例分开计是有意的差异。
 
 被测 Rust 服务的既有业务源码一行未改，连 Cargo.toml 都没动：探针是单独编译的 .o，
 构建时经 -C link-arg 注入，靠 .CRT$XCU 段里的函数指针在 main 之前自动执行。
@@ -36,6 +38,7 @@ CPP = "http://localhost:18060"
 GO = "http://localhost:18070"
 JAVA = "http://localhost:18080"
 RUSTFILE = "demo-service-rust/src/order.rs"
+PRICING = "demo-service-rust/src/pricing.rs"
 CPPFILE = "demo-service-cpp/order.cpp"
 GOFILE = "demo-service-go/main.go"
 JAVAFILE = "demo-service/src/main/java/com/shop/order/service/OrderService.java"
@@ -264,6 +267,98 @@ def main():
     else:
         print(f"  [FAIL] Rust 源码已恢复，平台仍拒绝出报告：{status}")
         ok = False
+
+    # ---- 7. 同一个泛型被单态化成好几个实例：方法明细按源码合并 ----
+    # pricing.rs 的 clamp_to 以 i64（手续费接口默认走这个）与 Cents（只有带 unit=cents 才走）两种类型实例化。
+    # rustc 给每个实例各编一份机器码、llvm-cov 各给一条函数记录，文件级方法数（FNF）却按源码只算一个。
+    # 逐条出方法明细的话：文件那一行写 2 个方法，钻进去列出 3 条 —— clamp_to 一条已调用、一条未调用，
+    # Cents 那条的名字里还混着类型名。行也按源码合并：clamp_to 里跑过的行就是已覆盖，没有部分覆盖 ——
+    # 与 C++ 模板的口径不同是有意的（openspec：rust-normalization）
+    print("\n  >> 泛型单态化：手续费接口只走 i64 那个实例（不带 unit=cents，Cents 实例一次都不跑）")
+
+    def verdict(passed, good, bad):
+        nonlocal ok
+        print(f"  [PASS] {good}" if passed else f"  [FAIL] {bad}")
+        ok = ok and passed
+
+    def consistent_rust_view():
+        """文件级方法数取自 summary、方法明细取自逐个文件的 detail，是几次独立的请求 —— 中间若换了一轮采集
+        （实例瞬时掉线、数据变了），父子比对就会报出一个根本不存在的不一致。前后两次 summary 的文件级方法数相同
+        且实例全在线，夹在中间取的明细才算数。重试的是取数，不是断言（CLAUDE.md §三 坑 4）"""
+        def counts(s):
+            return {f["path"]: (f["coveredMethods"], f["missedMethods"]) for f in s["files"] if f["path"].endswith(".rs")}
+        for attempt in range(1, 4):
+            before = must(*http(f"{PLATFORM}/api/coverage/summary"), what="/api/coverage/summary")
+            details = {p: detail(p) for p in counts(before)}
+            after = must(*http(f"{PLATFORM}/api/coverage/summary"), what="/api/coverage/summary")
+            # 本节只依赖 Rust 的数据：别的语言瞬时掉线不该把这一节拖成「判不了」
+            offline = [i["endpoint"] for i in after["instances"]
+                       if i["endpoint"].startswith("rust://") and i["status"] != "CONNECTED"]
+            if counts(before) == counts(after) and not offline:
+                return after, details
+            print(f"     第 {attempt} 次取数不自洽：" + (f"掉线 {offline}" if offline else "两次 summary 之间文件级方法数变了"))
+            time.sleep(3)
+        return None, None
+
+    status, body = http(f"{RUST}/api/order/fee?amount=30000")
+    print(f"     GET {RUST}/api/order/fee?amount=30000 → {status} {json.dumps(body, ensure_ascii=False)}")
+    # 先等这次调用的数据真的到了：i64 那条路的调用行变绿
+    i64_call = "clamp_to(amount / 100, 50, 5000)"
+    arrived = status == 200 and body.get("data") == 300 and wait_until(
+        lambda: True if any(r["text"].strip() == i64_call and r["status"] == "COVERED"
+                            for r in detail(PRICING).get("rows", [])) else None)
+    s, details = consistent_rust_view() if arrived else (None, None)
+    pf = next((x for x in s["files"] if x["path"] == PRICING), None) if s else None
+    if not arrived:
+        # 平台自己的说法（归一化失败时 probeStatus 是 ANALYZE_ERROR、lastError 里有工具原话）比「没变绿」有用得多
+        s0 = http(f"{PLATFORM}/api/coverage/summary")[1]
+        print(f"  [FAIL] 判不了：手续费接口应返回 300（30000 的 1%，落在 50 与 5000 之间），实际 {status} {body}；"
+              f"或调用之后 {PRICING} 里「{i64_call}」一直没变绿。"
+              f"平台此刻 probeStatus={s0.get('probeStatus')}，lastError={s0.get('lastError')}")
+        ok = False
+    elif pf is None:
+        print("  [FAIL] 判不了：连取 3 次，summary 与方法明细都不是同一份数据（原因见上面每一次）")
+        ok = False
+    else:
+        d = details[PRICING]
+        rows = {r["text"].strip(): r for r in d["rows"]}
+        methods = d.get("methods") or []
+        names = [m["name"] for m in methods]
+        sig = rows.get("pub fn clamp_to<T: PartialOrd>(value: T, lo: T, hi: T) -> T {")
+        # 按首行号筛而不是按名字：没合并时 Cents 那条的名字是 clamp_to::Cents，按名字筛会看不见它
+        at_sig = [m for m in methods if sig and m["firstLine"] == sig["line"]]
+        verdict(len(at_sig) == 1 and at_sig[0]["name"] == "demo_service_rust::pricing::clamp_to"
+                and at_sig[0]["coveredLines"] == 1 and at_sig[0]["missedLines"] == 0,
+                f"clamp_to 签名那一行（L{sig['line'] if sig else '?'}）在方法明细里只有一条、已调用"
+                f"（Cents 那个实例没跑，也没多出一条未调用）",
+                f"clamp_to 签名那一行（L{sig['line'] if sig else '?'}）应恰好一条已调用的 "
+                f"demo_service_rust::pricing::clamp_to，实际 {at_sig}；全部方法 {names}")
+        verdict(not any("Cents" in n for n in names),
+                "方法名里没有混进类型实参 Cents",
+                f"方法名里混进了类型实参：{[n for n in names if 'Cents' in n]}")
+        verdict((pf["coveredMethods"], pf["missedMethods"]) == (2, 0),
+                "pricing.rs 的文件级方法数：已调用 2（clamp_to、fee）、未调用 0 —— 按源码计，不随实例数变",
+                f"pricing.rs 的方法应为已调用 2、未调用 0，实际 {pf['coveredMethods']}/{pf['missedMethods']}")
+
+        # 父子对得上：每个 Rust 文件的方法明细条数 = 文件级方法数，已调用条数 = 文件级已调用数
+        mismatched = []
+        for f in (x for x in s["files"] if x["path"].endswith(".rs")):
+            ms = details[f["path"]].get("methods") or []
+            called = sum(1 for m in ms if m["coveredLines"] > 0)
+            if (len(ms), called) != (f["coveredMethods"] + f["missedMethods"], f["coveredMethods"]):
+                mismatched.append(f"{f['path']} 明细 {len(ms)} 条（已调用 {called}），"
+                                  f"文件级 {f['coveredMethods'] + f['missedMethods']} 个（已调用 {f['coveredMethods']}）")
+        verdict(not mismatched,
+                "每个 Rust 文件的方法明细条数都等于文件级方法数，已调用条数也相等",
+                f"方法明细与文件级方法数对不上：{mismatched}")
+
+        want = {"value": "COVERED", "return lo;": "MISSED", "return hi;": "MISSED",
+                "return clamp_to(Cents(amount / 100), Cents(50), Cents(5000)).0;": "MISSED"}
+        got = {t: (rows.get(t) or {}).get("status") for t in want}
+        verdict(got == want,
+                "行按源码合并：clamp_to 里跑过的 value 是已覆盖（不判部分覆盖），"
+                "return lo / return hi 与只有 Cents 才走的那行未覆盖",
+                f"pricing.rs 的行状态应为 {want}，实际 {got}")
 
     print("\n" + "-" * 78)
     print("  验收结论：" + ("全部通过" if ok else "存在失败项"))

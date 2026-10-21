@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -245,9 +247,8 @@ class RustCoverageAnalyzerTest {
 
         FileCoverage f = a.parse(lcovWithMethods(repo)).get("demo-service-rust/src/order.rs");
         // 父子必须对得上：报表上一层写 3 个方法、钻进去只有 2 条，页面无法自圆其说。
-        // 泛型单态化会让同一个函数出现多条 FN 记录，真出现重复时这条会挂 ——
-        // 那时要么把文件级计数也改成从去重列表派生，要么 Rust 不进方法明细，
-        // 必须显式二选一，不能让父子悄悄对不上
+        // 泛型单态化会让同一个函数出现多条 FN 记录 —— 按源码定义合并后父子才对得上，
+        // 见「泛型的各个实例在方法明细里按源码定义合并」
         assertEquals(f.coveredMethods() + f.missedMethods(), f.methods().size(),
                 "方法明细条数与文件级计数对不上");
     }
@@ -377,5 +378,144 @@ class RustCoverageAnalyzerTest {
             assertTrue(e.getMessage().contains("FNDA:" + bad), "要带出原始记录：" + e.getMessage());
             assertTrue(e.getMessage().contains("rustc"), "要点出多半是工具链变了：" + e.getMessage());
         }
+    }
+
+    /**
+     * 实验 crate 的真实 lcov：14 种写法、52 条 FN 记录，llvm-cov 自己的汇总是 FNF 29 / FNH 27。
+     *
+     * <p>怎么来的（2026-10-21）：src/test/resources/rust-generics/generics.rs 作为一个名为 rtcc_generics2 的 crate 的
+     * src/main.rs，照 run_local.sh 的 build_rust 参数构建（x86_64-pc-windows-msvc、-C instrument-coverage、release、
+     * rust-lld + xwin，rustc 1.97.1，不链探针），直接运行一次，再 llvm-profdata merge -sparse、
+     * llvm-cov export --format=lcov。只改了一处：SF 的绝对路径换成 {@code @REPO@} 占位，读的时候换成临时仓库。
+     */
+    private String lcovGenerics(Path repo) throws IOException {
+        try (InputStream in = getClass().getResourceAsStream("/rust-generics/generics.lcov")) {
+            assertNotNull(in, "测试资源 rust-generics/generics.lcov 不在 classpath 上");
+            String abs = repo.toAbsolutePath().normalize().toString().replace('\\', '/');
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8).replace("@REPO@", abs);
+        }
+    }
+
+    private static String names(List<FileCoverage.MethodCoverage> ms) {
+        return ms.stream().map(m -> "L" + m.firstLine() + " " + m.name()).toList().toString();
+    }
+
+    @Test
+    void 泛型的各个实例在方法明细里按源码定义合并(@TempDir Path repo) throws Exception {
+        FileCoverage f = new RustCoverageAnalyzer(props(repo, "x.exe"), new CoverageProperties())
+                .parse(lcovGenerics(repo)).get("demo-service-rust/src/generics.rs");
+        assertNotNull(f, "没解析出文件");
+        List<FileCoverage.MethodCoverage> ms = f.methods();
+
+        // 文件那一行写「27/29 个方法」，点进去也得是 29 条、27 条已调用 —— 逐符号出的话是 52 条
+        assertEquals(29, f.coveredMethods() + f.missedMethods(), "文件级方法数取 FNF，不变");
+        assertEquals(27, f.coveredMethods(), "文件级已调用取 FNH，不变");
+        assertEquals(29, ms.size(), "方法明细条数应等于 FNF：" + names(ms));
+        assertEquals(27, ms.stream().filter(m -> m.coveredLines() > 0).count(), "已调用条数应等于 FNH：" + names(ms));
+
+        // 每个泛型定义只有一条
+        for (String n : List.of("rtcc_generics2::larger", "rtcc_generics2::pick", "rtcc_generics2::describe",
+                "rtcc_generics2::ident", "rtcc_generics2::arr_len", "rtcc_generics2::sum_all",
+                "rtcc_generics2::Wrapper::show", "rtcc_generics2::Greet::hi", "rtcc_generics2::Tagged::tag",
+                "rtcc_generics2::Wrapper::core::fmt::Display::fmt")) {
+            assertEquals(1, ms.stream().filter(m -> m.name().equals(n)).count(), n + " 应恰好一条：" + names(ms));
+        }
+        // 现有扫描法给出的那些名字不能再出现：类型实参、实现类型、const 值都不该进名字
+        for (String old : List.of("rtcc_generics2::pick::Order", "rtcc_generics2::describe::alloc::string::String",
+                "rtcc_generics2::arr_len::_E", "rtcc_generics2::flag::_", "rtcc_generics2::A::Greet::hi",
+                "rtcc_generics2::Order::Tagged::tag")) {
+            assertTrue(ms.stream().noneMatch(m -> m.name().equals(old)), "还在用旧名字 " + old + "：" + names(ms));
+        }
+        // 同一行（第 25 行）上两个不同的闭包仍是两条 —— 只按「行号 + 名字」合并会把它们并成一条
+        assertEquals(2, ms.stream().filter(m -> m.firstLine() == 25).count(), names(ms));
+        // 没被执行的泛型：被引用的（never_called，有 u8 实例）与完全没被引用的（never_referenced，只有占位实例）都是一条未调用
+        for (String n : List.of("rtcc_generics2::never_called", "rtcc_generics2::never_referenced")) {
+            List<FileCoverage.MethodCoverage> hit = ms.stream().filter(m -> m.name().equals(n)).toList();
+            assertEquals(1, hit.size(), n + "：" + names(ms));
+            assertEquals(0, hit.get(0).coveredLines(), n + " 没被执行");
+        }
+        // 行覆盖不受影响：仍逐行取 DA（122 行，其中 115 行跑过）
+        assertEquals(122, f.coveredLines() + f.missedLines());
+        assertEquals(115, f.coveredLines());
+    }
+
+    @Test
+    void 只要有一个实例跑过就算已调用(@TempDir Path repo) throws Exception {
+        // 真实符号 larger::<i32> 与 larger::<f64>，把 i32 那个的执行次数改成 0：
+        // 演示服务的 clamp_to 就是这种情形 —— 手续费接口只跑 i64 那个实例。
+        // 两种先后顺序都要试：不能是「第一个实例说了算」，也不能是「最后一个实例说了算」
+        String i32 = "_RINvCsoL4aAQfs_14rtcc_generics26largerlEB2_";
+        String f64 = "_RINvCsoL4aAQfs_14rtcc_generics26largerdEB2_";
+        String abs = repo.toAbsolutePath().normalize().toString().replace('\\', '/');
+        for (List<String> order : List.of(List.of(i32, f64), List.of(f64, i32))) {
+            StringBuilder lcov = new StringBuilder("SF:" + abs + "/demo-service-rust/src/generics.rs\n");
+            order.forEach(sym -> lcov.append("FN:3,").append(sym).append('\n'));
+            order.forEach(sym -> lcov.append("FNDA:").append(sym.equals(f64) ? 1 : 0).append(',').append(sym).append('\n'));
+            lcov.append("FNF:1\nFNH:1\nDA:3,1\nDA:4,1\nend_of_record\n");
+            FileCoverage f = new RustCoverageAnalyzer(props(repo, "x"), new CoverageProperties())
+                    .parse(lcov.toString()).get("demo-service-rust/src/generics.rs");
+
+            assertEquals(1, f.methods().size(), "两个实例应并成一条：" + names(f.methods()));
+            FileCoverage.MethodCoverage m = f.methods().get(0);
+            assertEquals("rtcc_generics2::larger", m.name());
+            assertEquals(3, m.firstLine());
+            assertEquals(1, m.coveredLines(), "有一个实例跑过就是已调用（顺序 " + order + "）");
+            assertEquals(0, m.missedLines(), "没跑过的那个实例不能让这一条变成「未调用」（顺序 " + order + "）");
+        }
+    }
+
+    /**
+     * 认不出结构的符号（这里在真实符号后面接了认不得的尾巴，模拟 rustc 将来的新写法）：
+     * 宁可多一条，也不把两个不知道是什么的东西硬并成一个；其余方法、行覆盖照常。
+     */
+    private String lcovUnknownSymbols(Path repo) {
+        String abs = repo.toAbsolutePath().normalize().toString().replace('\\', '/');
+        return """
+                SF:%s/demo-service-rust/src/x.rs
+                FN:5,_RNvCs2r1QDoXLnWk_17demo_service_rust4main
+                FN:9,_RNvCs2r1QDoXLnWk_17demo_service_rust4mainZZ1
+                FN:9,_RNvCs2r1QDoXLnWk_17demo_service_rust4mainZZ2
+                FNDA:1,_RNvCs2r1QDoXLnWk_17demo_service_rust4main
+                FNDA:1,_RNvCs2r1QDoXLnWk_17demo_service_rust4mainZZ1
+                FNDA:0,_RNvCs2r1QDoXLnWk_17demo_service_rust4mainZZ2
+                FNF:2
+                FNH:2
+                DA:5,1
+                DA:9,1
+                end_of_record
+                """.formatted(abs);
+    }
+
+    @Test
+    void 认不出结构的符号单独成一条且其余照常(@TempDir Path repo) throws Exception {
+        FileCoverage f = new RustCoverageAnalyzer(props(repo, "x"), new CoverageProperties())
+                .parse(lcovUnknownSymbols(repo)).get("demo-service-rust/src/x.rs");
+        assertNotNull(f, "认不出的符号不能让整份数据失败");
+        assertEquals(2, f.lines().size(), "行覆盖不受影响");
+        assertEquals(3, f.methods().size(), names(f.methods()));
+        assertTrue(f.methods().stream().noneMatch(m -> m.name() == null || m.name().isBlank()), names(f.methods()));
+    }
+
+    @Test
+    void 条数对不上时说得出是哪个文件和两边的数字(@TempDir Path repo) throws Exception {
+        // 明细 3 条（认不出的两条各自一条）而 FNF 是 2：页面上会是「2/2 个方法」点进去 3 条
+        String why = RustCoverageAnalyzer.methodCountMismatch(new RustCoverageAnalyzer(props(repo, "x"),
+                new CoverageProperties()).parse(lcovUnknownSymbols(repo)).values());
+        assertNotNull(why, "对不上却没说");
+        assertTrue(why.contains("demo-service-rust/src/x.rs"), why);
+        assertTrue(why.contains("明细 3 条") && why.contains("FNF 2"), "要有两边的数字：" + why);
+    }
+
+    @Test
+    void 对得上时不报(@TempDir Path repo) throws Exception {
+        RustCoverageAnalyzer a = new RustCoverageAnalyzer(props(repo, "x.exe"), new CoverageProperties());
+        assertNull(RustCoverageAnalyzer.methodCountMismatch(a.parse(lcovGenerics(repo)).values()));
+        // 没有任何方法记录的文件：明细为空、FNF 缺省为 0，也是对得上的
+        String abs = repo.toAbsolutePath().normalize().toString().replace('\\', '/');
+        assertNull(RustCoverageAnalyzer.methodCountMismatch(a.parse("""
+                SF:%s/demo-service-rust/src/order.rs
+                DA:10,3
+                end_of_record
+                """.formatted(abs)).values()));
     }
 }
