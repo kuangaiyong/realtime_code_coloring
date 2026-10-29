@@ -181,7 +181,7 @@ export PATH="$JAVA_HOME/bin:/c/Users/Administrator/devtools/apache-maven-3.9.16/
 
 首次启动时平台会把 `application.yml` 里的 `coverage.*` 种进 `project` 表（id 为
 `default`）；**此后每次启动都从库里读，yml 的项目级配置不再生效**。改探针地址、
-产物目录、门禁阈值要改库里那份 JSON（页面上改是下一步的事）。
+产物目录、门禁阈值在页面的「项目设置」里改（存进库里那份 JSON），改 yml 不会生效。
 
 只有**平台级**配置例外：`go-tool` / `gcov-tool` / `gcov-merge-tool` /
 `llvm-profdata-tool` / `llvm-cov-tool` 这五个工具链路径，加上产物仓库的
