@@ -7,7 +7,7 @@ TBD - created by archiving change probe-transient-failure. Update Purpose after 
 
 ### Requirement: 探针瞬时连接失败必须与实例掉线区分开
 
-平台连接探针被**拒绝**（对端 RST）时，必须重试一次再下判断；
+平台连接探针被**拒绝**（对端 RST）时 SHALL 重试一次再下判断；
 只有重试后仍失败，才可以把该实例判为掉线。
 
 这条要求的存在理由是：把一台健康实例误报成掉线，与「出一份静默错误的报告」
