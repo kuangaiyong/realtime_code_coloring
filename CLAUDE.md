@@ -238,6 +238,8 @@ export PATH="$JAVA_HOME/bin:/c/Users/Administrator/devtools/apache-maven-3.9.16/
    **这条防护不能撤**：「一台取不到数」的来源不止一个 —— tcpserver 连接被拒已由 `ProbeClient` 重试一次修掉，
    平台侧解析失败（如 Rust 负载下的 u64 溢出）同样会让一台缺数。重试时打出的那一行若是 ANALYZE_ERROR，
    该查的是平台（产物、工具链、覆盖数据本身），不是那台实例。排查经过见 `Skill(rtcc-internals)`。
+   **判据本身也得是结构上必然成立的，不能只是「通常成立」**：`e2e_project.py` 的趋势隔离曾用「两个项目的已覆盖行数必然不同」判没串，
+   而默认项目的实例是超集、记录存的是峰值，Java / Go 被清零后两边恰好相等（2026-10-29 假失败）—— 改用结构上必然不同的文件数。
 5. **`verify` 假定平台已经在跑**。它只重启被测实例，不启动平台；平台没起时
    第一套用例就以「连接被拒绝」失败。更麻烦的是它已经把 8 个被测实例拉起来了，
    而 Java 实例握着 `platform/target/classes/probe/jacocoagent.jar`，接着跑 `start` 会在
