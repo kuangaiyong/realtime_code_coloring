@@ -52,20 +52,35 @@ async function rejoinCase() {
   try {
     await new Promise((r, j) => { sock.once('connect', r); sock.once('error', j); })
       .catch(e => fail(`连不上 demo2 的探针端口 ${PROBE2}：${e.message}`));
+    // 认「聚合已经不含它」，不认「实例表说它掉了」：一轮里实例表在抓取完就更新，覆盖快照要等归一化跑完才换，
+    // probeStatus 与它点名的缺失实例在快照之后才写。只看实例表就去取行，可能取到上一轮还带着 demo2 的快照 ——
+    // 2026-10-29 实测实例表先变约 230ms，期间那几行 COVERED 8 / PARTIAL 2，之后全是 MISSED；
+    // 撞上这段空档就报「判不了」，偶发过两次（rtcc-internals「推送用例偶发判不了」）
     let down = false;
     for (let i = 0; i < 40 && !down; i++) {
       const s = await (await fetch(`${PLATFORM}/api/coverage/summary`)).json();
-      down = (s.instances || []).some(x => String(x.endpoint).includes(String(PROBE2)) && x.status !== 'CONNECTED');
+      down = s.probeStatus === 'PARTIAL' && String(s.lastError).includes(String(PROBE2));
       if (!down) await sleep(500);
     }
-    if (!down) fail(`判不了：占住 ${PROBE2} 20 秒，平台始终没把 demo2 判成取不到数`);
+    if (!down) fail(`判不了：占住 ${PROBE2} 20 秒，平台的聚合始终没有因为缺它而降级（probeStatus 不是 PARTIAL，或没点名 ${PROBE2}）`);
     const only2 = [];
+    // 掉线这一刻那几行各是什么状态：「判不了」时要原样带出来。这条偶发过两次、根因没查明，
+    // 只报一句结论的话下次撞上还是只能猜（见 rtcc-internals「推送用例偶发判不了」）
+    const seen = {};
     for (const c of fresh) {
       const d = await (await fetch(`${PLATFORM}/api/coverage/file?path=${encodeURIComponent(c.path)}`)).json();
       const st = new Map((d.rows || []).map(r => [r.line, r.status]));
-      for (const l of c.lines) if (st.get(l) === 'MISSED') only2.push(c.path + ':' + l);
+      for (const l of c.lines) {
+        const s = st.get(l) || '报告里没有这一行';
+        seen[s] = (seen[s] || 0) + 1;
+        if (s === 'MISSED') only2.push(c.path + ':' + l);
+      }
     }
-    if (!only2.length) fail('判不了：demo2 新跑出的行在它掉线后仍是已覆盖（别的实例也跑过），没有「失而复得」可验');
+    if (!only2.length) {
+      fail('判不了：demo2 掉线后，它新跑出的行没有一行变回未覆盖，没有「失而复得」可验。'
+        + `掉线时这些行的状态：${JSON.stringify(seen)}；新亮起的行：`
+        + fresh.map(c => `${c.path.split('/').pop()} L${c.lines.join(',')}`).join('；'));
+    }
 
     // 3) 放开，等这些行重新变绿；这期间的推送一行都不能把它们报成新亮起
     sock.destroy();
