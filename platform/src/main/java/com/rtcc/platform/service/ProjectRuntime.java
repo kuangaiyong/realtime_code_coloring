@@ -698,6 +698,16 @@ public class ProjectRuntime {
             throw new GateUndecidableException("认不出的口径 mode=" + mode
                     + "，只接受 " + MODE_INCREMENTAL + " 或 " + MODE_FULL);
         }
+        double threshold = incremental
+                ? props.getGate().getIncrementalThreshold()
+                : props.getGate().getOverallThreshold();
+        // 阈值不在 0–100（含 NaN）时门禁永远过不了，还会给出补了也过不了的「还需覆盖 N 行」——
+        // 把配置错误说成覆盖不达标。保存配置时已拦住，这里防的是不经过那道校验的两条路：
+        // 直接改库里的 JSON、首次启动从 yml 种进来的配置。与认不出的口径一样，配置本身无效就不必看数据
+        if (!(threshold >= 0 && threshold <= 100)) {
+            throw new GateUndecidableException((incremental ? "增量" : "全量") + "门禁阈值配置无效："
+                    + threshold + "，只能是 0 到 100，门禁不予判定。请在「项目设置」里改正");
+        }
         Scenario running = active;
         if (running != null) {
             // 场景 start 会清零全部实例的计数器，此后的比例只是这个场景窗口内的覆盖。
@@ -739,9 +749,6 @@ public class ProjectRuntime {
             missed += f.missedLines();
         }
         int total = covered + missed;
-        double threshold = incremental
-                ? props.getGate().getIncrementalThreshold()
-                : props.getGate().getOverallThreshold();
         res.put("threshold", threshold);
         res.put("coveredLines", covered);
         res.put("missedLines", missed);

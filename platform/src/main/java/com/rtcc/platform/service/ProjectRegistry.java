@@ -318,7 +318,9 @@ public class ProjectRegistry {
         }
         for (double th : new double[]{cfg.getGate().getIncrementalThreshold(),
                 cfg.getGate().getOverallThreshold()}) {
-            if (th < 0 || th > 100) {
+            // 写成「不在范围内」的反面而不是 th < 0 || th > 100：后者对 NaN 两边都是 false。
+            // 请求体里写字符串 "NaN"，Jackson 就会转成 NaN 放进来，之后门禁永远过不了
+            if (!(th >= 0 && th <= 100)) {
                 throw ProjectOperationException.invalid("门禁阈值只能是 0 到 100，实际为：" + th);
             }
         }

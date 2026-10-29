@@ -34,10 +34,11 @@ import static org.junit.jupiter.api.Assertions.*;
 class ProjectRuntimeTest {
 
     private ProjectRuntime runtime;
+    private ProjectConfig props;
 
     @BeforeEach
     void setUp() throws Exception {
-        ProjectConfig props = new ProjectConfig();
+        props = new ProjectConfig();
         props.setId("test");
         // 工具链路径与项目无关，取平台默认值即可：这些用例在够不到探针时就返回了，
         // 根本走不到调 covdata / gcov / llvm-cov 那一步
@@ -142,6 +143,32 @@ class ProjectRuntimeTest {
                     "mode=" + bad + " 必须拒判");
             assertTrue(e.getMessage().contains("认不出的口径"), e.getMessage());
         }
+    }
+
+    /**
+     * 阈值不在 0–100（含 NaN）时拒判。保存配置时已拦住，但直接改库里的 JSON、首次启动从 yml 种进来的配置
+     * 都不经过那道校验。不拦的话门禁永远判「不通过」，还给出补了也过不了的「还需覆盖 N 行」——
+     * 把配置错误说成覆盖不达标，CI 会让人去补测试（2026-10-29 实测：全量阈值 NaN 时门禁 200 + passed:false +
+     * 「低于阈值 NaN%，还需覆盖 1 行」）。与认不出的口径一样在最前面拒，不必等到有变更行才说
+     */
+    @Test
+    void 门禁阈值无效时拒判而不是永远判不通过() {
+        for (double bad : new double[]{Double.NaN, 120, -1}) {
+            props.getGate().setOverallThreshold(bad);
+            props.getGate().setIncrementalThreshold(bad);
+            for (String mode : new String[]{ProjectRuntime.MODE_FULL, ProjectRuntime.MODE_INCREMENTAL}) {
+                GateUndecidableException e = assertThrows(GateUndecidableException.class,
+                        () -> runtime.gate(mode, null), mode + " 阈值 " + bad);
+                assertTrue(e.getMessage().contains("门禁阈值") && e.getMessage().contains(String.valueOf(bad)),
+                        "要点名是哪个阈值、实际是多少：" + e.getMessage());
+            }
+        }
+        // 只看本口径的阈值：全量那个坏了，不该连累增量门禁（这里接着因探针状态不全而拒判，与阈值无关）
+        props.getGate().setOverallThreshold(Double.NaN);
+        props.getGate().setIncrementalThreshold(80);
+        GateUndecidableException e = assertThrows(GateUndecidableException.class,
+                () -> runtime.gate(ProjectRuntime.MODE_INCREMENTAL, null));
+        assertTrue(e.getMessage().contains("探针状态") && !e.getMessage().contains("门禁阈值"), e.getMessage());
     }
 
     @Test

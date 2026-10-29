@@ -113,7 +113,7 @@ def cleanup():
     # 必须把本脚本建过的每一个项目都删掉，包括中途用完就删的那两个。
     # 漏一个的话，脚本中途失败退出后残留在库里，下一次跑到那一步会撞 409，
     # 报出来的却是「gate 为空时建项目返回 409」这种与被测功能无关的失败
-    for pid in (P1, P2, "gate-null-test", "db-down-test"):
+    for pid in (P1, P2, "gate-null-test", "nan-gate-test", "db-down-test"):
         http(f"{PLATFORM}/api/projects/{pid}", method="DELETE")
 
 
@@ -198,6 +198,18 @@ def main():
     st, _ = http(f"{PLATFORM}/api/projects/brick-test")
     check(st == 404, "被拒的配置没有留在库里（留下的话平台下次就起不来了）",
           f"被拒的配置竟然留下了：HTTP {st}")
+
+    # 回归：门禁阈值写成字符串 "NaN" 时 Jackson 会转成 NaN，而原先的校验 th < 0 || th > 100 对 NaN 两边都是 false ——
+    # 保存被放行，之后门禁永远判「不通过」，还说「还需覆盖 1 行」（2026-10-29 用这条接口复现过）
+    nan_gate = make("nan-gate-test", "阈值写成 NaN", jvmgo)
+    nan_gate["gate"] = dict(base.get("gate") or {})
+    nan_gate["gate"]["overallThreshold"] = "NaN"
+    st, body = http(f"{PLATFORM}/api/projects", method="POST", body=nan_gate)
+    check(st == 400 and "门禁阈值" in str(body.get("error", "")),
+          f"门禁阈值写成 NaN 被拒（400）：{body.get('error')}",
+          f"门禁阈值写成 NaN 返回 {st}: {body}")
+    if st == 200:
+        http(f"{PLATFORM}/api/projects/nan-gate-test", method="DELETE")
 
     # 请求体里显式写 gate:null 时 Jackson 会把默认值抹掉，之后门禁接口必 NPE ——
     # CI 拿到的是 500，而按本项目的约定「判不了」只应该是 409
