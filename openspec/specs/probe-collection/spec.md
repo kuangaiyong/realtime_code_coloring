@@ -1,7 +1,7 @@
 # probe-collection Specification
 
 ## Purpose
-TBD - created by archiving change probe-transient-failure. Update Purpose after archive.
+平台连接被测实例的探针、取回覆盖数据时，如何区分「瞬时连不上」与「实例真的掉线」：连接被拒要重试一次再下判断，超时则立即判失败 —— 既不把一台健康实例误报成掉线（那会把人引向一台没问题的机器，并让多实例聚合等依赖实例齐全的判断失去前提），也不让重试拖长单轮采集的最坏耗时。
 
 ## Requirements
 
