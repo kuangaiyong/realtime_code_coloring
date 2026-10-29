@@ -218,4 +218,39 @@ class ProjectRuntimeTest {
                 + "出现了就意味着页面上会显示一个 0%，而那是假的");
         assertFalse(byLang.containsKey("rust"), "Rust 不提供分支，同理");
     }
+
+    /** 与门禁判 passed 同一个舍入口径：Math.round(x × 10) / 10 */
+    private static double rounded(int covered, int total) {
+        return Math.round(covered * 100d / total * 10) / 10d;
+    }
+
+    /**
+     * 「还需覆盖 N 行」要是能过阈值的<b>最小</b>那个 N：补上 N 行按门禁自己的舍入口径能过，少补一行不能。
+     * 门禁按舍入后的值判 —— 79.95% 显示成 80.0% 就算过；只按原始比例估行数会多报，
+     * 照着补完的人发现其实少测一行也能过，这句话就不可信了（2026-10-29 verify 实测：增量 6/429、阈值 80%，
+     * 报 338 行，补 337 行已是 343/429 = 79.953% → 80.0%）
+     */
+    @Test
+    void 还需覆盖的行数是能过阈值的最小值() {
+        assertEquals(337, ProjectRuntime.linesToPass(6, 429, 80.0));
+        int checked = 0;
+        for (int total = 1; total <= 600; total++) {
+            // 不在 0.1 格子上的阈值走的是另一个方向：按原始比例估少了，要往上补（33.33 要显示到 33.4 才算过）
+            for (double threshold : new double[]{50.0, 79.9, 80.0, 85.5, 99.9, 100.0,
+                    33.33, 66.67, 80.01, 80.05, 99.95}) {
+                for (int covered = 0; covered < total; covered += Math.max(1, total / 7)) {
+                    if (rounded(covered, total) >= threshold) {
+                        continue;   // 已经过了，门禁不会说「还需覆盖」
+                    }
+                    int n = ProjectRuntime.linesToPass(covered, total, threshold);
+                    String at = covered + "/" + total + " 阈值 " + threshold + " → " + n;
+                    assertTrue(n >= 1 && covered + n <= total, at);
+                    assertTrue(rounded(covered + n, total) >= threshold, "补满还过不了：" + at);
+                    assertTrue(n == 1 || rounded(covered + n - 1, total) < threshold, "少一行也能过：" + at);
+                    checked++;
+                }
+            }
+        }
+        assertTrue(checked > 10_000, "遍历的组合太少，可能没跑到：" + checked);
+    }
 }
