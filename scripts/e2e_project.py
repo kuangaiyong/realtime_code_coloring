@@ -358,11 +358,14 @@ def main():
               "两个项目各自都有趋势记录",
               f"趋势记录缺失：{P2}={b2} default={bd}")
         if b2 and bd:
-            # 同一个 commit 下，两个项目盯的实例不同、覆盖行数必然不同。
-            # 主键里没有 project_id 的话它们会写进同一行互相覆盖，这里就会读到同一个数字
-            check(b2["buildCommit"] == bd["buildCommit"] and b2["coveredLines"] != bd["coveredLines"],
-                  f"同一 commit 下两个项目的记录各自独立（{P2} {b2['coveredLines']} 行 / "
-                  f"default {bd['coveredLines']} 行）",
+            # 主键里没有 project_id 的话，两个项目会写进同一行互相覆盖，两次读到的就是同一条记录。
+            # 判「串了」不能看已覆盖行数：默认项目盯的实例是 P2 的超集，记录存的又是峰值 ——
+            # 默认项目达到峰值那一刻 Java / Go 恰好一行没覆盖时（P1 的场景刚把它们清零），两边的已覆盖必然相等
+            # （2026-10-29 verify 实测：都是 106 行，而未覆盖 218 / 402、文件 6 / 11 各不相同）。
+            # 文件数才是结构上必然不同的：两个项目的文件不相交、默认项目是并集（上面验过）
+            check(b2["buildCommit"] == bd["buildCommit"] and b2["fileCount"] != bd["fileCount"] and b2 != bd,
+                  f"同一 commit 下两个项目的记录各自独立（{P2} {b2['fileCount']} 个文件 {b2['coveredLines']} 行 / "
+                  f"default {bd['fileCount']} 个文件 {bd['coveredLines']} 行）",
                   f"两个项目的趋势记录串了：{P2}={b2} default={bd}")
     print()
 
