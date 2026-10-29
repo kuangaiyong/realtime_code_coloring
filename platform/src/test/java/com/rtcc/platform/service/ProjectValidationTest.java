@@ -182,6 +182,26 @@ class ProjectValidationTest {
         }
     }
 
+    /**
+     * NaN 也得拦住：请求体里写字符串 "NaN"，Jackson 会把它转成 Double.NaN，而 {@code th < 0 || th > 100}
+     * 对 NaN 两边都是 false —— 保存被放行，之后门禁永远过不了，还说「还需覆盖 1 行」
+     * （2026-10-29 用真实接口复现：全量阈值写 "NaN" 建项目返回 200，门禁返回 200 + passed:false）
+     */
+    @Test
+    void 门禁阈值是NaN时同样拒绝() {
+        for (boolean incremental : new boolean[]{true, false}) {
+            ProjectConfig c = cfg("p1", "名字", List.of("localhost:6300"));
+            if (incremental) {
+                c.getGate().setIncrementalThreshold(Double.NaN);
+            } else {
+                c.getGate().setOverallThreshold(Double.NaN);
+            }
+            ProjectOperationException e = create(c);
+            assertEquals(HttpStatus.BAD_REQUEST, e.status(), incremental ? "增量阈值 NaN" : "全量阈值 NaN");
+            assertTrue(e.getMessage().contains("门禁阈值") && e.getMessage().contains("NaN"), e.getMessage());
+        }
+    }
+
     @Test
     void 写库失败时报503而不是400() {
         // 「你填错了」与「平台自己的依赖挂了」处置完全不同：一个该改了再存，一个该找人看平台

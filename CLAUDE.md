@@ -83,7 +83,7 @@
 | 8 | 多实例聚合 + 实例间版本校验 | `e2e_multi_instance.py`（Java）、`e2e_go.py`（Go）、`e2e_cpp.py`（C++）、`e2e_rust.py`（Rust） | 各实例覆盖取并集（`/api/coverage/instances` 按实例分别归一化，断言 单实例最大 ≤ 聚合 ≤ 相加 且 ≠ 相加）；掉线降级为 PARTIAL 并点名；实例间版本不一致时增量返回 409 |
 | 9 | Go 采集与归一化（多语言共存） | `scripts/e2e_go.py` | Go 行级染色与 Java 同等质量；清零生效；路径以仓库根为基准；跨语言场景归因互不越界 |
 | 10 | C++ 采集与归一化（多语言共存） | `scripts/e2e_cpp.py` | C++ 行级染色达到与 Java 同级的**四态**；清零生效（含删 .gcda）；三种语言共存于同一套口径；跨语言场景归因互不越界；**源码正被改写（为空 / 写了一半）时报告与源码完整时相同**（不缺文件、不少行）；**编译单元的 .gcno 坏了（gcov 崩溃 / 读不出函数）整轮 ANALYZE_ERROR 并点名是哪个**，换回完好的立即恢复；**同一段源码编进好几个函数实例时按源码口径计数**（被两个编译单元引用的内联函数跑全了就是已覆盖、分支不翻倍、只算一个方法；模板的每个实例在方法表里各占一行） |
-| 11 | Rust 采集与归一化（多语言共存） | `scripts/e2e_rust.py` | Rust 行级染色成立；清零生效（含删 .profraw）；四种语言共存于同一套口径；跨语言场景归因互不越界 |
+| 11 | Rust 采集与归一化（多语言共存） | `scripts/e2e_rust.py` | Rust 行级染色成立；清零生效（含删 .profraw）；四种语言共存于同一套口径；跨语言场景归因互不越界；**同一个泛型被单态化成几个实例时方法明细按源码合并**（一个定义一条、任一实例跑过即已调用、条数与文件级方法数相等；行也按源码合并，与 C++ 模板按实例分开计是有意的差异） |
 | 12 | 覆盖率门禁（判定与「判不了」分离） | `scripts/e2e_incremental.py`、`scripts/ws_verify.js` | 门禁给的数字与页面同一个四舍五入结果；空 diff 放行且 `actual` 为 null；源码漂移 / 基线不存在一律 409，绝不返回 200+`passed:false` |
 | 13 | 项目管理与配置热生效 | `scripts/e2e_project.py` | 建项目 / 改配置**不重启**即生效；填错分 400（你填错了）/ 409（现在不能做）/ 503（平台依赖挂了）三类；场景进行中拒绝保存（409）；产物目录指错报 ANALYZE_ERROR 并点名；数据库不可用时采集、门禁照常，只有保存配置 503；删项目连同它的趋势一起删（同 id 重建从空白开始） |
 | 14 | 多项目隔离 | `scripts/e2e_project.py`、`scripts/ws_verify.js` | 两个项目的覆盖快照 / 场景 / 趋势 / WebSocket 推送互不串；两项目文件集合不相交且并集等于默认项目；同一 commit 下趋势记录各自独立 |
@@ -181,7 +181,7 @@ export PATH="$JAVA_HOME/bin:/c/Users/Administrator/devtools/apache-maven-3.9.16/
 
 首次启动时平台会把 `application.yml` 里的 `coverage.*` 种进 `project` 表（id 为
 `default`）；**此后每次启动都从库里读，yml 的项目级配置不再生效**。改探针地址、
-产物目录、门禁阈值要改库里那份 JSON（页面上改是下一步的事）。
+产物目录、门禁阈值在页面的「项目设置」里改（存进库里那份 JSON），改 yml 不会生效。
 
 只有**平台级**配置例外：`go-tool` / `gcov-tool` / `gcov-merge-tool` /
 `llvm-profdata-tool` / `llvm-cov-tool` 这五个工具链路径，加上产物仓库的
@@ -238,6 +238,10 @@ export PATH="$JAVA_HOME/bin:/c/Users/Administrator/devtools/apache-maven-3.9.16/
    **这条防护不能撤**：「一台取不到数」的来源不止一个 —— tcpserver 连接被拒已由 `ProbeClient` 重试一次修掉，
    平台侧解析失败（如 Rust 负载下的 u64 溢出）同样会让一台缺数。重试时打出的那一行若是 ANALYZE_ERROR，
    该查的是平台（产物、工具链、覆盖数据本身），不是那台实例。排查经过见 `Skill(rtcc-internals)`。
+   **判据本身也得是结构上必然成立的，不能只是「通常成立」**：`e2e_project.py` 的趋势隔离曾用「两个项目的已覆盖行数必然不同」判没串，
+   而默认项目的实例是超集、记录存的是峰值，Java / Go 被清零后两边恰好相等（2026-10-29 假失败）—— 改用结构上必然不同的文件数。
+   **要在「某台掉线之后」的聚合上判断，认 `probeStatus` / `lastError`，别认 `instances`**：一轮里实例表抓到就更新，
+   覆盖快照要等归一化跑完才换（实测早约 230ms），`ws_verify` 的实例恢复用例因此偶发「判不了」（2026-10-29 查明，见 `Skill(rtcc-internals)`）。
 5. **`verify` 假定平台已经在跑**。它只重启被测实例，不启动平台；平台没起时
    第一套用例就以「连接被拒绝」失败。更麻烦的是它已经把 8 个被测实例拉起来了，
    而 Java 实例握着 `platform/target/classes/probe/jacocoagent.jar`，接着跑 `start` 会在

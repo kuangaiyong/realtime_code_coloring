@@ -113,7 +113,7 @@ def cleanup():
     # 必须把本脚本建过的每一个项目都删掉，包括中途用完就删的那两个。
     # 漏一个的话，脚本中途失败退出后残留在库里，下一次跑到那一步会撞 409，
     # 报出来的却是「gate 为空时建项目返回 409」这种与被测功能无关的失败
-    for pid in (P1, P2, "gate-null-test", "db-down-test"):
+    for pid in (P1, P2, "gate-null-test", "nan-gate-test", "db-down-test"):
         http(f"{PLATFORM}/api/projects/{pid}", method="DELETE")
 
 
@@ -198,6 +198,18 @@ def main():
     st, _ = http(f"{PLATFORM}/api/projects/brick-test")
     check(st == 404, "被拒的配置没有留在库里（留下的话平台下次就起不来了）",
           f"被拒的配置竟然留下了：HTTP {st}")
+
+    # 回归：门禁阈值写成字符串 "NaN" 时 Jackson 会转成 NaN，而原先的校验 th < 0 || th > 100 对 NaN 两边都是 false ——
+    # 保存被放行，之后门禁永远判「不通过」，还说「还需覆盖 1 行」（2026-10-29 用这条接口复现过）
+    nan_gate = make("nan-gate-test", "阈值写成 NaN", jvmgo)
+    nan_gate["gate"] = dict(base.get("gate") or {})
+    nan_gate["gate"]["overallThreshold"] = "NaN"
+    st, body = http(f"{PLATFORM}/api/projects", method="POST", body=nan_gate)
+    check(st == 400 and "门禁阈值" in str(body.get("error", "")),
+          f"门禁阈值写成 NaN 被拒（400）：{body.get('error')}",
+          f"门禁阈值写成 NaN 返回 {st}: {body}")
+    if st == 200:
+        http(f"{PLATFORM}/api/projects/nan-gate-test", method="DELETE")
 
     # 请求体里显式写 gate:null 时 Jackson 会把默认值抹掉，之后门禁接口必 NPE ——
     # CI 拿到的是 500，而按本项目的约定「判不了」只应该是 409
@@ -358,11 +370,14 @@ def main():
               "两个项目各自都有趋势记录",
               f"趋势记录缺失：{P2}={b2} default={bd}")
         if b2 and bd:
-            # 同一个 commit 下，两个项目盯的实例不同、覆盖行数必然不同。
-            # 主键里没有 project_id 的话它们会写进同一行互相覆盖，这里就会读到同一个数字
-            check(b2["buildCommit"] == bd["buildCommit"] and b2["coveredLines"] != bd["coveredLines"],
-                  f"同一 commit 下两个项目的记录各自独立（{P2} {b2['coveredLines']} 行 / "
-                  f"default {bd['coveredLines']} 行）",
+            # 主键里没有 project_id 的话，两个项目会写进同一行互相覆盖，两次读到的就是同一条记录。
+            # 判「串了」不能看已覆盖行数：默认项目盯的实例是 P2 的超集，记录存的又是峰值 ——
+            # 默认项目达到峰值那一刻 Java / Go 恰好一行没覆盖时（P1 的场景刚把它们清零），两边的已覆盖必然相等
+            # （2026-10-29 verify 实测：都是 106 行，而未覆盖 218 / 402、文件 6 / 11 各不相同）。
+            # 文件数才是结构上必然不同的：两个项目的文件不相交、默认项目是并集（上面验过）
+            check(b2["buildCommit"] == bd["buildCommit"] and b2["fileCount"] != bd["fileCount"] and b2 != bd,
+                  f"同一 commit 下两个项目的记录各自独立（{P2} {b2['fileCount']} 个文件 {b2['coveredLines']} 行 / "
+                  f"default {bd['fileCount']} 个文件 {bd['coveredLines']} 行）",
                   f"两个项目的趋势记录串了：{P2}={b2} default={bd}")
     print()
 

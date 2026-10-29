@@ -1,7 +1,7 @@
 # Windows 离线部署手册
 
-> **适用版本**：v0.12.0。部署步骤是 2026-09-23 在 v0.9.2（`ec30c61`）上逐条演练过的；
-> v0.10.0 改了前端页面与推送内容，v0.10.1 改了 C++ 覆盖数据的解析方式，v0.11.0 改了 C++ 共享代码的计数口径，v0.11.1 修了删项目不清趋势等两处问题，v0.12.0 给产物的上传 / 删除加了令牌、页面上能建 uploaded 项目（容器化部署才用得上，见 8.5），步骤都不变，版本号与验收数字已随版本更新，
+> **适用版本**：v0.13.0。部署步骤是 2026-09-23 在 v0.9.2（`ec30c61`）上逐条演练过的；
+> v0.10.0 改了前端页面与推送内容，v0.10.1 改了 C++ 覆盖数据的解析方式，v0.11.0 改了 C++ 共享代码的计数口径，v0.11.1 修了删项目不清趋势等两处问题，v0.12.0 给产物的上传 / 删除加了令牌、页面上能建 uploaded 项目（容器化部署才用得上，见 8.5），v0.13.0 改了 Rust 泛型的方法明细（按源码合并）、修了门禁的两处问题，步骤都不变，版本号与验收数字已随版本更新，
 > 目录大小、端口、耗时仍取自那次实测。换了版本之后，请对照 `scripts/run_local.sh`
 > 顶部和 `pom.xml` 重新核对。
 > 2026-10-20 在 dev 的 `1cbe1a9`（产物上传加令牌、页面上能建 uploaded 项目之后）上，用全新克隆重走了
@@ -24,7 +24,7 @@
 | **A. 完整复刻（本手册主线）** | 平台 + 8 个演示被测服务（Java / Go / C++ / Rust 各 2 台）+ 一键验收 | 第一次部署，用来证明这台机器的环境装对了 |
 | **B. 只用平台接你自己的服务** | 平台 + 所接语言对应的工具链 | A 跑通之后，接真实业务（见第 8 节） |
 
-**建议先走通 A，再做 B。** A 最后的验收结果（345 PASS / 0 FAIL，11 套全部通过）
+**建议先走通 A，再做 B。** A 最后的验收结果（352 PASS / 0 FAIL，11 套全部通过）
 是「工具链版本对、路径对、数据库通」唯一可靠的证据。跳过它直接接业务服务，
 出了问题会分不清是环境没装对，还是接入方式不对。
 
@@ -58,7 +58,7 @@
 3. 下载几个安装包              ──拷贝──▶   6. 取出仓库、建库、写 .env.local
                                            7. bash scripts/run_local.sh start
                                            8. bash scripts/run_local.sh verify
-                                              → 345 PASS / 0 FAIL，11 套全部通过
+                                              → 352 PASS / 0 FAIL，11 套全部通过
 ```
 
 ### 0.4 硬件与耗时
@@ -492,7 +492,7 @@ cd /c/rtcc
 git clone /c/rtcc-offline/realtime_code_coloring.bundle realtime_code_coloring
 cd realtime_code_coloring
 git checkout main
-git log -1 --oneline     # <提交号> 合并 dev：v0.12.0 —— ……
+git log -1 --oneline     # <提交号> 合并 dev：v0.13.0 —— ……
 git status --short       # 没有输出 = 工作树干净
 ```
 
@@ -536,7 +536,7 @@ bash scripts/run_local.sh start
 
 它会依次做这几件事：
 
-1. `mvn clean package`：构建平台和 Java 演示服务，并跑完 294 条单测（第一次会下载 Maven 依赖）；
+1. `mvn clean package`：构建平台和 Java 演示服务，并跑完 312 条单测（第一次会下载 Maven 依赖）；
 2. 带覆盖率插桩构建 Go 演示服务（`-cover -covermode=atomic -tags=goverage`）；
 3. 带覆盖率插桩构建 C++ 演示服务（`--coverage`）；
 4. 带覆盖率插桩构建 Rust 演示服务（msvc 目标 + `-C instrument-coverage`）；
@@ -591,7 +591,7 @@ tail -3 .run/verify.log
 grep -c '验收结论：全部通过'     .run/verify.log   # 期望 9
 grep -c '推送链路验证：全部通过' .run/verify.log   # 期望 1
 grep -c '前端验收：全部通过'     .run/verify.log   # 期望 1
-grep -c '\[PASS\]' .run/verify.log                # 期望 345
+grep -c '\[PASS\]' .run/verify.log                # 期望 352
 grep -c '\[FAIL\]' .run/verify.log                # 期望 0
 ```
 
@@ -610,7 +610,7 @@ grep -c '\[FAIL\]' .run/verify.log                # 期望 0
   不要直接跑 `verify`：它会先把 8 个实例拉起来，这时 Java 实例已经占住了
   `platform/target/classes/probe/jacocoagent.jar`，接着再跑 `start` 时，`mvn clean` 会因为删不掉这个文件而失败。
 
-**得到「11 套全部通过、345 PASS / 0 FAIL」，形态 A 的部署就完成了。**
+**得到「11 套全部通过、352 PASS / 0 FAIL」，形态 A 的部署就完成了。**
 
 ---
 
@@ -633,7 +633,7 @@ grep -c '\[FAIL\]' .run/verify.log                # 期望 0
 ```bash
 cd /c/rtcc/realtime_code_coloring/platform
 set -a; . ../.env.local; set +a
-java -jar target/platform-0.12.0.jar
+java -jar target/platform-0.13.0.jar
 ```
 
 平台运行时需要：
@@ -812,7 +812,7 @@ C:\rtcc\
 └── realtime_code_coloring\      仓库（从 bundle 克隆）
     ├── .env.local               数据库连接（不进 git）
     ├── .run\                    运行日志、C++/Rust 的覆盖数据、验收日志（不进 git）
-    ├── platform\target\platform-0.12.0.jar
+    ├── platform\target\platform-0.13.0.jar
     ├── demo-service\  demo-service-go\  demo-service-cpp\  demo-service-rust\
     ├── scripts\run_local.sh     启动 / 停止 / 验收的唯一入口
     └── docs\deploy-windows-offline.md   本手册

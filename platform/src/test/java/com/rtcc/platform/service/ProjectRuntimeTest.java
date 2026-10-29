@@ -34,10 +34,11 @@ import static org.junit.jupiter.api.Assertions.*;
 class ProjectRuntimeTest {
 
     private ProjectRuntime runtime;
+    private ProjectConfig props;
 
     @BeforeEach
     void setUp() throws Exception {
-        ProjectConfig props = new ProjectConfig();
+        props = new ProjectConfig();
         props.setId("test");
         // 工具链路径与项目无关，取平台默认值即可：这些用例在够不到探针时就返回了，
         // 根本走不到调 covdata / gcov / llvm-cov 那一步
@@ -144,6 +145,32 @@ class ProjectRuntimeTest {
         }
     }
 
+    /**
+     * 阈值不在 0–100（含 NaN）时拒判。保存配置时已拦住，但直接改库里的 JSON、首次启动从 yml 种进来的配置
+     * 都不经过那道校验。不拦的话门禁永远判「不通过」，还给出补了也过不了的「还需覆盖 N 行」——
+     * 把配置错误说成覆盖不达标，CI 会让人去补测试（2026-10-29 实测：全量阈值 NaN 时门禁 200 + passed:false +
+     * 「低于阈值 NaN%，还需覆盖 1 行」）。与认不出的口径一样在最前面拒，不必等到有变更行才说
+     */
+    @Test
+    void 门禁阈值无效时拒判而不是永远判不通过() {
+        for (double bad : new double[]{Double.NaN, 120, -1}) {
+            props.getGate().setOverallThreshold(bad);
+            props.getGate().setIncrementalThreshold(bad);
+            for (String mode : new String[]{ProjectRuntime.MODE_FULL, ProjectRuntime.MODE_INCREMENTAL}) {
+                GateUndecidableException e = assertThrows(GateUndecidableException.class,
+                        () -> runtime.gate(mode, null), mode + " 阈值 " + bad);
+                assertTrue(e.getMessage().contains("门禁阈值") && e.getMessage().contains(String.valueOf(bad)),
+                        "要点名是哪个阈值、实际是多少：" + e.getMessage());
+            }
+        }
+        // 只看本口径的阈值：全量那个坏了，不该连累增量门禁（这里接着因探针状态不全而拒判，与阈值无关）
+        props.getGate().setOverallThreshold(Double.NaN);
+        props.getGate().setIncrementalThreshold(80);
+        GateUndecidableException e = assertThrows(GateUndecidableException.class,
+                () -> runtime.gate(ProjectRuntime.MODE_INCREMENTAL, null));
+        assertTrue(e.getMessage().contains("探针状态") && !e.getMessage().contains("门禁阈值"), e.getMessage());
+    }
+
     @Test
     void 未指定场景时看的是实时数据() {
         assertNull(runtime.summary(ProjectRuntime.MODE_FULL, null, null).get("scenarioId"));
@@ -217,5 +244,40 @@ class ProjectRuntimeTest {
         assertFalse(byLang.containsKey("go"), "Go 不提供分支，不该出现在这张表里 —— "
                 + "出现了就意味着页面上会显示一个 0%，而那是假的");
         assertFalse(byLang.containsKey("rust"), "Rust 不提供分支，同理");
+    }
+
+    /** 与门禁判 passed 同一个舍入口径：Math.round(x × 10) / 10 */
+    private static double rounded(int covered, int total) {
+        return Math.round(covered * 100d / total * 10) / 10d;
+    }
+
+    /**
+     * 「还需覆盖 N 行」要是能过阈值的<b>最小</b>那个 N：补上 N 行按门禁自己的舍入口径能过，少补一行不能。
+     * 门禁按舍入后的值判 —— 79.95% 显示成 80.0% 就算过；只按原始比例估行数会多报，
+     * 照着补完的人发现其实少测一行也能过，这句话就不可信了（2026-10-29 verify 实测：增量 6/429、阈值 80%，
+     * 报 338 行，补 337 行已是 343/429 = 79.953% → 80.0%）
+     */
+    @Test
+    void 还需覆盖的行数是能过阈值的最小值() {
+        assertEquals(337, ProjectRuntime.linesToPass(6, 429, 80.0));
+        int checked = 0;
+        for (int total = 1; total <= 600; total++) {
+            // 不在 0.1 格子上的阈值走的是另一个方向：按原始比例估少了，要往上补（33.33 要显示到 33.4 才算过）
+            for (double threshold : new double[]{50.0, 79.9, 80.0, 85.5, 99.9, 100.0,
+                    33.33, 66.67, 80.01, 80.05, 99.95}) {
+                for (int covered = 0; covered < total; covered += Math.max(1, total / 7)) {
+                    if (rounded(covered, total) >= threshold) {
+                        continue;   // 已经过了，门禁不会说「还需覆盖」
+                    }
+                    int n = ProjectRuntime.linesToPass(covered, total, threshold);
+                    String at = covered + "/" + total + " 阈值 " + threshold + " → " + n;
+                    assertTrue(n >= 1 && covered + n <= total, at);
+                    assertTrue(rounded(covered + n, total) >= threshold, "补满还过不了：" + at);
+                    assertTrue(n == 1 || rounded(covered + n - 1, total) < threshold, "少一行也能过：" + at);
+                    checked++;
+                }
+            }
+        }
+        assertTrue(checked > 10_000, "遍历的组合太少，可能没跑到：" + checked);
     }
 }

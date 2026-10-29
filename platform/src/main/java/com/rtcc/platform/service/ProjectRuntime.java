@@ -698,6 +698,16 @@ public class ProjectRuntime {
             throw new GateUndecidableException("认不出的口径 mode=" + mode
                     + "，只接受 " + MODE_INCREMENTAL + " 或 " + MODE_FULL);
         }
+        double threshold = incremental
+                ? props.getGate().getIncrementalThreshold()
+                : props.getGate().getOverallThreshold();
+        // 阈值不在 0–100（含 NaN）时门禁永远过不了，还会给出补了也过不了的「还需覆盖 N 行」——
+        // 把配置错误说成覆盖不达标。保存配置时已拦住，这里防的是不经过那道校验的两条路：
+        // 直接改库里的 JSON、首次启动从 yml 种进来的配置。与认不出的口径一样，配置本身无效就不必看数据
+        if (!(threshold >= 0 && threshold <= 100)) {
+            throw new GateUndecidableException((incremental ? "增量" : "全量") + "门禁阈值配置无效："
+                    + threshold + "，只能是 0 到 100，门禁不予判定。请在「项目设置」里改正");
+        }
         Scenario running = active;
         if (running != null) {
             // 场景 start 会清零全部实例的计数器，此后的比例只是这个场景窗口内的覆盖。
@@ -739,9 +749,6 @@ public class ProjectRuntime {
             missed += f.missedLines();
         }
         int total = covered + missed;
-        double threshold = incremental
-                ? props.getGate().getIncrementalThreshold()
-                : props.getGate().getOverallThreshold();
         res.put("threshold", threshold);
         res.put("coveredLines", covered);
         res.put("missedLines", missed);
@@ -774,17 +781,31 @@ public class ProjectRuntime {
                     ? metric + " " + actual + "%，该口径未设门槛"
                     : metric + " " + actual + "% 不低于阈值 " + threshold + "%");
         } else {
-            // need 必须按 passed 用的同一个舍入口径算。按原始比例算的话，
-            // 阈值带两位小数时会算出「还需覆盖 0 行」—— 照着做也过不了。
-            // 先按未舍入值估一个下界，再补到舍入后真能过阈值为止（至多几次）
-            int need = Math.max(1, (int) Math.ceil(total * threshold / 100d) - covered);
-            while (covered + need < total && round((covered + need) * 100d / total) < threshold) {
-                need++;
-            }
             res.put("reason", metric + " " + actual + "% 低于阈值 " + threshold
-                    + "%，还需覆盖 " + need + " 行");
+                    + "%，还需覆盖 " + linesToPass(covered, total, threshold) + " 行");
         }
         return res;
+    }
+
+    /**
+     * 还需再覆盖几行才能过阈值：能过的最小那个数。静态且包级可见，供单测直接验证。
+     * 前提由调用方保证：total &gt; 0、当前还没过阈值、阈值不超过 100（否则补满也过不了，返回的是补满所需的行数）。
+     *
+     * need 必须按 passed 用的同一个舍入口径算。按原始比例算的话，
+     * 阈值带两位小数时会算出「还需覆盖 0 行」—— 照着做也过不了。
+     * 按未舍入值估的数也<b>不是下界</b>：舍入会把 79.95% 显示成 80.0% 判通过，少一行就已经能过
+     * （2026-10-29 增量 6/429、阈值 80%：估出 338，337 行已能过）。所以先补到能过，再收到最小；
+     * 两个方向差的都不超过舍入的半格（0.05%），各至多约 total / 2000 次
+     */
+    static int linesToPass(int covered, int total, double threshold) {
+        int need = Math.max(1, (int) Math.ceil(total * threshold / 100d) - covered);
+        while (covered + need < total && round((covered + need) * 100d / total) < threshold) {
+            need++;
+        }
+        while (need > 1 && round((covered + need - 1) * 100d / total) >= threshold) {
+            need--;
+        }
+        return need;
     }
 
     private List<ProbeEndpoint> endpoints() {
@@ -1368,7 +1389,7 @@ public class ProjectRuntime {
         return total == 0 ? 0d : covered * 100d / total;
     }
 
-    private double round(double v) {
+    private static double round(double v) {
         return Math.round(v * 10) / 10d;
     }
 }
