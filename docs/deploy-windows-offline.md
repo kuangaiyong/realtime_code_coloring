@@ -7,6 +7,10 @@
 > 2026-10-20 在 dev 的 `1cbe1a9`（产物上传加令牌、页面上能建 uploaded 项目之后）上，用全新克隆重走了
 > 2.1、4.6、5、6、7 节：结果与本手册一致（11 套全部通过、345 PASS / 0 FAIL）。那次是在开发机上走的，
 > 工具链与 MySQL 本来就在，第 3、4.1 节的安装与解包没有重走。
+> 2026-10-30：第 2 节改为一条命令 `scripts/pack_offline.sh`。用它在开发机上打出的包（1.2 GB）解到新路径 `C:\rtcc-verify`，
+> PATH 里去掉原工具链、Go 与 Cargo 设成离线，从 bundle 克隆 main 跑 `start` + `verify`：11 套全部通过、352 PASS / 0 FAIL。
+> 把 Chrome 换成包里 MSI 的同版本（156.0.8078.80，用 Chrome for Testing）再跑一遍，结果相同。
+> 第 3 节五个安装包的安装过程没有重走：开发机上本来就装着同版本（Chrome 除外）。
 >
 > **前提**：目标机是 64 位 Windows（10 / 11 / Server），**不能访问外网**，
 > 但能从内网镜像安装 Python / Java / npm 的依赖。
@@ -53,21 +57,21 @@
 ```
 联网机器（开发机）                         目标机（离线）
 ──────────────────                         ──────────────────
-1. 打包仓库（git bundle）      ──拷贝──▶   4. 装 Git / MySQL / Chrome / Python / Node
-2. 打包 devtools 工具链目录    ──拷贝──▶   5. 解开 devtools，配置环境变量
-3. 下载几个安装包              ──拷贝──▶   6. 取出仓库、建库、写 .env.local
-                                           7. bash scripts/run_local.sh start
-                                           8. bash scripts/run_local.sh verify
+1. bash scripts/pack_offline.sh ──拷贝──▶  2. 装 Git / MySQL / Chrome / Python / Node
+   仓库 bundle、工具链、五个安装包         3. 解开 devtools，配置环境变量
+   一次备齐，最后逐项自检                  4. 取出仓库、建库、写 .env.local
+                                           5. bash scripts/run_local.sh start
+                                           6. bash scripts/run_local.sh verify
                                               → 352 PASS / 0 FAIL，11 套全部通过
 ```
 
 ### 0.4 硬件与耗时
 
-- **磁盘**：至少预留 10 GB。工具链解开后约 3.8 GB，传输用的打包文件本身也有约 3.8 GB，
-  另外还有仓库、Maven 依赖、MySQL、Chrome。
+- **磁盘**：至少预留 10 GB。工具链解开后约 3.8 GB，传输用的整个离线包约 1.2 GB
+  （工具链压缩后 740 MB，五个安装包约 0.4 GB），另外还有仓库、Maven 依赖、MySQL、Chrome。
 - **内存**：实测平台 + 8 个被测实例 + MySQL 常驻约 1.1 GB；构建和前端验收时会更高，
   建议 8 GB 以上。
-- **耗时**（开发机实测）：`start`（含全部构建）约 1 分 15 秒，`verify` 约 4 分钟。
+- **耗时**（开发机实测）：打包约 27 分钟；`start`（含全部构建）约 1 分 15 秒，`verify` 约 4 分钟。
   目标机第一次 `start` 要从内网镜像下载 Maven 依赖，会更久。
 
 ---
@@ -76,18 +80,18 @@
 
 | 组件 | 实测版本 | 用途 | 目标机怎么获得 |
 |---|---|---|---|
-| Git for Windows | 2.53.0 | Git Bash 运行脚本；平台调 `git` 算增量、读实例版本 | 带安装包 |
+| Git for Windows | 2.53.0.windows.2 | Git Bash 运行脚本；平台调 `git` 算增量、读实例版本 | 带安装包 |
 | JDK（Eclipse Temurin） | 17.0.20+8 | 运行平台与 Java 演示服务；构建 | 拷 devtools；或目标机自装任意 JDK 17 |
 | Maven | 3.9.16 | 构建 | 拷 devtools；或自装 3.9.x。依赖走内网镜像 |
-| MySQL | 8.4（LTS） | 项目配置 / 趋势 / 采集事件 | 带安装包 |
+| MySQL | 8.4.8（LTS） | 项目配置 / 趋势 / 采集事件 | 带安装包 |
 | Go | 1.26.6 | 构建 Go 演示服务；平台调 `go tool covdata` | 拷 devtools |
 | MinGW-w64 | GCC 16.2.0（x86_64-ucrt-posix-seh） | 构建 C++ 演示服务；平台调 `gcov` / `gcov-tool`；编译 Rust 探针 | 拷 devtools |
 | Rust | 1.97.1，工具链 `stable-x86_64-pc-windows-gnu`，另装 `x86_64-pc-windows-msvc` 目标和 `llvm-tools` 组件 | 构建 Rust 演示服务；平台调 `llvm-profdata` / `llvm-cov` | 拷 devtools（`rustup` 和 `cargo` 两个目录） |
 | xwin 库文件 | 631 MB | 链接 Rust 的 msvc 目标 | 拷 devtools |
-| Python | 3.14.3（任意 3.x 都行，只用标准库） | E2E 验收脚本 | 目标机自装 |
-| Node.js | 24.14.1（**至少 22**：脚本用到内置的 `WebSocket`） | 推送验收、前端验收脚本 | 目标机自装 |
+| Python | 3.14.3（任意 3.x 都行，只用标准库） | E2E 验收脚本 | 带安装包；目标机已有 3.x 也可以不装 |
+| Node.js | 24.14.1（**至少 22**：脚本用到内置的 `WebSocket`） | 推送验收、前端验收脚本 | 带安装包；目标机已有 22 以上也可以不装 |
 | puppeteer | 25.3.0 | 驱动 Chrome | npm 安装（要跳过浏览器下载，见 4.4） |
-| Google Chrome | 153.0.8010.53 | 前端验收 | 带企业版离线安装包 |
+| Google Chrome | 156.0.8078.80（包里的企业版 MSI；2026-10-30 用同版本的 Chrome for Testing 跑过全量验收，见 2.3） | 前端验收 | 带企业版离线安装包 |
 
 Maven 依赖（Spring Boot 3.3.5、JaCoCo 0.8.12、MySQL 驱动等）在构建时自动下载，
 目标机配好内网 Maven 镜像即可（见 4.5）。
@@ -96,22 +100,53 @@ Maven 依赖（Spring Boot 3.3.5、JaCoCo 0.8.12、MySQL 驱动等）在构建�
 
 ## 2. 在联网机器上准备离线物料
 
-下面的命令都在**开发机**的 Git Bash 里执行。物料统一放到 `C:\rtcc-offline`（Git Bash 里写作 `/c/rtcc-offline`），
-最后把整个文件夹拷到目标机。
-
-```bash
-mkdir -p /c/rtcc-offline
-```
-
-### 2.1 打包仓库
+在**开发机**（能上网，仓库和工具链都在这台机器上）的 Git Bash 里执行：
 
 ```bash
 cd /c/code/realtime_code_coloring
-git bundle create /c/rtcc-offline/realtime_code_coloring.bundle --all
-git bundle verify /c/rtcc-offline/realtime_code_coloring.bundle
+bash scripts/pack_offline.sh      # 默认输出到 C:\rtcc-offline；也可以在后面跟一个别的目录
 ```
 
-`verify` 输出里有 `The bundle records a complete history`，就说明打包完整。
+它依次做五件事，开发机实测共约 27 分钟：压缩工具链约 15 分钟，下载安装包约 6 分钟（快慢看网速），自检约 5 分钟。
+
+1. 打包仓库：`git bundle create … --all`；
+2. 打包工具链：把 `C:\Users\Administrator\devtools` 打成 `devtools.tar.xz`（3.8 GB 压到约 740 MB）。
+   工具链不在这个位置时，用 `RTCC_TOOLS=<devtools 目录> bash scripts/pack_offline.sh` 指过去；
+3. 从各家官网下载五个安装包（见 2.3）；
+4. 拷一份本手册，写 `README.txt` 和 `SHA256SUMS.txt`；
+5. 逐项自检，每项一行 `[通过]` 或 `[失败]`。
+
+压缩时 xz 按 CPU 核数开线程，核数越多占的内存越多（开发机 4 核，实测约 600 MB）。内存紧张的机器先关掉用不到的程序：
+开发机上实测过一次，系统只剩几百 MB 时打包进程被回收了。
+
+**最后一行必须是 `离线包自检：全部通过`，退出码为 0。** 任何一项失败都以退出码 1 结束，并点名是哪个文件、哪一项，这样的包不要带走。
+有项没法核对时（比如在没有原工具链目录的机器上跑 `--check`），结论会写明是哪几项，退出码为 2，同样不能当作通过。另外两条：
+
+- 输出目录已存在且不为空时，脚本直接拒绝，里面的文件一个都不碰。重打之前先自己删掉旧包；
+- 输出目录所在的盘剩余不到 2.5 GB 时，同样在动手之前拒绝。
+
+拷进 U 盘或别的介质之后、带走之前，再核一遍：
+
+```bash
+bash scripts/pack_offline.sh --check /e/rtcc-offline     # 换成介质上的实际路径
+```
+
+### 2.1 包里有什么
+
+| 文件 | 内容 | 目标机上在哪一节用 |
+|---|---|---|
+| `realtime_code_coloring.bundle` | 仓库，带完整 git 历史 | 5.1 |
+| `devtools.tar.xz` | 工具链（见 2.2） | 4.1 |
+| `installers\` | 五个安装包，外加 Node.js 的官方校验和（见 2.3） | 第 3 节 |
+| `deploy-windows-offline.md` | 本手册 | — |
+| `README.txt` | 各文件的版本，以及到目标机后先做什么 | — |
+| `SHA256SUMS.txt` | 以上所有文件的校验和 | 3.1 装完 Git 后核对 |
+
+自检核对九项：该有的文件都在；bundle 是完整历史、带 main 分支；工具链压缩包能完整解开；
+平台和四种语言的构建要调用的关键程序都在包里；包里没有符号链接；
+包里每个文件与开发机原目录里的同一个文件逐字节一致（打包之后原目录里新加的文件查不出来，所以工具链一有变动就要重新打包）；
+安装包的数字签名有效、签名者是对应厂商；Node.js 安装包与官方校验和一致；
+`SHA256SUMS.txt` 与包内文件一致，且包里每个文件都列在里面。
 
 **为什么用 bundle，而不是直接压缩文件夹**：
 
@@ -120,34 +155,21 @@ git bundle verify /c/rtcc-offline/realtime_code_coloring.bundle
 - bundle 不带构建产物（`target/`、`.run/`），体积小；
 - 装着数据库凭据的 `.env.local` 已被 gitignore，不会跟着过去。它在目标机上重新写（见 5.2）。
 
-### 2.2 打包工具链目录
+### 2.2 工具链包
 
 开发机的工具链都装在 `C:\Users\Administrator\devtools` 下，是免安装的绿色目录，整个拷走就能用。
-打包时去掉几项用不到的东西：
-
-```bash
-cd /c/Users/Administrator
-tar -chf /c/rtcc-offline/devtools.tar \
-  --exclude='devtools/rustup/toolchains/nightly-x86_64-pc-windows-gnu' \
-  --exclude='devtools/rustup/update-hashes/nightly-x86_64-pc-windows-gnu' \
-  --exclude='devtools/rustup/downloads' \
-  --exclude='devtools/rustup/tmp' \
-  --exclude='devtools/compiler-rt' \
-  --exclude='devtools/rustup-init.exe' \
-  --exclude='devtools/xwin/sdk/include/10.0.26100' \
-  --exclude='devtools/xwin/sdk/lib/10.0.26100' \
-  devtools
-```
-
-**`-h` 和最后两行排除项都不能省**（本机按手册演练时踩到过）：
+脚本打包时用 `tar -h`，并去掉几项用不到的东西。**这两点都不能改**（本机按手册演练时踩到过）：
 
 - `cargo/bin` 下的 `cargo.exe`、`rustc.exe` 等 13 个程序，其实是指向 `rustup.exe` 的符号链接。
   不加 `-h` 的话，包里存的是链接本身，在 Windows 上解包时建不出来：
-  `cargo`、`rustc` 全部缺失，Rust 根本编不了。加了 `-h`，包里存的就是真实文件；
-- xwin 里的两个 `10.0.26100` 是指向自己所在目录的链接，构建用不到它们，
-  不排除的话，解包会报「符号链接层级过多」。
+  `cargo`、`rustc` 全部缺失，Rust 根本编不了。加了 `-h`，包里存的就是真实文件
+  （这 13 个程序连同 `rustup.exe` 本身，存成一份文件加 13 个硬链接，包不会因此变大）；
+- xwin 里的两个 `10.0.26100` 是指向自己所在目录的链接，构建用不到它们；
+  不排除的话，`-h` 会顺着它们绕成死循环。
 
-打包进去的内容：
+自检里的「关键程序都在包里」「包里没有符号链接」两项，就是原先这里要手工做的两项核对。
+
+打包进去的内容（大小是解开后的）：
 
 | 目录 | 大小 | 内容 |
 |---|---|---|
@@ -158,84 +180,66 @@ tar -chf /c/rtcc-offline/devtools.tar \
 | `rustup` | 1.7 GB | 只剩 stable 工具链（含 msvc 目标的标准库、`llvm-tools`、`rust-lld`） |
 | `cargo` | 61 MB | `cargo` / `rustc` / `rustup` 的入口程序 |
 | `xwin` | 631 MB | MSVC CRT 与 Windows SDK 的导入库 |
-| **合计** | **约 3.8 GB** | 不压缩；想更小可以改用 7-Zip 压缩 |
+| **合计** | **约 3.8 GB** | 压缩成 `devtools.tar.xz` 后约 740 MB |
 
 去掉的几项：
 
-- `nightly` 工具链（1.7 GB）是早先验证 gnu 目标时留下的，现有构建用不到；
+- `nightly` 工具链（如果装过，约 1.7 GB）是早先验证 gnu 目标时留下的，现有构建用不到；
 - `compiler-rt`、`rustup-init.exe` 同样用不到；
 - `downloads`、`tmp` 是 rustup 的下载缓存。
 
-打完包核对两件事。第一，关键的三个程序必须都在：
+> 如果开发机的用户名不是 `Administrator`，或者工具链不在这个位置，用上面说的 `RTCC_TOOLS` 指过去。
+> 目录名必须叫 `devtools`：包里的路径和本手册都按这个名字写。
 
-```bash
-tar -tf /c/rtcc-offline/devtools.tar | grep -E "bin/(llvm-profdata|llvm-cov|rust-lld)\.exe$"
-```
+### 2.3 安装包
 
-应该输出 3 行，分别以 `llvm-cov.exe`、`llvm-profdata.exe`、`rust-lld.exe` 结尾。
+脚本从各家官网下载下面五个安装包，放进 `installers\`。版本与开发机验收所用的一致：
 
-第二，`cargo.exe` 在包里必须是真实文件，不能是链接：
-
-```bash
-tar -tvf /c/rtcc-offline/devtools.tar devtools/cargo/bin/cargo.exe
-```
-
-正确的输出以 `h` 开头、以 `link to devtools/cargo/bin/cargo-clippy.exe` 结尾：`-h` 把 13 个同名链接
-存成了一份文件加 12 个硬链接，包因此不会变大。如果以 `l` 开头、以 `-> rustup.exe` 结尾，
-说明打包时漏了 `-h`，要重新打。
-
-> 如果开发机的用户名不是 `Administrator`，或者工具链不在这个位置，把上面的
-> `cd /c/Users/Administrator` 改成 `devtools` 目录的上一级。
-
-### 2.3 下载安装包
-
-在开发机上下载以下官方安装包，放进 `C:\rtcc-offline`：
-
-| 安装包 | 下载地址 | 选哪个 |
+| 文件 | 版本 | 来源 |
 |---|---|---|
-| Git for Windows | https://git-scm.com/downloads/win | 64 位安装版（Setup） |
-| MySQL 8.4 LTS | https://dev.mysql.com/downloads/mysql/ | 版本选 8.4 LTS，平台选 Windows，下载 MSI Installer |
-| Google Chrome 企业版 | https://chromeenterprise.google/browser/download/ | Windows 64 位 MSI（离线安装包） |
+| `Git-2.53.0.2-64-bit.exe` | Git for Windows 2.53.0.windows.2 | github.com/git-for-windows |
+| `mysql-8.4.8-winx64.msi` | MySQL 8.4.8（LTS） | cdn.mysql.com |
+| `googlechromestandaloneenterprise64.msi` | 打包时的最新版，实际版本写在 `README.txt` 里 | dl.google.com |
+| `node-v24.14.1-x64.msi` | Node.js 24.14.1 | nodejs.org |
+| `python-3.14.3-amd64.exe` | Python 3.14.3 | python.org |
 
-如果目标机连 JDK、Node.js、Python 的安装包也拿不到，一并带上：
+Chrome 是例外：Google 只提供最新版的企业 MSI，版本由打包的时间决定
+（2026-10-30 打到的是 156.0.8078.80。开发机此前一直用 156.0.8078.79 验收，这一版又用同版本的 Chrome for Testing 跑过一遍全量验收，全部通过）。
+自检核对每个安装包的数字签名：状态必须有效，签名者必须是对应的厂商。Node.js 另外对一次官方的 `SHASUMS256.txt`。
+要换版本，改 `scripts/pack_offline.sh` 顶部的版本号。
 
-| 安装包 | 下载地址 |
-|---|---|
-| Node.js（22 或更高的 LTS） | https://nodejs.org/en/download |
-| Python 3 | https://www.python.org/downloads/windows/ |
-
-JDK 已经包含在 devtools 里，不必单独下载。
+JDK 已经包含在 devtools 里，不用单独带。
 
 ### 2.4 Maven 依赖（二选一）
+
+脚本不带 Maven 依赖。按需带的这两样（本节和 2.5）放在离线包目录**之外**，比如 `C:\rtcc-offline-extra`：
+放进 `C:\rtcc-offline` 的话，它们不在 `SHA256SUMS.txt` 里，`--check` 会报「没列进清单」。
 
 - **目标机能连内网 Maven 镜像**：什么都不用带，到 4.5 配好镜像地址即可。
 - **目标机连不上任何 Maven 仓库**：把开发机的本地仓库（约 91 MB）带过去：
 
   ```bash
-  tar -cf /c/rtcc-offline/m2-repository.tar -C /c/Users/Administrator/.m2 repository
+  mkdir -p /c/rtcc-offline-extra
+  tar -cf /c/rtcc-offline-extra/m2-repository.tar -C /c/Users/Administrator/.m2 repository
   ```
 
 ### 2.5 puppeteer（二选一）
+
+脚本同样不带 puppeteer。
 
 - **目标机的 npm 能装包**：什么都不用带，到 4.4 安装。
 - **目标机的 npm 装不了包**：在开发机上先装好，把整个文件夹带过去：
 
   ```bash
-  mkdir -p /c/rtcc-offline/node-deps && cd /c/rtcc-offline/node-deps
+  mkdir -p /c/rtcc-offline-extra/node-deps && cd /c/rtcc-offline-extra/node-deps
   PUPPETEER_SKIP_DOWNLOAD=true npm install puppeteer@25.3.0
   ```
 
 ### 2.6 出发前核对
 
-`C:\rtcc-offline` 里应该有：
-
-- [ ] `realtime_code_coloring.bundle`
-- [ ] `devtools.tar`（约 3.8 GB）
-- [ ] Git for Windows、MySQL 8.4、Chrome 企业版三个安装包
-- [ ] （按需）Node.js、Python 安装包
-- [ ] （按需）`m2-repository.tar`
-- [ ] （按需）`node-deps` 文件夹
-- [ ] 本手册（它就在仓库的 `docs/` 里，也可以单独拷一份，方便离线查看）
+- [ ] 打包输出的最后一行是 `离线包自检：全部通过`
+- [ ] 拷到介质上之后，用 `--check` 又核了一遍，同样全部通过
+- [ ] （按需）`C:\rtcc-offline-extra` 里的 `m2-repository.tar`、`node-deps` 文件夹（2.4、2.5，脚本不带）
 
 ---
 
@@ -243,7 +247,7 @@ JDK 已经包含在 devtools 里，不必单独下载。
 
 ### 3.1 Git for Windows
 
-运行安装包，**选项都保持默认**。其中两项必须是默认值：
+运行 `installers\Git-2.53.0.2-64-bit.exe`，**选项都保持默认**。其中两项必须是默认值：
 
 - **「Git from the command line and also from 3rd-party software」**：这一项会把 git 加进 Windows 的 PATH。
   平台（`java.exe`）是直接调用 `git` 的，只在 Git Bash 里能用是不够的；
@@ -259,9 +263,15 @@ which cygpath        # /usr/bin/cygpath（启动脚本要用它）
 
 **本手册之后的命令都在 Git Bash 里执行。**
 
+有了 Git Bash，先核对离线包在拷贝途中没有损坏：
+
+```bash
+cd /c/rtcc-offline && sha256sum -c SHA256SUMS.txt     # 每一行都是 OK
+```
+
 ### 3.2 Python
 
-用 python.org 的安装包安装，**勾选「Add python.exe to PATH」**。不要用 Microsoft Store 版。
+运行 `installers\python-3.14.3-amd64.exe`，**勾选「Add python.exe to PATH」**。不要用 Microsoft Store 版。
 
 然后**关掉 Windows 自带的 Python 应用执行别名**：在 Windows 设置里搜索「应用执行别名」，
 把 `python.exe` 和 `python3.exe` 两项都关掉。
@@ -282,7 +292,7 @@ python --version     # Python 3.x
 
 ### 3.3 Node.js
 
-安装 22 或更高版本。核对：
+运行 `installers\node-v24.14.1-x64.msi`（目标机上已有 22 或更高版本的 Node.js 就不用装）。核对：
 
 ```bash
 node -v    # v22.x 或更高（开发机是 v24.14.1）
@@ -291,13 +301,13 @@ npm -v
 
 ### 3.4 Google Chrome
 
-运行企业版 MSI，它会装到 `C:\Program Files\Google\Chrome\Application\chrome.exe`。核对：
+运行 `installers\googlechromestandaloneenterprise64.msi`，它会装到 `C:\Program Files\Google\Chrome\Application\chrome.exe`。核对：
 
 ```bash
 ls "/c/Program Files/Google/Chrome/Application/" | grep -E '^[0-9]+\.'
 ```
 
-输出的是版本号文件夹，比如 `153.0.8010.53`。
+输出的是版本号文件夹，比如 `156.0.8078.80`。
 
 > **不要用 `chrome.exe --version` 查版本**：在 Windows 上它会打开一个浏览器窗口，命令就卡在那里。
 >
@@ -306,7 +316,7 @@ ls "/c/Program Files/Google/Chrome/Application/" | grep -E '^[0-9]+\.'
 
 ### 3.5 MySQL 8.4
 
-运行 MSI。安装完会弹出 MySQL Configurator，按下面配置：
+运行 `installers\mysql-8.4.8-winx64.msi`。安装完会弹出 MySQL Configurator，按下面配置：
 
 - 端口：**3306**
 - 设置 root 密码
@@ -355,7 +365,7 @@ GRANT ALL PRIVILEGES ON code_coloring.* TO 'rtcc'@'127.0.0.1';
 
 ```bash
 mkdir -p /c/rtcc
-tar -xf /c/rtcc-offline/devtools.tar -C /c/rtcc
+tar -xJf /c/rtcc-offline/devtools.tar.xz -C /c/rtcc     # 开发机实测 68 秒
 ls /c/rtcc/devtools
 ```
 
@@ -440,7 +450,7 @@ ls node_modules/puppeteer/lib/puppeteer/puppeteer.js
 
 ```bash
 mkdir -p ~/.m2
-tar -xf /c/rtcc-offline/m2-repository.tar -C ~/.m2
+tar -xf /c/rtcc-offline-extra/m2-repository.tar -C ~/.m2
 ```
 
 并在 `~/.m2/settings.xml` 里写上离线模式，免得 Maven 去连中央仓库：
@@ -719,7 +729,7 @@ java -jar target/platform-0.13.0.jar
 
 - **重启电脑之后**：MySQL 是 Windows 服务，会自己起来；平台和被测实例不会，按 `stop` → `start` 的顺序重新拉起。
 - **数据库暂时不可用时**：平台照常启动，采集、染色、门禁都照常，只有覆盖率趋势不可用，保存项目配置会返回 503。
-- **升级到新版本**：在开发机上重新打一个 bundle 拷过来，然后：
+- **升级到新版本**：在开发机上重新跑一次 `bash scripts/pack_offline.sh <新目录>`，把新包拷过来，然后：
 
   ```bash
   cd /c/rtcc/realtime_code_coloring
@@ -729,7 +739,7 @@ java -jar target/platform-0.13.0.jar
   bash scripts/run_local.sh verify > .run/verify.log 2>&1
   ```
 
-  如果新版本换了工具链版本（对照 `scripts/run_local.sh` 顶部和本手册第 1 节），要一并带新的工具链过去。
+  如果新版本换了工具链版本（对照 `scripts/run_local.sh` 顶部和本手册第 1 节），再照 4.1 用新包里的 `devtools.tar.xz` 换掉 `C:\rtcc\devtools`。
 
 ---
 
@@ -740,7 +750,7 @@ java -jar target/platform-0.13.0.jar
 | `mvn: command not found`，退出码 127 | 手动执行 mvn 时没加载工具链环境变量。这不是测试失败，而是一条测试都没跑 | `source ~/.bashrc`；用 `run_local.sh` 就不会遇到 |
 | `python: Permission denied`，或者 `verify` 半路中断 | 碰上了 Windows 的 Python 占位别名 | 按 3.2 关掉「应用执行别名」，或者 `export PY=<python 路径>` |
 | Go 构建时出现 `go: downloading go1.26...` 并卡住，或者报 `go.mod requires go >= 1.26` | Go 版本不够，又在尝试联网下载工具链 | 用 devtools 里的 Go 1.26.6，并确认 `GOTOOLCHAIN=local` |
-| 解包时出现 `Cannot create symlink to 'rustup.exe'`；之后 `cargo`、`rustc` 找不到 | 打包时漏了 `-h`，包里存的是符号链接，Windows 上还原不出来 | 回开发机按 2.2 重新打包，并做 2.2 末尾的两项核对 |
+| 解包时出现 `Cannot create symlink to 'rustup.exe'`；之后 `cargo`、`rustc` 找不到 | 打包时漏了 `-h`，包里存的是符号链接，Windows 上还原不出来 | 回开发机用 `pack_offline.sh` 重新打包：它的自检会拦住带符号链接的包 |
 | Rust 报 `can't find crate for profiler_builtins` | 编成了 gnu 目标，或者 stable 工具链里缺 msvc 目标的标准库 | 用 `run_local.sh` 构建；确认 4.6 里 `target list` 有 msvc 那一行 |
 | Rust 链接报找不到 `msvcrt.lib`、`kernel32.lib` 等 | `XWIN_HOME` 没指对 | 检查 4.6 里 xwin 那三个文件 |
 | Rust 编出的 exe 报「not a valid application for this OS platform」 | 走了 gnu 目标的路线 | 只能用 msvc 目标（见 8.4） |
@@ -800,7 +810,7 @@ java -jar target/platform-0.13.0.jar
 
 ```
 C:\rtcc\
-├── devtools\                    工具链（从开发机拷来）
+├── devtools\                    工具链（从 devtools.tar.xz 解开）
 │   ├── jdk-17.0.20+8\
 │   ├── apache-maven-3.9.16\
 │   ├── go\
