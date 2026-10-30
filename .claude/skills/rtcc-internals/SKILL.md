@@ -1,6 +1,6 @@
 ---
 name: rtcc-internals
-description: 代码染色平台的实现内情：P2/P3/P4 分层验收的实际执行情况（哪里改了 Analyzer、为什么）、Go 与 Java 行级粒度差异、前端零构建 Vue 3 的九个反复踩到的点（含实时体验的跟随与新亮起规则、验收环境关着动画）、采集耗时的分项构成（端到端延迟逼近 5s 时先看这里）、前端验收起不来（Failed to launch the browser process）时先查什么、多实例用例偶发「一台取不到数」的排查经过、推送用例偶发「判不了」的根因（实例表先于快照更新）。改前端、排查延迟、接入新语言、前端验收启动 Chrome 失败、多实例或探针连接偶发失败、verify 偶发「判不了」时读这份。
+description: 代码染色平台的实现内情：P2/P3/P4 分层验收的实际执行情况（哪里改了 Analyzer、为什么）、Go 与 Java 行级粒度差异、前端零构建 Vue 3 的九个反复踩到的点（含实时体验的跟随与新亮起规则、验收环境关着动画）、采集耗时的分项构成（端到端延迟逼近 5s 时先看这里）、前端验收起不来（Failed to launch the browser process）时先查什么、多实例用例偶发「一台取不到数」的排查经过、推送用例偶发「判不了」的根因（实例表先于快照更新）。改前端、排查延迟、接入新语言、前端验收启动 Chrome 失败、单跑某一套用例或换一个 Chrome 来验、多实例或探针连接偶发失败、verify 偶发「判不了」时读这份。
 ---
 
 ### P2 验收标准的执行情况（如实记录）
@@ -180,6 +180,15 @@ verify 报成 170 PASS / 1 FAIL。**失败点在打开任何页面之前，与�
 查 Chrome 版本看安装目录下的版本号目录名（如 `153.0.8010.53`），**别跑 `chrome.exe --version`**：
 Windows 上它不往控制台打印，而是用默认用户目录**真的开一个浏览器** ——
 正在 RDP 桌面上用 Chrome 的人会莫名其妙多出一个窗口，命令本身也挂住不返回。
+
+### 单跑某一套用例、或换一个 Chrome 来验
+
+各套用例默认跑在 `run_local.sh` 注入的环境里：PATH 里有 JDK（`jar`）、Go、MinGW、Rust，
+还导出了 `PUPPETEER_HOME`、`CHROME_BIN`、`COVERAGE_ARTIFACT_TOKEN`。直接 `node scripts/ui_verify.js` 起会缺这些，
+报 `jar: command not found`（照页面命令推产物那条）和 `run_local.sh demo2-start` 失败（停一台实例那条），
+**与被测功能、与浏览器版本都无关**。2026-10-30 用 Chrome for Testing 验离线包里的 Chrome 版本时踩到过：
+单跑是 126 PASS / 2 FAIL，换成整套跑就是 352 / 0。
+只想换一个变量时，带着它跑整套：`CHROME_BIN=<路径> bash scripts/run_local.sh verify`。
 
 
 ### 采集耗时的构成（端到端延迟又逼近 5s 时先看这里）
