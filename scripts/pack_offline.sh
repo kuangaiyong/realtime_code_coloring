@@ -296,11 +296,12 @@ write_readme() {
 EOF
 }
 
-# 清单先写在包外面：写在包里的话，find 会把还没写完的清单自己也算进去
+# 清单先写在包外面：写在包里的话，find 会把还没写完的清单自己也算进去。
+# 也不算已有的旧清单 —— 换了手册或 README 之后重算时它还在，算进去的话新清单必然对不上
 write_sums() {
   local tmp
   tmp="$(mktemp)"
-  (cd "$OUT" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | xargs -d '\n' sha256sum) > "$tmp"
+  (cd "$OUT" && find . -type f ! -name SHA256SUMS.txt | sed 's|^\./||' | LC_ALL=C sort | xargs -d '\n' sha256sum) > "$tmp"
   mv "$tmp" "$OUT/SHA256SUMS.txt"
 }
 

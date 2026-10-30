@@ -206,5 +206,16 @@ else
   bad "属组名带空格的包应当 9 项都通过（退出码 $(cat "$WORK/属组带空格.rc")）"; sed 's/^/      /' "$WORK/属组带空格.out"
 fi
 
+# 15. 换了包里的手册或 README 之后重算清单：旧的 SHA256SUMS.txt 还在，不能把它自己也算进新清单 ——
+#     新清单里记着旧清单的哈希，写完必然对不上（2026-10-30 给真包换手册时踩到）
+c=$(new_case 重算清单); detach "$c/README.txt"; echo 改过 >> "$c/README.txt"
+( OUT="$c"; write_sums )
+run_check 重算清单 "$c"
+if grep -qF '[通过] SHA256SUMS 与包内文件一致' "$WORK/重算清单.out"; then
+  ok "包里已有清单时重算，新清单照样对得上"
+else
+  bad "包里已有清单时重算，新清单应当对得上"; grep -F 'SHA256SUMS' "$WORK/重算清单.out" | sed 's/^/      /'
+fi
+
 echo "    $pass PASS / $fail FAIL"
 if [ "$fail" = 0 ]; then echo "打包自检用例：全部通过"; else echo "打包自检用例：$fail 条失败"; exit 1; fi
